@@ -1,0 +1,54 @@
+# Testing Standards
+
+**Last Updated:** (update as conventions evolve)
+
+---
+
+## Framework
+
+- **pytest** with markers{% if project_type == 'multi-agent' %} and async support (`asyncio_mode = "auto"`){% endif %}
+
+- **Pre-commit hooks:** Black (formatting), Ruff (linting), Bandit (security), Red Team (adversarial)
+
+---
+
+## Test Markers
+
+| Marker | Purpose | When to Run |
+|--------|---------|-------------|
+| `@pytest.mark.p0` | Critical path -- must never fail | Every commit |
+| `@pytest.mark.p1` | Important -- should not fail | Every PR |
+| `@pytest.mark.smoke` | Quick sanity check | Before any session |
+| `@pytest.mark.slow` | Takes > 10s | Nightly / manual |
+
+---
+
+## Naming Conventions
+
+- Test files: `test_<module_name>.py`
+- Test classes: `Test<FeatureName>`
+- Test functions: `test_<what_it_tests>`
+
+---
+
+## Architecture Tests
+
+`tests/test_architecture.py` enforces:
+- Dependency direction rules (lower layers never import from higher)
+- File size limits (warning at 500+ lines)
+- Root cleanliness (no stray files)
+- Core module existence
+
+---
+
+## Running Tests
+
+```bash
+make test        # Run all tests
+make test-p0     # P0 critical only
+make test-p1     # P1 important
+make test-arch   # Architecture enforcement
+make test-all    # Full suite with coverage
+make red-team    # Adversarial security check
+make doctor      # Full project health check
+```

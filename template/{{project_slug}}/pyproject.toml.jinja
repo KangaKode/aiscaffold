@@ -1,0 +1,35 @@
+[project]
+name = "{{ project_slug }}"
+version = "0.1.0"
+description = "{{ project_description }}"
+requires-python = ">={{ python_version }}"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+markers = [
+    "p0: Critical path tests (run on every commit)",
+    "p1: Important tests (run on every PR)",
+    "smoke: Quick sanity checks",
+    "slow: Tests taking >10s (nightly only)",
+]
+{% if project_type == 'multi-agent' %}asyncio_mode = "auto"{% endif %}
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+line-length = 120
+target-version = "py{{ python_version | replace('.', '') }}"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = ["E501"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "scripts", "venv"]
+
+[tool.coverage.run]
+source = [{% set layer_list = layers.split(',') %}{% for layer in layer_list %}"{{ layer | trim }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+omit = ["*/tests/*", "*/__pycache__/*"]

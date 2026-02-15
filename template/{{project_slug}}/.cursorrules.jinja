@@ -1,0 +1,18 @@
+# {{ project_name }} Development Rules
+
+> For the full agent guide, see [CLAUDE.md](CLAUDE.md).
+> This file exists for Cursor IDE compatibility. CLAUDE.md is the source of truth.
+
+## Quick Reference
+
+- Architecture-first: review docs/ARCHITECTURE.md before making changes
+- Layering: {% set layer_list = layers.split(',') %}{{ layer_list | join(' -> ') }} (enforced by tests/test_architecture.py)
+- Files under 500 lines, use dataclasses, parse at boundaries
+- Always provide complete code, never placeholders
+- Add logging for debugging
+
+## Pointers
+
+- Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Testing: [docs/TESTING_STANDARDS.md](docs/TESTING_STANDARDS.md)
+- Quality: [docs/QUALITY_SCORE.md](docs/QUALITY_SCORE.md)

@@ -1,0 +1,89 @@
+# {{ project_name }} Agent Guide
+
+> This is the entry point for AI agents working on the {{ project_name }} codebase.
+> Follow progressive disclosure: read this file first, then drill into linked docs as needed.
+> Do NOT load everything at once -- context is a scarce resource.
+
+---
+
+## Architecture
+
+{{ project_description }}
+
+<!-- Replace this with a detailed 2-3 sentence description of your project -->
+
+**Canonical architecture doc:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+### Layering Rules (enforced by lint)
+
+```
+{% set layer_list = layers.split(',') -%}
+{% for layer in layer_list -%}
+{{ layer | trim }}/ {% if loop.first %}(bottom layer -- NEVER imports from layers above){% elif loop.last %}(top layer -- can import from layers below){% else %}(middle layer -- imports only from layers below){% endif %}
+{% endfor -%}
+```
+
+Violation of these rules will be caught by `tests/test_architecture.py`.
+
+---
+
+## Coding Standards
+
+- Architecture-first: NO CODE WITHOUT ARCHITECTURE REVIEW
+- Always provide complete code, never placeholders
+- Break problems into smaller steps
+- Add logging for debugging (`logger.debug(f"[ComponentName] message")`)
+- Keep files under 500 lines
+- Use dataclasses for domain models, parse at boundaries
+{% if persistence == 'sqlite' -%}
+- All data persists to SQLite; session state is for UI convenience only
+{% elif persistence == 'postgres' -%}
+- All data persists to PostgreSQL; session state is for UI convenience only
+{% endif -%}
+
+**Full standards:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+---
+
+## Core Systems
+
+<!-- Add your project's core systems here. Example format: -->
+<!-- ### System Name (Importance: X/100) -->
+<!-- Brief description of what it does. -->
+<!-- **Key files:** `module/file.py` -->
+<!-- **Details:** [.cursor/rules/system-name.mdc](.cursor/rules/system-name.mdc) -->
+
+---
+
+## Testing
+
+- Framework: pytest with markers (P0, P1, smoke, slow)
+- Architecture tests: `tests/test_architecture.py` enforces layering rules
+{% if include_evals -%}
+- Evals: `evals/` directory for capability and regression evals
+{% endif -%}
+- Pre-commit: Black, Ruff, Bandit
+
+**Standards:** [docs/TESTING_STANDARDS.md](docs/TESTING_STANDARDS.md)
+
+---
+
+## Current Work
+
+<!-- Update this section as the project progresses -->
+
+**Quality scores:** [docs/QUALITY_SCORE.md](docs/QUALITY_SCORE.md)
+**Best practices reference:** [docs/AI_ENGINEERING_BEST_PRACTICES_2026.md](docs/AI_ENGINEERING_BEST_PRACTICES_2026.md)
+
+---
+
+## Doc Registry
+
+| Category | Location | Description |
+|----------|----------|-------------|
+| Architecture | `docs/ARCHITECTURE.md` | Layering rules, dependency directions |
+| Testing | `docs/TESTING_STANDARDS.md` | Testing conventions |
+| Quality | `docs/QUALITY_SCORE.md` | Per-domain quality grades |
+| Best Practices | `docs/AI_ENGINEERING_BEST_PRACTICES_2026.md` | 2026 AI engineering patterns (all agents reference this) |
+
+**Full index:** [docs/INDEX.md](docs/INDEX.md)

@@ -1,0 +1,73 @@
+# {{ project_name }} Architecture
+
+**Last Updated:** (update this when architecture changes)
+**Status:** Canonical -- all code must conform to these rules
+
+---
+
+## Layering Rules
+
+The codebase follows strict layered architecture with enforced dependency directions.
+
+```
+{% set layer_list = layers.split(',') | map('trim') | list -%}
+{% for layer in layer_list -%}
+{% if loop.first -%}
+{{ layer }}/    (bottom layer -- types, config, persistence)
+{% elif loop.last -%}
+  {{ '  ' * (loop.index0) }}-> {{ layer }}/    (top layer -- UI, rendering, user interaction)
+{% else -%}
+  {{ '  ' * (loop.index0) }}-> {{ layer }}/    (middle layer)
+{% endif -%}
+{% endfor %}
+```
+
+### Dependency Direction Rules
+
+These are enforced by `tests/test_architecture.py`:
+
+{% for layer in layer_list -%}
+{% set forbidden_layers = layer_list[loop.index0 + 1:] -%}
+{% if forbidden_layers -%}
+- **`{{ layer }}/`** CANNOT import from: {% for f in forbidden_layers %}`{{ f }}/`{% if not loop.last %}, {% endif %}{% endfor %}
+
+{% endif -%}
+{% endfor %}
+
+### How to Fix a Dependency Violation
+
+If `{{ layer_list[0] }}/foo.py` needs something defined in `{{ layer_list[-1] }}/bar.py`:
+
+1. Extract the shared interface (dataclass, protocol, or utility) into `{{ layer_list[0] }}/`
+2. Have both files import from `{{ layer_list[0] }}/`
+3. Run `pytest tests/test_architecture.py` to verify
+
+---
+
+## Core Systems
+
+<!-- Add your project's core systems here. Example: -->
+<!--
+### System Name (Importance: X/100)
+Brief description.
+**Key files:** `module/file.py`
+-->
+
+---
+
+## State Management
+
+<!-- Define your state management tiers. Example: -->
+<!--
+| Tier | Persistence | Purpose | Example |
+|------|------------|---------|---------|
+| Ephemeral | None | Render-only | Animations, progress bars |
+| Session | Memory | Current session | UI selections |
+| Persistent | {% if persistence == 'sqlite' %}SQLite{% elif persistence == 'postgres' %}PostgreSQL{% else %}None{% endif %} | All user data | Projects, content |
+-->
+
+---
+
+## Design Decisions
+
+<!-- Record significant architecture decisions here or use ADRs in docs/ -->

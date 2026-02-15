@@ -1,0 +1,37 @@
+---
+description: Example cursor rule. Shows the format for domain-specific rules. Replace this with your own rules for core systems.
+---
+
+# example-rule
+
+This is a template showing the format for `.cursor/rules/*.mdc` files.
+These files use YAML frontmatter for progressive disclosure:
+- The `description` field is always loaded (Level 1)
+- The body is loaded only when relevant (Level 2)
+
+## How to Create Your Own Rules
+
+1. Create a new `.mdc` file in `.cursor/rules/`
+2. Add a YAML frontmatter `description` that explains WHEN this rule applies
+3. Add the detailed rules in the body
+4. Delete this example file once you have real rules
+
+## Example Format
+
+```yaml
+---
+description: Specifications for the authentication system including JWT tokens, session management, and role-based access control.
+---
+
+# auth-system
+
+1. Authentication Flow
+- JWT tokens with 24h expiry
+- Refresh tokens stored in HTTP-only cookies
+- Role-based access: admin, editor, viewer
+
+2. Security Rules
+- Always validate tokens before accessing protected resources
+- Never store plain-text passwords
+- Use bcrypt for password hashing
+```

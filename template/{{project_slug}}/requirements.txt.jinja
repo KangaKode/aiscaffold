@@ -1,0 +1,48 @@
+# {{ project_name }} Dependencies
+
+# Testing
+pytest>=8.0
+pytest-cov>=5.0
+{% if project_type == 'multi-agent' %}pytest-asyncio>=0.23{% endif %}
+
+# Code Quality
+black>=24.0
+ruff>=0.4
+bandit>=1.7
+pre-commit>=3.6
+
+{% if llm_provider == 'anthropic' -%}
+# LLM - Anthropic
+anthropic>=0.40
+{% elif llm_provider == 'openai' -%}
+# LLM - OpenAI
+openai>=1.50
+{% elif llm_provider == 'google' -%}
+# LLM - Google
+google-generativeai>=0.8
+{% elif llm_provider == 'multi' -%}
+# LLM - Multiple Providers
+anthropic>=0.40
+openai>=1.50
+{% endif -%}
+
+{% if project_type == 'web-app' -%}
+# UI Framework
+nicegui>=2.0
+{% elif project_type == 'cli-tool' -%}
+# CLI Framework
+typer>=0.12
+rich>=13.0
+{% elif project_type == 'api-service' -%}
+# API Framework
+fastapi>=0.115
+uvicorn>=0.32
+{% endif -%}
+
+{% if persistence == 'postgres' -%}
+# Database
+psycopg2-binary>=2.9
+{% endif -%}
+
+# Utilities
+python-dotenv>=1.0

@@ -1,0 +1,38 @@
+# Environment
+.env
+.env.local
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Logs
+logs/
+*.log
+
+# Generated
+repomix-output.txt

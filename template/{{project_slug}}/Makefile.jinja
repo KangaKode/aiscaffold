@@ -1,0 +1,80 @@
+# {{ project_name }} Development Commands
+# Run 'make help' to see all available targets.
+
+.PHONY: help test test-p0 test-p1 test-arch test-all lint format red-team doctor clean
+
+help: ## Show this help message
+	@echo "Available commands:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+# =============================================================================
+# TESTING
+# =============================================================================
+
+test: ## Run all tests
+	python -m pytest tests/ -v --tb=short
+
+test-p0: ## Run P0 critical tests only
+	python -m pytest tests/ -m "p0" -v --tb=short
+
+test-p1: ## Run P1 important tests
+	python -m pytest tests/ -m "p1" -v --tb=short
+
+test-arch: ## Run architecture enforcement tests
+	python -m pytest tests/test_architecture.py -v --tb=short
+
+test-all: ## Run ALL tests with coverage
+	python -m pytest tests/ --cov --cov-report=term-missing -v
+
+# =============================================================================
+# CODE QUALITY
+# =============================================================================
+
+lint: ## Run all linters
+	ruff check .
+{% set layer_list = layers.split(',') | map('trim') | list -%}
+	bandit -r {% for layer in layer_list %}{{ layer }}/{% if not loop.last %} {% endif %}{% endfor %} -ll --quiet
+
+format: ## Format code with Black
+	black .
+
+red-team: ## Run red team check on all source files
+	python scripts/red_team_check.py $$(find {% for layer in layer_list %}{{ layer }}/{% if not loop.last %} {% endif %}{% endfor %} -name "*.py" -not -path "*/__pycache__/*")
+
+red-team-staged: ## Run red team on staged files only
+	python scripts/red_team_check.py
+
+# =============================================================================
+# EVALUATION
+# =============================================================================
+
+{% if include_evals -%}
+eval: ## Run evaluation suite
+	python -m pytest evals/ -v --tb=short
+
+eval-regression: ## Run regression evals only
+	python -m pytest evals/regression/ -v --tb=short
+{% endif %}
+
+# =============================================================================
+# PROJECT HEALTH
+# =============================================================================
+
+doctor: ## Check project structure health
+	@echo "=== Architecture Tests ==="
+	python -m pytest tests/test_architecture.py -v --tb=short
+	@echo ""
+	@echo "=== Red Team Check ==="
+	python scripts/red_team_check.py $$(find {% for layer in layer_list %}{{ layer }}/{% if not loop.last %} {% endif %}{% endfor %} -name "*.py" -not -path "*/__pycache__/*" 2>/dev/null | head -20) || true
+	@echo ""
+	@echo "=== Linters ==="
+	ruff check . --statistics || true
+	@echo ""
+	@echo "Doctor complete."
+
+clean: ## Remove caches and generated files
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name .ruff_cache -exec rm -rf {} + 2>/dev/null || true
+	rm -rf .coverage htmlcov/
+	@echo "Cleaned."

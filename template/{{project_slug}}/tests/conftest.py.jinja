@@ -1,0 +1,41 @@
+"""
+Shared test fixtures for {{ project_name }}.
+
+Add project-specific fixtures here. All tests can use these via pytest's
+automatic fixture discovery.
+"""
+
+import pytest
+
+{% if persistence == 'sqlite' %}
+import sqlite3
+
+
+@pytest.fixture
+def mock_db(tmp_path):
+    """In-memory SQLite database for testing."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    # Add your table creation here:
+    # conn.execute("CREATE TABLE IF NOT EXISTS ...")
+    conn.commit()
+
+    class TestDB:
+        def __init__(self, path):
+            self._path = path
+
+        def _get_connection(self):
+            c = sqlite3.connect(str(self._path))
+            c.row_factory = sqlite3.Row
+            return c
+
+    yield TestDB(db_path)
+    conn.close()
+{% endif %}
+
+
+@pytest.fixture
+def test_project_id():
+    """Generate a test project ID."""
+    return "test_project_001"

@@ -1,0 +1,122 @@
+_min_copier_version: "9.0.0"
+_subdirectory: template
+
+# =============================================================================
+# PROJECT IDENTITY
+# =============================================================================
+
+project_name:
+  type: str
+  help: "Human-readable project name (e.g., 'My AI Tool')"
+
+project_slug:
+  type: str
+  default: "{{ project_name | lower | replace(' ', '_') | replace('-', '_') }}"
+  help: "Python-safe project directory name"
+
+project_description:
+  type: str
+  default: "An AI-powered tool"
+  help: "One-line project description"
+
+author_name:
+  type: str
+  default: "Brian Carter"
+  help: "Your name"
+
+# =============================================================================
+# PROJECT TYPE
+# =============================================================================
+
+project_type:
+  type: str
+  help: "What kind of project?"
+  choices:
+    - "web-app"
+    - "cli-tool"
+    - "multi-agent"
+    - "api-service"
+  default: "web-app"
+
+# =============================================================================
+# ARCHITECTURE LAYERS
+# =============================================================================
+
+layers:
+  type: str
+  help: "Architecture layers (comma-separated, bottom-to-top dependency order)"
+  default: "{% if project_type == 'web-app' %}data,analysis,components{% elif project_type == 'cli-tool' %}data,logic{% elif project_type == 'multi-agent' %}data,analysis,orchestration,specialists,prompts{% elif project_type == 'api-service' %}data,service,routes{% endif %}"
+
+# =============================================================================
+# TECH CHOICES
+# =============================================================================
+
+llm_provider:
+  type: str
+  help: "Primary LLM provider"
+  choices:
+    - "anthropic"
+    - "openai"
+    - "google"
+    - "multi"
+  default: "anthropic"
+
+persistence:
+  type: str
+  help: "Data persistence layer"
+  choices:
+    - "sqlite"
+    - "postgres"
+    - "none"
+  default: "sqlite"
+
+python_version:
+  type: str
+  default: "3.13"
+  help: "Minimum Python version"
+
+# =============================================================================
+# OPTIONS
+# =============================================================================
+
+include_evals:
+  type: bool
+  default: true
+  help: "Include eval infrastructure?"
+
+include_state_management:
+  type: bool
+  default: true
+  help: "Include state management (task tracker, progress notes)?"
+
+include_llm_client:
+  type: bool
+  default: true
+  help: "Include LLM client boilerplate?"
+
+# =============================================================================
+# POST-GENERATION
+# =============================================================================
+
+_tasks:
+  # Create architecture layer directories
+  - "cd {{ project_slug }} && python3 -c \"import os; [os.makedirs(l.strip(), exist_ok=True) or open(os.path.join(l.strip(), '__init__.py'), 'w').close() for l in '{{ layers }}'.split(',')]\""
+  # Create evals directory if requested
+  - "{% if include_evals %}cd {{ project_slug }} && mkdir -p evals/capability evals/regression evals/graders evals/results && touch evals/__init__.py evals/graders/__init__.py{% else %}echo 'Evals skipped'{% endif %}"
+  # Init git
+  - "cd {{ project_slug }} && git init"
+  # Summary
+  - "echo ''"
+  - "echo 'Project {{ project_name }} created!'"
+  - "echo ''"
+  - "echo '  14 subagents installed (.cursor/agents/)'"
+  - "echo '  Architecture tests ready (tests/test_architecture.py)'"
+  - "echo '  Red team pre-commit hook (scripts/red_team_check.py)'"
+  - "echo '  CI/CD pipeline (.github/workflows/ci.yml)'"
+  - "echo ''"
+  - "echo 'Next steps:'"
+  - "echo '  cd {{ project_slug }}'"
+  - "echo '  python3 -m venv venv && source venv/bin/activate'"
+  - "echo '  pip install -r requirements.txt'"
+  - "echo '  pre-commit install'"
+  - "echo '  make test'"
