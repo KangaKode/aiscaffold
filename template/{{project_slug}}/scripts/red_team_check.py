@@ -59,7 +59,10 @@ def check_secrets(fp, content):
             continue
         for pat, desc in SECRET_PATTERNS:
             if re.search(pat, line, re.IGNORECASE):
-                findings.append(Finding("BLOCKING", fp, n, f"Security: {desc}", line.strip()[:100], "Use os.getenv()"))
+                findings.append(Finding("BLOCKING", fp, n, f"Security: {desc}", line.strip()[:100],
+                    "Replace the hardcoded value with os.environ.get('ENV_VAR_NAME'). "
+                    "Add the variable to .env.example with a placeholder value. "
+                    "Never commit secrets to git."))
     return findings
 
 
@@ -71,7 +74,10 @@ def check_sql_injection(fp, content):
                 is_ddl = any(re.search(d, line, re.IGNORECASE) for d in DDL_PATTERNS)
                 sev = "WARNING" if is_ddl else "BLOCKING"
                 findings.append(Finding(sev, fp, n, f"Security: {desc}", line.strip()[:100],
-                    "DDL is acceptable. Verify input is trusted." if is_ddl else "Use parameterized queries (?)"))
+                    "DDL statements are acceptable if input is trusted." if is_ddl else
+                    "Replace f-string/format with parameterized query: "
+                    "conn.execute('SELECT * FROM t WHERE id = ?', (user_id,)). "
+                    "Never interpolate user input into SQL strings."))
     return findings
 
 
@@ -82,7 +88,16 @@ def check_dangerous(fp, content):
             continue
         for pat, desc in DANGEROUS_PATTERNS:
             if re.search(pat, line):
-                findings.append(Finding("BLOCKING", fp, n, f"Security: {desc}", line.strip()[:100], "Use safe alternatives"))
+                fixes = {
+                    r'\beval\s*\(': "Replace eval() with ast.literal_eval() for data parsing, "
+                                    "or json.loads() for JSON. Never evaluate untrusted strings.",
+                    r'\bexec\s*\(': "Replace exec() with a specific function call or dispatch table. "
+                                    "exec() allows arbitrary code execution from untrusted input.",
+                    r'\bpickle\.loads?\s*\(': "Replace pickle with json.loads()/json.dumps() for serialization. "
+                                              "Pickle can execute arbitrary code during deserialization.",
+                }
+                fix = next((v for k, v in fixes.items() if re.search(k, line)), "Use safe alternatives.")
+                findings.append(Finding("BLOCKING", fp, n, f"Security: {desc}", line.strip()[:100], fix))
     return findings
 
 

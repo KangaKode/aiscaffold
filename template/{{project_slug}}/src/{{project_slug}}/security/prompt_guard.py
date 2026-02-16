@@ -10,7 +10,7 @@ Three functions:
   sanitize_for_prompt()     -- Truncation, null byte removal, length enforcement
 
 Reference: OWASP LLM Top 10 (2025) - LLM01: Prompt Injection
-Reference: docs/AI_ENGINEERING_BEST_PRACTICES_2026.md (Part 7)
+Reference: docs/REFERENCES.md
 
 Keep this file under 150 lines.
 """

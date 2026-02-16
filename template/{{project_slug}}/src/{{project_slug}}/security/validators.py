@@ -5,7 +5,7 @@ Parse at the boundary: validate and type-check all external input
 before it enters the system. Never pass raw dicts or unvalidated
 strings through multiple layers.
 
-Reference: docs/AI_ENGINEERING_BEST_PRACTICES_2026.md (Part 7.2)
+Reference: docs/REFERENCES.md
 """
 
 import ipaddress

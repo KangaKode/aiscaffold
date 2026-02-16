@@ -16,7 +16,7 @@ Human-in-the-loop gates:
   - Cleanup requires clean state verification
   - Approval requests pause the turn until human responds
 
-Reference: docs/AI_ENGINEERING_BEST_PRACTICES_2026.md (Parts 1, 3)
+Reference: docs/REFERENCES.md
 
 Keep this file under 300 lines.
 """
@@ -171,6 +171,8 @@ class SessionProtocol:
         self.work_dir = work_dir
         self.is_first_run = is_first_run
         self._thread: Thread | None = None
+        self._task_list: Any = None
+        self._progress_mgr: Any = None
         self._user_context: str = ""
         self._pending_feedback: list = []
         logger.info(f"[Session] Protocol initialized (first_run={is_first_run})")
@@ -192,10 +194,40 @@ class SessionProtocol:
     async def startup(self) -> None:
         """EVERY RUN: Read task list, progress notes, get up to speed.
 
+        Three-layer external state (per 2026 best practices):
+          1. Task list (JSON) -- what remains to be done
+          2. Progress notes -- what was recently attempted
+          3. Git history -- what code changed
+
         Learning system integration: loads user profile and preferences
         into self._user_context if the learning module is available.
         """
         logger.info("[Session] Running startup ritual")
+
+        try:
+            from aiscaffold.task_tracker import TaskList
+
+            task_path = self.work_dir / "tasks.json"
+            if task_path.exists():
+                self._task_list = TaskList.load(task_path)
+                incomplete = [t for t in self._task_list.tasks if t.status.value in ("pending", "in_progress")]
+                logger.info(f"[Session] Loaded task list: {len(incomplete)} incomplete tasks")
+        except ImportError:
+            logger.debug("[Session] aiscaffold core not installed -- task tracking unavailable")
+        except Exception as e:
+            logger.debug(f"[Session] Task list load failed: {e}")
+
+        try:
+            from aiscaffold.progress_notes import ProgressNotesManager
+
+            self._progress_mgr = ProgressNotesManager(db_path=self.work_dir / "data" / "progress.db")
+            recent = self._progress_mgr.get_recent(limit=3)
+            if recent:
+                logger.info(f"[Session] Loaded {len(recent)} recent progress notes")
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"[Session] Progress notes load failed: {e}")
 
         try:
             from ..learning.user_profile import UserProfileManager
@@ -221,10 +253,37 @@ class SessionProtocol:
     async def cleanup(self) -> None:
         """EVERY RUN: Update progress, commit state, leave clean.
 
-        Learning system integration: flushes any pending feedback signals
-        and checks for graduation candidates.
+        Three-layer state update:
+          1. Save task list (if loaded)
+          2. Append progress note (if manager available)
+
+        Learning system integration: flushes any pending feedback signals.
         """
         logger.info("[Session] Running cleanup ritual")
+
+        if self._task_list is not None:
+            try:
+                task_path = self.work_dir / "tasks.json"
+                self._task_list.save(task_path)
+                logger.info("[Session] Saved task list")
+            except Exception as e:
+                logger.debug(f"[Session] Task list save failed: {e}")
+
+        if self._progress_mgr is not None:
+            try:
+                from aiscaffold.progress_notes import ProgressEntry
+
+                self._progress_mgr.append(ProgressEntry(
+                    session_id=self.thread.id,
+                    completed=[],
+                    attempted=[],
+                    remaining=[],
+                    issues=[],
+                    notes="Session cleanup -- update this with actual progress",
+                ))
+                logger.info("[Session] Appended progress note")
+            except Exception as e:
+                logger.debug(f"[Session] Progress note append failed: {e}")
 
         if self._pending_feedback:
             try:

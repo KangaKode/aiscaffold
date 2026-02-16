@@ -13,7 +13,7 @@ Key design principles from 2026 research:
 - Human-in-the-loop: consensus can require human approval before proceeding
 - Separate context windows: each agent gets its own LLM call (80% of performance)
 
-Reference: docs/AI_ENGINEERING_BEST_PRACTICES_2026.md (Part 4)
+Reference: docs/REFERENCES.md
 
 Keep this file under 400 lines.
 """
