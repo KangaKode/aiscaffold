@@ -1,0 +1,305 @@
+# Tutorial: Your First Agent in 30 Minutes
+
+> **Time:** ~30 minutes
+> **Prerequisites:** Python {{ python_version }}+, an LLM API key (Anthropic, OpenAI, or Google)
+> **Goal:** Go from scaffolded project to a working custom agent responding to queries
+
+---
+
+## Part 1: See It Work (5 min)
+
+Before configuring anything, watch the round table protocol in action with mock agents:
+
+```bash
+make demo
+```
+
+**What you'll see:** Three mock agents (analyst, reviewer, fact-checker) deliberate on a sample task through 4 phases:
+
+1. **Strategy** -- The orchestrator plans how to divide the work
+2. **Independent Analysis** -- Each agent analyzes the task separately (in parallel)
+3. **Challenge** -- Agents question each other's findings with counter-evidence
+4. **Synthesis + Voting** -- Results are combined, agents vote on the recommendation
+
+This runs entirely locally with no API keys and no network calls.
+
+> **Key takeaway:** Every agent must cite evidence for its findings. The system surfaces disagreements rather than hiding them.
+
+---
+
+## Part 2: Configure Your Project (5 min)
+
+### Set up your environment
+
+```bash
+# Copy the environment template
+cp .env.example .env
+```
+
+Open `.env` and add your LLM API key:
+
+{% if llm_provider == 'anthropic' -%}
+```
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+```
+{% elif llm_provider == 'openai' -%}
+```
+OPENAI_API_KEY=sk-your-key-here
+```
+{% elif llm_provider == 'google' -%}
+```
+GOOGLE_API_KEY=your-key-here
+```
+{% elif llm_provider == 'multi' -%}
+```
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+# OPENAI_API_KEY=sk-your-key-here  # Optional second provider
+```
+{% endif -%}
+
+### Verify your setup
+
+```bash
+make check    # Verifies Python version, dependencies, env vars
+make test     # Runs architecture tests (should all pass)
+```
+
+**Expected output:** All tests pass. If `make check` reports issues, follow the suggestions it prints.
+
+---
+
+## Part 3: Create Your First Agent (10 min)
+
+### Step 1: Copy the example agent
+
+```bash
+cp src/{{ project_slug }}/agents/example_agent.py src/{{ project_slug }}/agents/my_agent.py
+```
+
+### Step 2: Customize it
+
+Open `src/{{ project_slug }}/agents/my_agent.py` and change:
+
+```python
+from ..llm import CacheablePrompt
+from ..orchestration.round_table import (
+    AgentAnalysis,
+    AgentChallenge,
+    AgentVote,
+    RoundTableTask,
+    SynthesisResult,
+)
+
+
+class MyAgent:
+    """Your custom agent -- replace the domain and prompt with your expertise."""
+
+    def __init__(self, llm_client=None):
+        self._llm = llm_client
+
+    @property
+    def name(self) -> str:
+        return "my_agent"          # <-- Change this
+
+    @property
+    def domain(self) -> str:
+        return "your domain here"  # <-- Change this (e.g., "code review", "data analysis")
+
+    def _system_prompt(self) -> str:
+        return (
+            f"You are a {self.domain} specialist.\n\n"
+            "For EACH finding, you MUST provide:\n"
+            "- finding: what you observed\n"
+            "- evidence: specific quote or data supporting it\n"
+            "- severity: critical / warning / info\n"
+            "- confidence: 0.0 to 1.0\n\n"
+            "Always return valid JSON."
+        )
+
+    async def analyze(self, task: RoundTableTask) -> AgentAnalysis:
+        """Your agent's core analysis logic."""
+        if not self._llm:
+            return AgentAnalysis(
+                agent_name=self.name,
+                domain=self.domain,
+                observations=[{
+                    "finding": "No LLM configured",
+                    "evidence": "LLM client is None",
+                    "severity": "info",
+                    "confidence": 0.0,
+                }],
+            )
+
+        prompt = CacheablePrompt(
+            system=self._system_prompt(),
+            user_message=(
+                f"Analyze the following:\n{task.content}\n\n"
+                'Return JSON: {"observations": [...], "recommendations": [...]}'
+            ),
+        )
+        response = await self._llm.call(prompt=prompt, role="specialist")
+
+        from ..llm.json_parser import extract_json
+        data = extract_json(response.content)
+        if data is None:
+            return AgentAnalysis(
+                agent_name=self.name,
+                domain=self.domain,
+                observations=[{"finding": response.content[:500],
+                               "evidence": "raw response", "severity": "info",
+                               "confidence": 0.5}],
+            )
+
+        return AgentAnalysis(
+            agent_name=self.name,
+            domain=self.domain,
+            observations=data.get("observations", []),
+            recommendations=data.get("recommendations", []),
+            raw_response=response.content,
+        )
+
+    async def challenge(self, task, other_analyses):
+        return AgentChallenge(agent_name=self.name)
+
+    async def vote(self, task, synthesis):
+        return AgentVote(agent_name=self.name, approve=True)
+```
+
+### Step 3: Verify it works
+
+```bash
+make test     # Architecture tests should still pass
+```
+
+---
+
+{% if include_api_gateway -%}
+## Part 4: See Your Agent in Action (5 min)
+
+### Start the API server
+
+```bash
+make serve    # Starts at http://localhost:8000
+```
+
+Open http://localhost:8000/docs to see the interactive API documentation.
+
+### Send a chat message
+
+```bash
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What are the key considerations for building a REST API?"}'
+```
+
+The chat orchestrator will select the most relevant agents, consult them, cross-check their responses, and return a synthesized answer.
+
+### Submit a round table task
+
+```bash
+curl -X POST http://localhost:8000/api/v1/round-table/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Review the pros and cons of microservices vs monolith architecture"}'
+```
+
+This runs the full 4-phase protocol. The response includes each agent's analysis, challenges, the synthesis, and voting results.
+
+{% else -%}
+## Part 4: See Your Agent in Action (5 min)
+
+Use the round table directly in Python:
+
+```python
+import asyncio
+from src.{{ project_slug }}.orchestration import RoundTable, RoundTableConfig, RoundTableTask
+from src.{{ project_slug }}.llm import create_client
+from src.{{ project_slug }}.agents.my_agent import MyAgent
+
+async def main():
+    llm = create_client()
+    agents = [MyAgent(llm)]
+    rt = RoundTable(agents=agents, config=RoundTableConfig(), llm_client=llm)
+    task = RoundTableTask(id="test", content="Analyze this sample input")
+    result = await rt.run(task)
+    print(f"Consensus: {result.consensus_reached}")
+    for a in result.analyses:
+        print(f"  {a.agent_name}: {len(a.observations)} findings")
+
+asyncio.run(main())
+```
+{% endif -%}
+
+---
+
+## Part 5: Next Steps (5 min)
+
+Now that you have a working agent, here's where to go next:
+
+### Add challenge and voting logic
+
+The `challenge()` and `vote()` methods in your agent currently do nothing. Implement them to make your agent participate fully in round table deliberations. See `example_agent.py` for the interface.
+
+{% if include_api_gateway -%}
+### Connect an external agent (any language)
+
+Register an agent running as a separate service:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/agents \
+  -H "Content-Type: application/json" \
+  -d '{"name": "external_agent", "domain": "testing", "base_url": "http://localhost:3001"}'
+```
+
+The external service implements 3 endpoints: `POST /analyze`, `POST /challenge`, `POST /vote`.
+
+{% endif -%}
+{% if include_learning -%}
+### Enable the learning system
+
+Record feedback to teach the system your preferences:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/feedback \
+  -H "Content-Type: application/json" \
+  -d '{"signal_type": "accept", "agent_id": "my_agent", "context_type": "chat"}'
+```
+
+Over time, the system adjusts agent trust scores and routes queries to agents you trust most.
+
+{% endif -%}
+{% if include_deployment -%}
+### Deploy with Docker
+
+```bash
+make docker-build   # Build the image
+make docker-run     # Start with docker-compose
+```
+
+For Kubernetes: `make k8s-deploy`. See `deploy/k8s/` for manifests.
+
+{% endif -%}
+### Explore all commands
+
+```bash
+make help    # See every available command
+```
+
+---
+
+## Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `make test` fails on architecture | Import from wrong layer | Check `docs/ARCHITECTURE.md` for layering rules |
+| `401 Unauthorized` on API calls | Missing API_KEY in .env | Add `API_KEY=your-secret` to `.env` |
+| `LLM client not initialized` | Missing LLM provider key | Add your provider key to `.env` |
+| Agent not appearing in responses | Not registered with registry | Import and register in your startup code |
+| `ModuleNotFoundError` | Virtual environment not active | Run `source venv/bin/activate` |
+
+---
+
+## Reference
+
+- [Architecture](ARCHITECTURE.md) -- Layering rules, module descriptions, design decisions
+- [Testing Standards](TESTING_STANDARDS.md) -- How to write and run tests
+- [References](REFERENCES.md) -- Industry research behind the architecture

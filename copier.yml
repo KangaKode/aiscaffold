@@ -142,5 +142,6 @@ _tasks:
   - "echo '  cp .env.example .env  # Add your API keys'"
   - "echo '  pre-commit install'"
   - "echo '  make test'"
+  - "echo '  make demo          # See the round table in action (no API keys needed)'"
   - "{% if include_api_gateway %}echo '  make serve         # Start API gateway (http://localhost:8000/docs)'{% else %}echo ''{% endif %}"
   - "{% if include_deployment %}echo '  make docker-run    # Run with Docker'{% else %}echo ''{% endif %}"

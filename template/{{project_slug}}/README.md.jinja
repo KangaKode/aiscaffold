@@ -12,6 +12,9 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
+# See it in action (no API keys needed)
+make demo
+
 # Copy environment variables
 cp .env.example .env
 # Edit .env with your API keys
@@ -22,6 +25,8 @@ pre-commit install
 # Run tests
 make test
 ```
+
+> For a step-by-step walkthrough, see [docs/TUTORIAL.md](docs/TUTORIAL.md).
 
 {% if include_api_gateway -%}
 ## Start the API

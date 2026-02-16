@@ -7,35 +7,47 @@ Session management API -- create, inspect, and manage threads.
 
 Security:
   - Turn content validated for size limits
+  - Bounded LRU session cache (prevents memory exhaustion)
+  - UUID-based session IDs (not predictable/enumerable)
+  - Rate limiting on session creation
 """
 
 import logging
-from datetime import datetime
+import uuid
+from collections import OrderedDict
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...harness.session import Item, Thread, Turn
 from ...security import ValidationError, validate_length
 from ..middleware.auth import verify_api_key
+from ..middleware.rate_limit import check_rate_limit
 from ..models.requests import AddTurnRequest, CreateSessionRequest
 from ..models.responses import SessionResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_sessions: dict[str, Thread] = {}
+MAX_SESSIONS = 500
+
+_sessions: OrderedDict[str, Thread] = OrderedDict()
 
 
 @router.post("/sessions", response_model=SessionResponse)
 async def create_session(
     request: CreateSessionRequest | None = None,
     _key: str | None = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
 ) -> SessionResponse:
     """Create a new session thread."""
-    session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+    session_id = f"session_{uuid.uuid4().hex[:16]}"
     metadata = request.metadata if request else {}
     thread = Thread(id=session_id, metadata=metadata)
     _sessions[session_id] = thread
+
+    while len(_sessions) > MAX_SESSIONS:
+        _sessions.popitem(last=False)
+
     logger.info(f"[SessionsAPI] Created session: {session_id}")
     return SessionResponse(
         session_id=session_id,
@@ -52,6 +64,7 @@ async def get_session(session_id: str) -> SessionResponse:
     thread = _sessions.get(session_id)
     if thread is None:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    _sessions.move_to_end(session_id)
     return SessionResponse(
         session_id=thread.id,
         status=thread.status,
@@ -76,6 +89,8 @@ async def add_turn(
     thread = _sessions.get(session_id)
     if thread is None:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    _sessions.move_to_end(session_id)
 
     turn_id = f"turn_{len(thread.turns) + 1}"
     turn = Turn(id=turn_id)

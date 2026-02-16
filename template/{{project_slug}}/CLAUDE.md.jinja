@@ -56,6 +56,8 @@ Violation of these rules will be caught by `tests/test_architecture.py`.
 
 ## Core Systems
 
+> **Quick start:** Run `make demo` to see the round table protocol in action with mock agents (no API keys needed). For a guided walkthrough, see [docs/TUTORIAL.md](docs/TUTORIAL.md).
+
 ### LLM Client (Importance: 95/100)
 Provider-agnostic wrapper with automatic prompt caching. Use `CacheablePrompt` to separate stable prefix from dynamic content for token savings.
 **Key files:** `llm/client.py`
@@ -121,6 +123,7 @@ Item/Turn/Thread model with Initializer/Worker pattern. Startup ritual loads sta
 
 | Category | Location | Description |
 |----------|----------|-------------|
+| Tutorial | `docs/TUTORIAL.md` | Your First Agent in 30 Minutes (start here) |
 | Architecture | `docs/ARCHITECTURE.md` | Layering rules, dependency directions, core systems |
 | Testing | `docs/TESTING_STANDARDS.md` | Testing conventions |
 | Quality | `docs/QUALITY_SCORE.md` | Per-domain quality grades |

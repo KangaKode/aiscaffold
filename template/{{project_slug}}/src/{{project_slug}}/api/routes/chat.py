@@ -261,9 +261,10 @@ async def clear_history(
     _key: str | None = Depends(verify_api_key),
 ) -> dict:
     """Clear conversation history for a session."""
-    if session_id in _orchestrators:
-        _orchestrators[session_id].clear_history()
-        logger.info(f"[ChatAPI] Cleared history for session {session_id}")
+    key = _session_key(session_id, _key)
+    if key in _orchestrators:
+        _orchestrators[key].clear_history()
+        logger.info(f"[ChatAPI] Cleared history for session {key}")
     return {"status": "cleared", "session_id": session_id}
 
 
@@ -280,7 +281,8 @@ async def escalate_to_round_table(
     Returns a redirect to the round table task endpoint with the
     conversation context pre-filled.
     """
-    orchestrator = _orchestrators.get(escalate_request.session_id)
+    key = _session_key(escalate_request.session_id, _key)
+    orchestrator = _orchestrators.get(key)
     if orchestrator is None:
         raise HTTPException(
             status_code=404,
