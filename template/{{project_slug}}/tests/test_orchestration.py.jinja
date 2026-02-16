@@ -1,6 +1,8 @@
 """Unit tests for orchestration -- round table, chat orchestrator, agent router."""
 
 import pytest
+from unittest.mock import AsyncMock
+
 from src.{{project_slug}}.orchestration.round_table import RoundTable, RoundTableConfig, RoundTableTask
 from src.{{project_slug}}.orchestration.chat_orchestrator import ChatOrchestrator, ChatConfig
 from src.{{project_slug}}.orchestration.agent_router import AgentRouter
@@ -144,3 +146,71 @@ class TestSessionKey:
         from src.{{project_slug}}.api.routes.chat import _session_key
         key = _session_key("my_session", None)
         assert key == "anon:my_session"
+
+
+# =============================================================================
+# ROUND TABLE SYNTHESIS ERROR HANDLING
+# =============================================================================
+
+
+class TestRoundTableSynthesis:
+    @pytest.mark.asyncio
+    async def test_synthesis_no_llm(self, mock_agents):
+        """Synthesis gracefully handles no LLM client."""
+        from src.{{project_slug}}.orchestration.round_table import SynthesisResult
+
+        rt = RoundTable(agents=mock_agents, config=RoundTableConfig(
+            enable_strategy_phase=False, enable_challenge_phase=False,
+        ))
+        task = RoundTableTask(id="test_no_llm", content="test")
+        result = await rt.run(task)
+        assert result.synthesis is not None
+        assert "No LLM" in result.synthesis.recommended_direction
+
+    @pytest.mark.asyncio
+    async def test_synthesis_malformed_json(self, mock_agents, mock_llm):
+        """Synthesis handles LLM returning non-JSON content."""
+        from src.{{project_slug}}.llm.client import LLMResponse, TokenUsage
+
+        mock_llm.call = AsyncMock(return_value=LLMResponse(
+            content="This is not JSON at all, just plain text analysis.",
+            usage=TokenUsage(input_tokens=10, output_tokens=20),
+            model="test", provider="test",
+        ))
+        rt = RoundTable(agents=mock_agents, config=RoundTableConfig(
+            enable_strategy_phase=False, enable_challenge_phase=False,
+        ), llm_client=mock_llm)
+        task = RoundTableTask(id="test_bad_json", content="test")
+        result = await rt.run(task)
+        assert result.synthesis is not None
+        assert len(result.synthesis.recommended_direction) > 0
+
+    @pytest.mark.asyncio
+    async def test_synthesis_wrong_keys(self, mock_agents, mock_llm):
+        """Synthesis handles JSON with unexpected structure."""
+        import json
+        from src.{{project_slug}}.llm.client import LLMResponse, TokenUsage
+
+        mock_llm.call = AsyncMock(return_value=LLMResponse(
+            content=json.dumps({"unexpected_key": "value", "another": [1, 2]}),
+            usage=TokenUsage(input_tokens=10, output_tokens=20),
+            model="test", provider="test",
+        ))
+        rt = RoundTable(agents=mock_agents, config=RoundTableConfig(
+            enable_strategy_phase=False, enable_challenge_phase=False,
+        ), llm_client=mock_llm)
+        task = RoundTableTask(id="test_wrong_keys", content="test")
+        result = await rt.run(task)
+        assert result.synthesis is not None
+
+    @pytest.mark.asyncio
+    async def test_synthesis_llm_failure(self, mock_agents, mock_llm):
+        """Synthesis handles LLM call raising an exception."""
+        mock_llm.call = AsyncMock(side_effect=RuntimeError("LLM crashed"))
+        rt = RoundTable(agents=mock_agents, config=RoundTableConfig(
+            enable_strategy_phase=False, enable_challenge_phase=False,
+        ), llm_client=mock_llm)
+        task = RoundTableTask(id="test_llm_fail", content="test")
+        result = await rt.run(task)
+        assert result.synthesis is not None
+        assert "failed" in result.synthesis.recommended_direction.lower()

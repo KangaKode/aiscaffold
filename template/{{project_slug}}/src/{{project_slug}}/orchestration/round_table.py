@@ -338,12 +338,20 @@ class RoundTable:
         if not self.llm:
             return SynthesisResult(recommended_direction="No LLM available for synthesis")
 
-        analyses_json = json.dumps(
-            [{"agent": a.agent_name, "domain": a.domain,
-              "observations": a.observations, "recommendations": a.recommendations,
-              "confidence": a.confidence} for a in partial.analyses],
-            indent=2,
-        )
+        try:
+            analyses_json = json.dumps(
+                [{"agent": a.agent_name, "domain": a.domain,
+                  "observations": a.observations, "recommendations": a.recommendations,
+                  "confidence": a.confidence} for a in partial.analyses],
+                indent=2, default=str,
+            )
+        except Exception as e:
+            logger.warning(f"[RoundTable] Analysis serialization failed: {e}")
+            analyses_json = json.dumps(
+                [{"agent": a.agent_name, "domain": a.domain}
+                 for a in partial.analyses], indent=2,
+            )
+
         prompt = CacheablePrompt(
             system=self._build_system_prompt(),
             context=(
@@ -360,11 +368,26 @@ class RoundTable:
             from ..llm.json_parser import extract_json
 
             response = await self.llm.call(prompt=prompt, role="synthesis", temperature=0.2)
+
+            if not response or not response.content:
+                logger.warning("[RoundTable] Synthesis returned empty response")
+                return SynthesisResult(recommended_direction="Synthesis returned empty response")
+
             data = extract_json(response.content)
             if data is None:
                 logger.warning("[RoundTable] Synthesis returned unparseable JSON")
                 return SynthesisResult(recommended_direction=response.content[:500])
-            return SynthesisResult(**data)
+
+            if not isinstance(data, dict):
+                logger.warning("[RoundTable] Synthesis returned non-dict JSON")
+                return SynthesisResult(recommended_direction=str(data)[:500])
+
+            return SynthesisResult(
+                recommended_direction=data.get("recommended_direction", ""),
+                key_findings=data.get("key_findings", []),
+                trade_offs=data.get("trade_offs", []),
+                minority_views=data.get("minority_views", []),
+            )
         except Exception as e:
             logger.warning(f"[RoundTable] Synthesis failed: {e}")
             return SynthesisResult(recommended_direction="Synthesis failed -- review individual analyses")

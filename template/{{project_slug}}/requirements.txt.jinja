@@ -50,8 +50,10 @@ pydantic>=2.0
 
 {% if include_learning -%}
 # Learning System (RAG / Vector Search)
-# chromadb>=0.5  # Uncomment for persistent vector search (optional)
-# sentence-transformers>=3.0  # Uncomment for local embeddings (optional)
+# Optional but recommended for production: persistent vector search + semantic embeddings.
+# Without these, the system uses an in-memory fallback (functional but non-persistent).
+chromadb>=0.5
+sentence-transformers>=3.0
 {% endif -%}
 
 {% if persistence == 'postgres' -%}

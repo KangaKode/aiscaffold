@@ -210,6 +210,23 @@ class TestCheckinsAPI:
         assert "checkins" in r.json()
 
 
+# =============================================================================
+# ROUND TABLE TRANSCRIPT SEARCH
+# =============================================================================
+
+
+class TestRoundTableSearch:
+    @pytest.mark.asyncio
+    async def test_search_endpoint(self, client):
+        r = await client.get("/api/v1/round-table/search", params={"q": "test query"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "query" in data
+        assert "results" in data
+        assert "total" in data
+        assert data["query"] == "test query"
+
+
 {% else -%}
 # API tests skipped: include_api_gateway is false
 {% endif -%}

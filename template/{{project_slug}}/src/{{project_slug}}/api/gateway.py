@@ -122,6 +122,14 @@ def create_app(
     except Exception as e:
         logger.warning(f"[Gateway] Learning system init failed (non-fatal): {e}")
 
+    try:
+        from ..learning.rag.transcript_indexer import TranscriptIndexer
+
+        application.state.transcript_indexer = TranscriptIndexer()
+        logger.info("[Gateway] Transcript indexer initialized")
+    except Exception as e:
+        logger.warning(f"[Gateway] Transcript indexer init failed (non-fatal): {e}")
+
     application.state.registry = registry
     application.state.round_table_config = round_table_config
     application.state.llm_client = llm_client

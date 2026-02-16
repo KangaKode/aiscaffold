@@ -397,3 +397,111 @@ class TestPreferenceRetriever:
 
     def test_indexed_count_empty(self, retriever):
         assert retriever.indexed_count == 0
+
+
+# =============================================================================
+# TRANSCRIPT INDEXER (round table transcript search)
+# =============================================================================
+
+from src.{{ project_slug }}.learning.rag.transcript_indexer import TranscriptIndexer
+
+
+class MockAnalysis:
+    """Minimal mock for AgentAnalysis."""
+    def __init__(self, agent_name, domain, observations=None):
+        self.agent_name = agent_name
+        self.domain = domain
+        self.observations = observations or []
+        self.recommendations = []
+        self.confidence = 0.8
+
+
+class MockSynthesis:
+    """Minimal mock for SynthesisResult."""
+    def __init__(self, recommended_direction=""):
+        self.recommended_direction = recommended_direction
+        self.key_findings = []
+        self.trade_offs = []
+        self.minority_views = []
+
+
+class MockRoundTableResult:
+    """Minimal mock for RoundTableResult."""
+    def __init__(self, task_id, analyses=None, synthesis=None,
+                 consensus_reached=False, duration_seconds=1.0):
+        self.task_id = task_id
+        self.analyses = analyses or []
+        self.synthesis = synthesis
+        self.votes = []
+        self.consensus_reached = consensus_reached
+        self.approval_rate = 1.0 if consensus_reached else 0.0
+        self.duration_seconds = duration_seconds
+
+
+class TestTranscriptIndexer:
+    @pytest.fixture
+    def indexer(self):
+        store = VectorStore(project_id="test_transcripts")
+        svc = EmbeddingService()
+        return TranscriptIndexer(vector_store=store, embedding_service=svc)
+
+    def test_index_result(self, indexer):
+        result = MockRoundTableResult(
+            task_id="task_001",
+            analyses=[
+                MockAnalysis("analyst", "code review", [
+                    {"finding": "Found a bug", "evidence": "line 42"},
+                ]),
+            ],
+            synthesis=MockSynthesis("Fix the bug on line 42"),
+            consensus_reached=True,
+        )
+        indexer.index_result(result, task_content="Review the authentication code")
+        assert indexer.indexed_count == 1
+
+    def test_search_by_content(self, indexer):
+        for i, (task, content) in enumerate([
+            ("task_auth", "Review authentication security"),
+            ("task_perf", "Analyze database performance bottlenecks"),
+            ("task_api", "Design REST API endpoints"),
+        ]):
+            indexer.index_result(
+                MockRoundTableResult(
+                    task_id=task,
+                    analyses=[MockAnalysis("analyst", "general", [
+                        {"finding": content, "evidence": "test"},
+                    ])],
+                ),
+                task_content=content,
+            )
+        results = indexer.search("authentication security")
+        assert len(results.results) >= 1
+        task_ids = [r.metadata.get("task_id", "") for r in results.results]
+        assert "task_auth" in task_ids
+
+    def test_get_by_task_id(self, indexer):
+        indexer.index_result(
+            MockRoundTableResult(task_id="lookup_001"),
+            task_content="Lookup test task",
+        )
+        result = indexer.get_by_task_id("lookup_001")
+        assert result is not None
+        assert result.metadata["task_id"] == "lookup_001"
+
+    def test_search_consensus_only(self, indexer):
+        indexer.index_result(
+            MockRoundTableResult(task_id="consensus_yes", consensus_reached=True),
+            task_content="Agreed on approach",
+        )
+        indexer.index_result(
+            MockRoundTableResult(task_id="consensus_no", consensus_reached=False),
+            task_content="Disagreement on approach",
+        )
+        results = indexer.search("approach", consensus_only=True)
+        for r in results.results:
+            assert r.metadata.get("consensus_reached") == "True"
+
+    def test_index_empty_result(self, indexer):
+        result = MockRoundTableResult(task_id="empty_001")
+        indexer.index_result(result, task_content="")
+        assert indexer.indexed_count == 0

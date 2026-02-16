@@ -122,6 +122,13 @@ async def submit_task(
         rt = RoundTable(agents=agents, config=config, llm_client=llm)
         result = await rt.run(task)
 
+        try:
+            indexer = getattr(request.app.state, "transcript_indexer", None)
+            if indexer:
+                indexer.index_result(result, task_content=task_request.content)
+        except Exception as e:
+            logger.warning(f"[RoundTableAPI] Transcript indexing failed: {e}")
+
         metrics["tasks_completed"] += 1
         metrics["total_duration"] += result.duration_seconds
         metrics["total_agent_calls"] += len(agents) * 3
@@ -192,3 +199,38 @@ async def get_task_result(
             status_code=404, detail=f"Task '{task_id}' not found"
         )
     return _results_cache[task_id]
+
+
+@router.get("/round-table/search")
+async def search_transcripts(
+    q: str,
+    request: Request,
+    limit: int = 10,
+    consensus_only: bool = False,
+    _key: str | None = Depends(verify_api_key),
+) -> dict:
+    """Semantic search over past round table deliberations."""
+    indexer = getattr(request.app.state, "transcript_indexer", None)
+    if indexer is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Transcript search not available (indexer not initialized)",
+        )
+
+    results = indexer.search(query=q, limit=min(limit, 50), consensus_only=consensus_only)
+    return {
+        "query": q,
+        "results": [
+            {
+                "task_id": r.metadata.get("task_id", ""),
+                "content": r.content[:500],
+                "score": r.score,
+                "consensus_reached": r.metadata.get("consensus_reached", ""),
+                "approval_rate": r.metadata.get("approval_rate", ""),
+                "agent_names": r.metadata.get("agent_names", ""),
+                "timestamp": r.metadata.get("timestamp", ""),
+            }
+            for r in results.results
+        ],
+        "total": results.total,
+    }
