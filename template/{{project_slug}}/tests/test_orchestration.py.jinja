@@ -137,15 +137,19 @@ class TestChatOrchestrator:
 
 
 class TestSessionKey:
-    def test_session_key_binds_to_user(self):
+    def test_session_key_binds_to_tenant_and_user(self):
         from src.{{project_slug}}.api.routes.chat import _session_key
-        key = _session_key("my_session", "apikey12345")
-        assert key == "apikey12:my_session"
+        from src.{{project_slug}}.api.middleware.auth import AuthContext
+        auth = AuthContext(user_id="user_abc", tenant_id="acme")
+        key = _session_key("my_session", auth)
+        assert key == "acme:user_abc:my_session"
 
-    def test_session_key_anon_without_key(self):
+    def test_session_key_default_tenant(self):
         from src.{{project_slug}}.api.routes.chat import _session_key
-        key = _session_key("my_session", None)
-        assert key == "anon:my_session"
+        from src.{{project_slug}}.api.middleware.auth import AuthContext
+        auth = AuthContext()
+        key = _session_key("my_session", auth)
+        assert key == "default:anon:my_session"
 
 
 # =============================================================================

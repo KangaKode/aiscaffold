@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ...harness.session import Item, Thread, Turn
 from ...security import ValidationError, validate_length
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import AuthContext, verify_api_key
 from ..middleware.rate_limit import check_rate_limit
 from ..models.requests import AddTurnRequest, CreateSessionRequest
 from ..models.responses import SessionResponse
@@ -36,7 +36,7 @@ _sessions: OrderedDict[str, Thread] = OrderedDict()
 @router.post("/sessions", response_model=SessionResponse)
 async def create_session(
     request: CreateSessionRequest | None = None,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ) -> SessionResponse:
     """Create a new session thread."""
@@ -61,7 +61,7 @@ async def create_session(
 @router.get("/sessions/{session_id}", response_model=SessionResponse)
 async def get_session(
     session_id: str,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> SessionResponse:
     """Get the current state of a session."""
     thread = _sessions.get(session_id)
@@ -81,7 +81,7 @@ async def get_session(
 async def add_turn(
     session_id: str,
     request: AddTurnRequest,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> SessionResponse:
     """Add a turn (user input) to an existing session."""
     try:
@@ -117,7 +117,7 @@ async def add_turn(
 
 @router.get("/sessions")
 async def list_sessions(
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """List all active sessions."""
     return {

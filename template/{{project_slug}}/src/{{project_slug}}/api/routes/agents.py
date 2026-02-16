@@ -24,7 +24,7 @@ from ...security import (
     validate_list_size,
     validate_url,
 )
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import AuthContext, verify_api_key
 from ..middleware.rate_limit import check_rate_limit
 from ..models.requests import AgentRegistration
 from ..models.responses import AgentInfo, AgentListResponse
@@ -39,7 +39,7 @@ MAX_CAPABILITIES = 50
 async def register_agent(
     registration: AgentRegistration,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ) -> AgentInfo:
     """Register a remote agent. It must implement /analyze, /challenge, /vote."""
@@ -83,7 +83,7 @@ async def register_agent(
 @router.get("/agents", response_model=AgentListResponse)
 async def list_agents(
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> AgentListResponse:
     """List all registered agents with their status."""
     registry = request.app.state.registry
@@ -97,7 +97,7 @@ async def list_agents(
 async def get_agent(
     agent_id: str,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> AgentInfo:
     """Get detailed info about a specific agent."""
     registry = request.app.state.registry
@@ -111,7 +111,7 @@ async def get_agent(
 async def unregister_agent(
     agent_id: str,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Remove an agent from the registry."""
     registry = request.app.state.registry

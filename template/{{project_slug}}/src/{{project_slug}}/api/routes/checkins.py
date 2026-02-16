@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from ...learning.checkin_manager import CheckInManager
 from ...security import ValidationError, validate_length
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import AuthContext, verify_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -77,7 +77,7 @@ async def respond_to_checkin(
     checkin_id: str,
     respond_req: RespondRequest,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Respond to a pending check-in (approve or reject)."""
     try:
@@ -110,7 +110,7 @@ async def respond_to_checkin(
 async def skip_checkin(
     checkin_id: str,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Skip a check-in (decide later)."""
     mgr = _get_checkin_mgr(request)

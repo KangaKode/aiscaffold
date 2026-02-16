@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from ...learning.feedback_tracker import FeedbackTracker
 from ...learning.models import FeedbackSignal
 from ...security import ValidationError, validate_length
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import AuthContext, verify_api_key
 from ..middleware.rate_limit import check_rate_limit
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ def _get_tracker(request: Request) -> FeedbackTracker:
 async def record_feedback(
     fb: FeedbackRequest,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ) -> FeedbackResponse:
     """Record a user feedback signal."""
@@ -115,7 +115,7 @@ async def query_feedback(
     context_type: str | None = None,
     since: str | None = None,
     limit: int = 50,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Query feedback signals with optional filters."""
     tracker = _get_tracker(request)
@@ -147,7 +147,7 @@ async def feedback_counts(
     request: Request,
     agent_id: str | None = None,
     since: str | None = None,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Get signal counts grouped by type."""
     tracker = _get_tracker(request)
@@ -159,7 +159,7 @@ async def feedback_counts(
 async def acceptance_rates(
     request: Request,
     since: str | None = None,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Get acceptance rates per agent."""
     tracker = _get_tracker(request)

@@ -43,18 +43,27 @@ class AgentLike(Protocol):
 
 
 class AgentEntry:
-    """Internal registry entry wrapping an agent with metadata."""
+    """Internal registry entry wrapping an agent with metadata.
+
+    Multi-tenancy fields:
+        visibility: "public" (all tenants), "team" (same tenant), "private" (registering user)
+        tenant_id: The tenant that registered this agent. Defaults to "default".
+    """
 
     def __init__(
         self,
         agent: Any,
         agent_type: str = "local",
         capabilities: list[str] | None = None,
+        visibility: str = "public",
+        tenant_id: str = "default",
     ):
         self.agent = agent
         self.agent_type = agent_type
         self.capabilities = capabilities or []
         self.healthy = True
+        self.visibility = visibility
+        self.tenant_id = tenant_id
 
     def to_dict(self) -> dict:
         """Serialize for API responses."""
@@ -64,6 +73,8 @@ class AgentEntry:
             "agent_type": self.agent_type,
             "capabilities": self.capabilities,
             "healthy": self.healthy,
+            "visibility": self.visibility,
+            "tenant_id": self.tenant_id,
         }
         if self.agent_type == "remote" and hasattr(self.agent, "_base_url"):
             base["base_url"] = self.agent._base_url
@@ -231,6 +242,19 @@ class AgentRegistry:
     def list_info(self) -> list[dict]:
         """Get serializable info for all agents (for API responses)."""
         return [entry.to_dict() for entry in self._agents.values()]
+
+    def list_for_tenant(self, tenant_id: str = "default") -> list[AgentEntry]:
+        """Get agents visible to a specific tenant.
+
+        Visibility rules:
+          - "public": visible to all tenants
+          - "team": visible only to the registering tenant
+          - "private": visible only to the registering user (not filtered here)
+        """
+        return [
+            entry for entry in self._agents.values()
+            if entry.visibility == "public" or entry.tenant_id == tenant_id
+        ]
 
     @property
     def count(self) -> int:

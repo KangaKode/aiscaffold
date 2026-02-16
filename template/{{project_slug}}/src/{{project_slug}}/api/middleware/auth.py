@@ -12,11 +12,17 @@ Security:
       if it's missing. Set AUTH_DISABLED=true to explicitly opt out.
     - In development (default), auth is optional for convenience.
     - API key comparison uses constant-time hmac.compare_digest (no timing attack).
+
+Multi-tenancy:
+    verify_api_key returns an AuthContext (not a raw string). Routes receive
+    tenant_id, user_id, and the API key in a structured object. Single-tenant
+    deployments use the defaults ("default" tenant, "anon" user) transparently.
 """
 
 import hmac
 import logging
 import os
+from dataclasses import dataclass
 
 from fastapi import HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -24,6 +30,24 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 logger = logging.getLogger(__name__)
 
 security_scheme = HTTPBearer(auto_error=False)
+
+
+@dataclass
+class AuthContext:
+    """Authentication context propagated to all routes.
+
+    Extensible for multi-tenancy: add roles, permissions, org_id as needed.
+    Single-tenant deployments use the defaults and ignore this structure.
+
+    Attributes:
+        api_key: The raw API key (None if auth is disabled).
+        user_id: Short identifier derived from the key (first 8 chars) or "anon".
+        tenant_id: Tenant/org identifier. Defaults to "default" for single-tenant.
+    """
+
+    api_key: str | None = None
+    user_id: str = "anon"
+    tenant_id: str = "default"
 
 
 def get_api_key() -> str | None:
@@ -75,17 +99,18 @@ def check_production_auth() -> None:
 async def verify_api_key(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(security_scheme),
-) -> str | None:
+) -> AuthContext:
     """
     Verify the API key from the Authorization header.
 
+    Returns an AuthContext with user_id and tenant_id for downstream use.
     Uses constant-time comparison to prevent timing attacks.
     If API_KEY is not set, auth is disabled (dev mode only).
     """
     expected_key = get_api_key()
 
     if expected_key is None:
-        return None
+        return AuthContext()
 
     if credentials is None:
         client_host = request.client.host if request.client else "unknown"
@@ -97,4 +122,9 @@ async def verify_api_key(
         logger.warning(f"[Auth] Invalid API key from {client_host}")
         raise HTTPException(status_code=403, detail="Invalid API key")
 
-    return credentials.credentials
+    key = credentials.credentials
+    return AuthContext(
+        api_key=key,
+        user_id=key[:8] if key else "anon",
+        tenant_id="default",
+    )

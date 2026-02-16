@@ -24,7 +24,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ...security import ValidationError, validate_dict_size
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import AuthContext, verify_api_key
 from ..models.requests import WebhookPayload
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ async def receive_webhook(
     agent_id: str,
     payload: WebhookPayload,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """
     Receive a result from an async external agent.

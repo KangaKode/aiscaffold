@@ -148,3 +148,40 @@ Security is wired into every module that handles external input, not bolted on a
 - **Adapter pattern for agents** -- `RemoteAgent` implements `AgentProtocol` over HTTP; round table/chat don't know the difference
 - **String categories over enums** -- Signal types, preference types, and check-in types are strings so projects define their own taxonomy without modifying scaffold code
 - **Security at boundaries** -- Every function that accepts external input sanitizes it; every SQL query is parameterized; every URL is validated
+- **Multi-tenancy ready** -- `AuthContext` propagates `tenant_id` to all routes; `project_id` in the data layer maps to tenant isolation; agent `visibility` controls cross-tenant access. Defaults to single-tenant (everything is `"default"`) when not configured
+
+---
+
+## Multi-Tenancy (Structural)
+
+The scaffold includes structural primitives for multi-tenancy. Single-tenant deployments use the defaults and ignore these fields entirely.
+
+### AuthContext
+
+`verify_api_key()` returns an `AuthContext` dataclass (not a raw string):
+
+```python
+@dataclass
+class AuthContext:
+    api_key: str | None = None
+    user_id: str = "anon"
+    tenant_id: str = "default"
+```
+
+All routes receive this context. To add multi-tenancy, extract `tenant_id` from a JWT, custom header, or API key lookup instead of hardcoding `"default"`.
+
+### Data Isolation
+
+The learning system (feedback, trust, preferences) uses `project_id` in every table. Map `auth.tenant_id` to `project_id` in route handlers to achieve tenant-scoped data.
+
+### Agent Visibility
+
+`AgentEntry` has `visibility` (`public`, `team`, `private`) and `tenant_id` fields. Use `registry.list_for_tenant(auth.tenant_id)` to filter agents by visibility rules:
+
+- `public`: visible to all tenants
+- `team`: visible only to the registering tenant
+- `private`: visible only to the registering user
+
+### Session Isolation
+
+Chat sessions are keyed by `{tenant_id}:{user_id}:{session_id}`, preventing cross-tenant session access

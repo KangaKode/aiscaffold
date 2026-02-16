@@ -28,7 +28,7 @@ from ...orchestration.chat_orchestrator import (
     ChatResponse,
 )
 from ...security import ValidationError, validate_length
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import AuthContext, verify_api_key
 from ..middleware.rate_limit import check_rate_limit
 
 logger = logging.getLogger(__name__)
@@ -81,17 +81,16 @@ class EscalateRequest(BaseModel):
 # =============================================================================
 
 
-def _session_key(session_id: str, api_key: str | None) -> str:
-    """Bind session to authenticated user to prevent cross-session access."""
-    user_id = api_key[:8] if api_key else "anon"
-    return f"{user_id}:{session_id}"
+def _session_key(session_id: str, auth: AuthContext) -> str:
+    """Bind session to authenticated user and tenant to prevent cross-session access."""
+    return f"{auth.tenant_id}:{auth.user_id}:{session_id}"
 
 
 def _get_or_create_orchestrator(
-    session_id: str, request: Request, api_key: str | None = None
+    session_id: str, request: Request, auth: AuthContext | None = None
 ) -> ChatOrchestrator:
     """Get an existing orchestrator or create one. Bounded LRU cache."""
-    key = _session_key(session_id, api_key)
+    key = _session_key(session_id, auth or AuthContext())
 
     if key in _orchestrators:
         _orchestrators.move_to_end(key)
@@ -122,7 +121,7 @@ def _get_or_create_orchestrator(
 async def send_message(
     chat_request: ChatMessageRequest,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ) -> ChatMessageResponse:
     """
@@ -139,7 +138,7 @@ async def send_message(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    orchestrator = _get_or_create_orchestrator(chat_request.session_id, request, _key)
+    orchestrator = _get_or_create_orchestrator(chat_request.session_id, request, auth)
 
     trust_scores = None
     trust_mgr = getattr(request.app.state, "trust_manager", None)
@@ -180,7 +179,7 @@ async def send_message(
 async def send_message_stream(
     chat_request: ChatMessageRequest,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ) -> StreamingResponse:
     """
@@ -201,7 +200,7 @@ async def send_message_stream(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    orchestrator = _get_or_create_orchestrator(chat_request.session_id, request, _key)
+    orchestrator = _get_or_create_orchestrator(chat_request.session_id, request, auth)
 
     trust_scores = None
     trust_mgr = getattr(request.app.state, "trust_manager", None)
@@ -258,10 +257,10 @@ async def send_message_stream(
 @router.post("/chat/clear")
 async def clear_history(
     session_id: str = "default",
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Clear conversation history for a session."""
-    key = _session_key(session_id, _key)
+    key = _session_key(session_id, auth)
     if key in _orchestrators:
         _orchestrators[key].clear_history()
         logger.info(f"[ChatAPI] Cleared history for session {key}")
@@ -272,7 +271,7 @@ async def clear_history(
 async def escalate_to_round_table(
     escalate_request: EscalateRequest,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ) -> dict:
     """
@@ -281,7 +280,7 @@ async def escalate_to_round_table(
     Returns a redirect to the round table task endpoint with the
     conversation context pre-filled.
     """
-    key = _session_key(escalate_request.session_id, _key)
+    key = _session_key(escalate_request.session_id, auth)
     orchestrator = _orchestrators.get(key)
     if orchestrator is None:
         raise HTTPException(

@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from ...learning.models import UserPreference
 from ...learning.user_profile import UserProfileManager
 from ...security import ValidationError, validate_length
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import AuthContext, verify_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -60,7 +60,7 @@ def _get_profile_mgr(request: Request) -> UserProfileManager:
 async def save_preference(
     pref_req: PreferenceRequest,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> PreferenceResponse:
     """Save a user preference."""
     try:
@@ -94,7 +94,7 @@ async def save_preference(
 @router.get("/preferences")
 async def list_preferences(
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """List all active preferences."""
     mgr = _get_profile_mgr(request)
@@ -122,7 +122,7 @@ async def search_preferences(
     request: Request,
     limit: int = 10,
     preference_type: str | None = None,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Semantic search over preferences."""
     try:
@@ -155,7 +155,7 @@ async def search_preferences(
 async def get_profile(
     request: Request,
     query: str = "",
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Get the synthesized user profile and context bundle."""
     mgr = _get_profile_mgr(request)

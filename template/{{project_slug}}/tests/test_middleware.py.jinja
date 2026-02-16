@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from src.{{ project_slug }}.api.middleware.auth import (
+    AuthContext,
     check_production_auth,
     get_api_key,
     verify_api_key,
@@ -77,11 +78,14 @@ class TestProductionAuth:
 
 class TestVerifyApiKey:
     @pytest.mark.asyncio
-    async def test_no_key_configured_returns_none(self, monkeypatch):
+    async def test_no_key_configured_returns_default_context(self, monkeypatch):
         monkeypatch.delenv("API_KEY", raising=False)
         request = MagicMock()
         result = await verify_api_key(request, credentials=None)
-        assert result is None
+        assert isinstance(result, AuthContext)
+        assert result.api_key is None
+        assert result.user_id == "anon"
+        assert result.tenant_id == "default"
 
     @pytest.mark.asyncio
     async def test_missing_credentials_raises_401(self, monkeypatch):
@@ -106,14 +110,17 @@ class TestVerifyApiKey:
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_correct_key_returns_key(self, monkeypatch):
+    async def test_correct_key_returns_auth_context(self, monkeypatch):
         from fastapi.security import HTTPAuthorizationCredentials
-        monkeypatch.setenv("API_KEY", "correct-key")
+        monkeypatch.setenv("API_KEY", "correct-key-12345")
         request = MagicMock()
         request.client = MagicMock(host="127.0.0.1")
-        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="correct-key")
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="correct-key-12345")
         result = await verify_api_key(request, credentials=creds)
-        assert result == "correct-key"
+        assert isinstance(result, AuthContext)
+        assert result.api_key == "correct-key-12345"
+        assert result.user_id == "correct-"
+        assert result.tenant_id == "default"
 
     @pytest.mark.asyncio
     async def test_none_client_does_not_crash(self, monkeypatch):

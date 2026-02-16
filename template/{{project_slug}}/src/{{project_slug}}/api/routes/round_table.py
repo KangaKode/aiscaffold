@@ -23,7 +23,7 @@ from ...orchestration.round_table import (
     RoundTableTask,
 )
 from ...security import ValidationError, validate_length
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import AuthContext, verify_api_key
 from ..middleware.rate_limit import check_rate_limit
 from ..models.requests import RoundTableTaskRequest
 from ..models.responses import (
@@ -54,7 +54,7 @@ def _cache_result(task_id: str, result: RoundTableResultResponse) -> None:
 async def submit_task(
     task_request: RoundTableTaskRequest,
     request: Request,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ) -> RoundTableResultResponse:
     """
@@ -191,7 +191,7 @@ async def submit_task(
 @router.get("/round-table/tasks/{task_id}", response_model=RoundTableResultResponse)
 async def get_task_result(
     task_id: str,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> RoundTableResultResponse:
     """Get a previously completed task result."""
     if task_id not in _results_cache:
@@ -207,7 +207,7 @@ async def search_transcripts(
     request: Request,
     limit: int = 10,
     consensus_only: bool = False,
-    _key: str | None = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Semantic search over past round table deliberations."""
     indexer = getattr(request.app.state, "transcript_indexer", None)
