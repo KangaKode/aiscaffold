@@ -14,7 +14,6 @@ No domain-specific fields -- just vanilla interaction metadata.
 Keep this file under 200 lines.
 """
 
-import json
 import logging
 import sqlite3
 from datetime import datetime

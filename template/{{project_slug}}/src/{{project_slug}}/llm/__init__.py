@@ -1,16 +1,4 @@
-"""
-LLM Client -- Provider-agnostic wrapper with automatic prompt caching.
+"""LLM Client -- Provider-agnostic wrapper with automatic prompt caching."""
+from .client import LLMClient, LLMResponse, CacheablePrompt, create_client  # noqa: F401
 
-Supports Anthropic (Claude), OpenAI (GPT), and Google (Gemini).
-Handles prompt caching, token tracking, retries, and security sanitization.
-
-Usage:
-    from .llm import create_client
-
-    client = create_client()  # Auto-detects provider from env
-    response = await client.call(prompt="Analyze this", role="analyst")
-    print(response.content)
-    print(f"Tokens: {response.usage}")
-"""
-
-from .client import LLMClient, LLMResponse, CacheablePrompt, create_client
+__all__ = ["LLMClient", "LLMResponse", "CacheablePrompt", "create_client"]

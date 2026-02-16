@@ -181,8 +181,8 @@ class EmbeddingService:
         return vector
 
     def _cache_key(self, text: str) -> str:
-        """Generate cache key from text content."""
-        return hashlib.md5(text.encode()).hexdigest()
+        """Generate cache key from text content (not used for security)."""
+        return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
 
     def _cache_put(self, key: str, vector: list[float]) -> None:
         """Store in LRU cache with eviction."""

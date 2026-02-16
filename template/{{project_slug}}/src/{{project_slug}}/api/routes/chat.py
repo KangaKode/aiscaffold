@@ -23,7 +23,6 @@ from pydantic import BaseModel, Field
 from ...llm import create_client
 from ...orchestration.agent_router import AgentRouter
 from ...orchestration.chat_orchestrator import (
-    ChatConfig,
     ChatOrchestrator,
     ChatResponse,
 )

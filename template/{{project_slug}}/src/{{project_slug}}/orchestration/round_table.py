@@ -274,8 +274,8 @@ class RoundTable:
                 f"2. What should each agent specifically focus on?\n"
                 f"3. What disagreements do you anticipate between agents?\n"
                 f"4. What are the success criteria?\n\n"
-                f'Return JSON: {{"task_decomposition": [...], "agent_focus_areas": {{...}}, '
-                f'"anticipated_tensions": [...], "success_criteria": [...]}}'
+                'Return JSON: {"task_decomposition": [...], "agent_focus_areas": {...}, '
+                '"anticipated_tensions": [...], "success_criteria": [...]}'
             ),
         )
         try:
@@ -341,10 +341,10 @@ class RoundTable:
                 f"Analyses from {len(partial.analyses)} agents:\n{analyses_json}"
             ),
             user_message=(
-                f"Synthesize these specialist analyses into a recommendation.\n\n"
-                f"Return JSON: {{\"recommended_direction\": \"...\", "
-                f"\"key_findings\": [{{\"agent_name\": ..., \"finding\": ..., \"evidence\": ...}}], "
-                f"\"trade_offs\": [...], \"minority_views\": [...]}}"
+                "Synthesize these specialist analyses into a recommendation.\n\n"
+                'Return JSON: {"recommended_direction": "...", '
+                '"key_findings": [{"agent_name": ..., "finding": ..., "evidence": ...}], '
+                '"trade_offs": [...], "minority_views": [...]}'
             ),
         )
         try:

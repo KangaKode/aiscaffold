@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ...learning.checkin_manager import CheckInManager
+from ...security import ValidationError, validate_length
 from ..middleware.auth import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,8 @@ router = APIRouter()
 
 
 class CheckInResponse(BaseModel):
+    """Check-in details returned to the client."""
+
     id: str
     checkin_type: str
     prompt: str
@@ -33,6 +36,8 @@ class CheckInResponse(BaseModel):
 
 
 class RespondRequest(BaseModel):
+    """Request to respond to a pending check-in."""
+
     approved: bool = Field(..., description="True to approve, False to reject")
     response: str = Field("", description="Optional user comment")
 
@@ -75,6 +80,13 @@ async def respond_to_checkin(
     _key: str | None = Depends(verify_api_key),
 ) -> dict:
     """Respond to a pending check-in (approve or reject)."""
+    try:
+        validate_length(checkin_id, "checkin_id", min_length=1, max_length=50)
+        if respond_req.response:
+            validate_length(respond_req.response, "response", max_length=5000)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     mgr = _get_checkin_mgr(request)
     result = mgr.respond(
         checkin_id=checkin_id,

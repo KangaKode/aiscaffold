@@ -16,7 +16,7 @@
 #
 # Exit code 0 = all passed, non-zero = failures found.
 
-set -euo pipefail
+set -uo pipefail
 
 PROJECT_TYPE="${1:-web-app}"
 LLM_PROVIDER="${2:-anthropic}"

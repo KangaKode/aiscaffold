@@ -30,6 +30,8 @@ MAX_CONTENT_LENGTH = 50_000
 
 
 class FeedbackRequest(BaseModel):
+    """Request to record a user feedback signal."""
+
     signal_type: str = Field(..., description="accept, reject, modify, rate, dismiss, escalate")
     context_type: str = Field("", description="E.g., chat, round_table, suggestion")
     agent_id: str = Field("", description="Which agent produced the output")
@@ -40,6 +42,8 @@ class FeedbackRequest(BaseModel):
 
 
 class FeedbackResponse(BaseModel):
+    """Response after recording a feedback signal."""
+
     id: str
     signal_type: str
     agent_id: str

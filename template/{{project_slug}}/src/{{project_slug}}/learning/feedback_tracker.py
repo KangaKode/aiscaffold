@@ -19,11 +19,10 @@ Keep this file under 250 lines.
 
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 
 from ..security.prompt_guard import sanitize_for_prompt
-from ..security.validators import validate_dict_size, validate_length
+from ..security.validators import validate_dict_size
 from .models import FeedbackSignal
 from .schema import DEFAULT_DB_PATH, dict_from_row, get_connection, initialize_schema
 

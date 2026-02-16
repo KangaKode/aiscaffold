@@ -1,28 +1,8 @@
 """
-Provider-agnostic LLM client with automatic prompt caching and token tracking.
+Provider-agnostic LLM client with prompt caching and token tracking.
 
-Features:
-  - Automatic prompt caching (Anthropic cache_control, OpenAI prefix caching)
-  - Token tracking per call (input, output, cached, total cost estimate)
-  - Retry with exponential backoff on transient failures
-  - Timeout enforcement
-  - Security: prompt sanitization, size limits, no secrets in logs
-
-Supports: Anthropic (Claude), OpenAI (GPT/o-series), Google (Gemini).
-
-The call() method is a drop-in for the interface used by RoundTable and agents:
-    response = await client.call(prompt="...", role="synthesis", temperature=0.3)
-    response.content  # str
-
-For prompt caching, use CacheablePrompt to separate stable prefix from dynamic content:
-    prompt = CacheablePrompt(
-        system="You are a code analyst...",        # Cached (rarely changes)
-        context="Agent capabilities: ...",          # Cached (changes per session)
-        user_message="Analyze this function: ...",  # Never cached (changes every call)
-    )
-    response = await client.call(prompt=prompt, role="analyst")
-
-Keep this file under 400 lines.
+Supports Anthropic (Claude), OpenAI (GPT), Google (Gemini).
+Uses CacheablePrompt(system, context, user_message) for automatic caching.
 """
 
 import asyncio
@@ -42,17 +22,12 @@ DEFAULT_MAX_PROMPT_LENGTH = 200_000
 RETRY_BASE_DELAY = 1.0
 RETRY_MAX_DELAY = 30.0
 
-ANTHROPIC_COST_PER_1K_INPUT = 0.003
-ANTHROPIC_COST_PER_1K_CACHED = 0.0003
-ANTHROPIC_COST_PER_1K_OUTPUT = 0.015
-OPENAI_COST_PER_1K_INPUT = 0.005
-OPENAI_COST_PER_1K_CACHED = 0.0025
-OPENAI_COST_PER_1K_OUTPUT = 0.015
-
-
-# =============================================================================
-# DATA MODELS
-# =============================================================================
+# Cost per 1K tokens (approximate, varies by model -- override via config)
+COST_RATES = {
+    "anthropic": {"input": 0.003, "cached": 0.0003, "output": 0.015},
+    "openai": {"input": 0.005, "cached": 0.0025, "output": 0.015},
+    "google": {"input": 0.0, "cached": 0.0, "output": 0.0},
+}
 
 
 @dataclass
@@ -350,10 +325,11 @@ class LLMClient:
         input_tok = getattr(usage_data, "input_tokens", 0)
         output_tok = getattr(usage_data, "output_tokens", 0)
 
+        rates = COST_RATES.get("anthropic", {})
         cost = (
-            (input_tok - cached) * ANTHROPIC_COST_PER_1K_INPUT / 1000
-            + cached * ANTHROPIC_COST_PER_1K_CACHED / 1000
-            + output_tok * ANTHROPIC_COST_PER_1K_OUTPUT / 1000
+            (input_tok - cached) * rates.get("input", 0) / 1000
+            + cached * rates.get("cached", 0) / 1000
+            + output_tok * rates.get("output", 0) / 1000
         )
 
         return LLMResponse(
@@ -394,10 +370,11 @@ class LLMClient:
         cached = getattr(usage_data, "prompt_tokens_details", None)
         cached_tok = getattr(cached, "cached_tokens", 0) if cached else 0
 
+        rates = COST_RATES.get("openai", {})
         cost = (
-            (input_tok - cached_tok) * OPENAI_COST_PER_1K_INPUT / 1000
-            + cached_tok * OPENAI_COST_PER_1K_CACHED / 1000
-            + output_tok * OPENAI_COST_PER_1K_OUTPUT / 1000
+            (input_tok - cached_tok) * rates.get("input", 0) / 1000
+            + cached_tok * rates.get("cached", 0) / 1000
+            + output_tok * rates.get("output", 0) / 1000
         )
 
         return LLMResponse(

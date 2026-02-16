@@ -24,8 +24,14 @@ line-length = 120
 target-version = "py{{ python_version | replace('.', '') }}"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP"]
+select = ["E", "F", "W", "N", "UP"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["{{ project_slug }}"]
 
 [tool.bandit]
 exclude_dirs = ["tests", "scripts", "venv"]

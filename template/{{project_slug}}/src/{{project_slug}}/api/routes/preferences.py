@@ -27,6 +27,8 @@ router = APIRouter()
 
 
 class PreferenceRequest(BaseModel):
+    """Request to save a user preference."""
+
     preference_type: str = Field(..., description="Category: style, behavior, output_format, etc.")
     key: str = Field(..., description="What the preference is about")
     value: str = Field(..., description="The preference value")
@@ -35,6 +37,8 @@ class PreferenceRequest(BaseModel):
 
 
 class PreferenceResponse(BaseModel):
+    """Response with saved preference details."""
+
     id: str
     preference_type: str
     key: str

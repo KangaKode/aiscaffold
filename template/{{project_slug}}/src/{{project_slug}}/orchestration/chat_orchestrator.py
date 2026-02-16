@@ -24,7 +24,7 @@ Keep this file under 400 lines.
 import asyncio
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 

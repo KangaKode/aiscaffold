@@ -12,10 +12,11 @@ Security:
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from ...harness.session import Item, Thread, Turn
 from ...security import ValidationError, validate_length
+from ..middleware.auth import verify_api_key
 from ..models.requests import AddTurnRequest, CreateSessionRequest
 from ..models.responses import SessionResponse
 
@@ -28,6 +29,7 @@ _sessions: dict[str, Thread] = {}
 @router.post("/sessions", response_model=SessionResponse)
 async def create_session(
     request: CreateSessionRequest | None = None,
+    _key: str | None = Depends(verify_api_key),
 ) -> SessionResponse:
     """Create a new session thread."""
     session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
@@ -60,7 +62,11 @@ async def get_session(session_id: str) -> SessionResponse:
 
 
 @router.post("/sessions/{session_id}/turns", response_model=SessionResponse)
-async def add_turn(session_id: str, request: AddTurnRequest) -> SessionResponse:
+async def add_turn(
+    session_id: str,
+    request: AddTurnRequest,
+    _key: str | None = Depends(verify_api_key),
+) -> SessionResponse:
     """Add a turn (user input) to an existing session."""
     try:
         validate_length(request.content, "content", min_length=1, max_length=500_000)

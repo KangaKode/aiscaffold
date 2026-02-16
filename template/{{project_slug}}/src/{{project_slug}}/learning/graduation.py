@@ -16,14 +16,12 @@ Keep this file under 200 lines.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from .checkin_manager import CheckInManager
 from .global_profile import GlobalProfileManager
-from .models import UserPreference
-from .schema import DEFAULT_DB_PATH, dict_from_row, get_connection
+from .schema import DEFAULT_DB_PATH, get_connection
 
 logger = logging.getLogger(__name__)
 
