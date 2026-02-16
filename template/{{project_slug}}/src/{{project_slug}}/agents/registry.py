@@ -20,6 +20,7 @@ Usage:
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -86,22 +87,30 @@ class AgentRegistry:
         self._load_remote_agents()
 
     def _load_remote_agents(self) -> None:
-        """Load persisted remote agent registrations from disk."""
+        """Load persisted remote agent registrations from disk.
+
+        API keys are loaded from environment variables (AGENT_{NAME}_API_KEY),
+        never from the JSON file. Only the env var name is persisted.
+        """
         if not self._persist_path.exists():
             return
         try:
             with open(self._persist_path) as f:
                 data = json.load(f)
             for entry in data.get("remote_agents", []):
+                name = entry["name"]
+                api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
+                api_key = os.environ.get(api_key_env, "")
+
                 agent = RemoteAgent(
-                    name=entry["name"],
+                    name=name,
                     domain=entry["domain"],
                     base_url=entry["base_url"],
-                    api_key=entry.get("api_key", ""),
+                    api_key=api_key,
                     timeout=entry.get("timeout", 120),
                     mode=entry.get("mode", "sync"),
                 )
-                self._agents[entry["name"]] = AgentEntry(
+                self._agents[name] = AgentEntry(
                     agent=agent,
                     agent_type="remote",
                     capabilities=entry.get("capabilities", []),

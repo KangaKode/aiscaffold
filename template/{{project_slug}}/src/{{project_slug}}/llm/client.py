@@ -120,6 +120,7 @@ class LLMClient:
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_prompt_length: int = DEFAULT_MAX_PROMPT_LENGTH,
+        max_cost_usd: float | None = None,
     ):
         self._provider = provider.lower()
         self._model = model or self._default_model()
@@ -127,6 +128,7 @@ class LLMClient:
         self._timeout = timeout
         self._max_retries = max_retries
         self._max_prompt_length = max_prompt_length
+        self._max_cost_usd = max_cost_usd
         self._client: Any = None
         self._total_usage = TokenUsage()
 
@@ -192,24 +194,22 @@ class LLMClient:
         temperature: float = 0.5,
         max_tokens: int = 4096,
     ) -> LLMResponse:
-        """
-        Make an LLM call with automatic prompt caching and retries.
-
-        Args:
-            prompt: String or CacheablePrompt (for caching). Strings are
-                    auto-wrapped as CacheablePrompt(user_message=prompt).
-            role: Semantic role hint (e.g., "synthesis", "specialist").
-                  Used for logging, not sent to the provider.
-            temperature: Sampling temperature (0.0 = deterministic).
-            max_tokens: Maximum output tokens.
-
-        Returns:
-            LLMResponse with .content and .usage
-        """
+        """Make an LLM call with prompt caching, retries, and budget enforcement."""
         if isinstance(prompt, str):
             prompt = CacheablePrompt(user_message=prompt)
 
         prompt = self._sanitize_prompt(prompt)
+
+        if self._max_cost_usd and self._total_usage.estimated_cost_usd >= self._max_cost_usd:
+            logger.error(
+                f"[LLM] Budget exhausted: ${self._total_usage.estimated_cost_usd:.4f} "
+                f">= ${self._max_cost_usd:.4f}. Call blocked."
+            )
+            return LLMResponse(
+                content=f"[Budget exhausted: ${self._max_cost_usd} limit reached]",
+                provider=self._provider,
+                model=self._model,
+            )
 
         if self._client is None:
             return LLMResponse(

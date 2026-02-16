@@ -241,12 +241,18 @@ class RemoteAgent:
             return False
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize agent info for registry persistence."""
+        """Serialize agent info for registry persistence.
+
+        SECURITY: API keys are NEVER persisted to disk. They are stored as
+        environment variable references (AGENT_{NAME}_API_KEY) and loaded
+        at runtime. Only the env var name is persisted.
+        """
+        api_key_env = f"AGENT_{self._name.upper()}_API_KEY"
         return {
             "name": self._name,
             "domain": self._domain,
             "base_url": self._base_url,
-            "api_key": self._api_key,
+            "api_key_env": api_key_env,
             "timeout": self._timeout,
             "mode": self._mode,
             "agent_type": "remote",

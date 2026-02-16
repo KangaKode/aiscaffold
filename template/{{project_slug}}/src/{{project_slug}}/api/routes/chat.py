@@ -15,6 +15,7 @@ Security:
 
 import json
 import logging
+from collections import OrderedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -34,8 +35,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_MESSAGE_LENGTH = 100_000
+MAX_SESSIONS = 500
 
-_orchestrators: dict[str, ChatOrchestrator] = {}
+_orchestrators: OrderedDict[str, ChatOrchestrator] = OrderedDict()
 
 
 # =============================================================================
@@ -79,21 +81,36 @@ class EscalateRequest(BaseModel):
 # =============================================================================
 
 
+def _session_key(session_id: str, api_key: str | None) -> str:
+    """Bind session to authenticated user to prevent cross-session access."""
+    user_id = api_key[:8] if api_key else "anon"
+    return f"{user_id}:{session_id}"
+
+
 def _get_or_create_orchestrator(
-    session_id: str, request: Request
+    session_id: str, request: Request, api_key: str | None = None
 ) -> ChatOrchestrator:
-    """Get an existing orchestrator or create a new one for the session."""
-    if session_id not in _orchestrators:
-        llm = getattr(request.app.state, "llm_client", None) or create_client()
-        registry = request.app.state.registry
-        agent_router = AgentRouter(registry=registry)
-        _orchestrators[session_id] = ChatOrchestrator(
-            llm=llm,
-            registry=registry,
-            router=agent_router,
-        )
-        logger.debug(f"[ChatAPI] Created orchestrator for session {session_id}")
-    return _orchestrators[session_id]
+    """Get an existing orchestrator or create one. Bounded LRU cache."""
+    key = _session_key(session_id, api_key)
+
+    if key in _orchestrators:
+        _orchestrators.move_to_end(key)
+        return _orchestrators[key]
+
+    llm = getattr(request.app.state, "llm_client", None) or create_client()
+    registry = request.app.state.registry
+    agent_router = AgentRouter(registry=registry)
+    _orchestrators[key] = ChatOrchestrator(
+        llm=llm,
+        registry=registry,
+        router=agent_router,
+    )
+
+    while len(_orchestrators) > MAX_SESSIONS:
+        _orchestrators.popitem(last=False)
+
+    logger.debug(f"[ChatAPI] Created orchestrator for session {key}")
+    return _orchestrators[key]
 
 
 # =============================================================================
@@ -122,7 +139,7 @@ async def send_message(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    orchestrator = _get_or_create_orchestrator(chat_request.session_id, request)
+    orchestrator = _get_or_create_orchestrator(chat_request.session_id, request, _key)
 
     trust_scores = None
     trust_mgr = getattr(request.app.state, "trust_manager", None)
@@ -184,7 +201,7 @@ async def send_message_stream(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    orchestrator = _get_or_create_orchestrator(chat_request.session_id, request)
+    orchestrator = _get_or_create_orchestrator(chat_request.session_id, request, _key)
 
     trust_scores = None
     trust_mgr = getattr(request.app.state, "trust_manager", None)

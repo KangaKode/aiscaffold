@@ -54,6 +54,13 @@ async def register_agent(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    if registry.get(registration.name) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Agent '{registration.name}' already registered. "
+            f"Unregister first with DELETE /api/v1/agents/{registration.name}",
+        )
+
     agent = registry.register_remote(
         name=registration.name,
         domain=registration.domain,

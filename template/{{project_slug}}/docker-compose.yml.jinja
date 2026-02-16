@@ -20,7 +20,7 @@ services:
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 {% if persistence == 'postgres' %}
-      - DATABASE_URL=postgresql://{{ project_slug }}:${DB_PASSWORD:-changeme}@db:5432/{{ project_slug }}
+      - DATABASE_URL=postgresql://{{ project_slug }}:${DB_PASSWORD}@db:5432/{{ project_slug }}
 {% elif persistence == 'sqlite' %}
       - DATABASE_PATH=/app/data/{{ project_slug }}.db
 {% endif %}
@@ -43,9 +43,9 @@ services:
     environment:
       POSTGRES_DB: {{ project_slug }}
       POSTGRES_USER: {{ project_slug }}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

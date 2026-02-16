@@ -32,12 +32,12 @@ TRUST_FLOOR = 0.1
 TRUST_CEILING = 0.95
 EMA_ALPHA = 0.15
 
-SIGNAL_DELTAS = {
-    SignalType.ACCEPT: 0.05,
-    SignalType.REJECT: -0.08,
-    SignalType.MODIFY: -0.03,
-    SignalType.DISMISS: -0.02,
-    SignalType.ESCALATE: -0.04,
+SIGNAL_TARGETS = {
+    SignalType.ACCEPT: 0.9,
+    SignalType.REJECT: 0.15,
+    SignalType.MODIFY: 0.35,
+    SignalType.DISMISS: 0.3,
+    SignalType.ESCALATE: 0.25,
 }
 
 
@@ -75,19 +75,21 @@ class AgentTrustManager:
         """
         Update an agent's trust score based on a feedback signal.
 
-        Uses EMA: new_score = alpha * signal_value + (1 - alpha) * old_score
+        Proper EMA: new_score = alpha * target + (1 - alpha) * current
+        Where target is the signal-implied trust level.
         Clamped to [floor, ceiling].
         """
         if not signal.agent_id:
             return AgentTrustScore(agent_id="", project_id=signal.project_id)
 
         current = self.get_trust_entry(signal.agent_id, signal.project_id)
-        delta = SIGNAL_DELTAS.get(signal.signal_type, 0.0)
 
         if signal.signal_type == SignalType.RATE and signal.confidence:
-            delta = (signal.confidence - 0.5) * 0.1
+            target = signal.confidence
+        else:
+            target = SIGNAL_TARGETS.get(signal.signal_type, current.trust_score)
 
-        new_score = current.trust_score + self._alpha * delta
+        new_score = self._alpha * target + (1 - self._alpha) * current.trust_score
         new_score = max(self._floor, min(self._ceiling, new_score))
 
         positive = signal.signal_type in (SignalType.ACCEPT, SignalType.RATE)

@@ -49,10 +49,21 @@ DEFAULT_CORS_ORIGINS = [
 
 
 def _get_cors_origins() -> list[str]:
-    """Load CORS origins from environment or use safe defaults."""
+    """Load CORS origins from environment or use safe defaults.
+
+    SECURITY: Rejects wildcard '*' to prevent credential leakage when
+    allow_credentials=True. Use explicit origins instead.
+    """
     origins_env = os.environ.get("CORS_ORIGINS", "")
     if origins_env.strip():
-        return [o.strip() for o in origins_env.split(",") if o.strip()]
+        origins = [o.strip() for o in origins_env.split(",") if o.strip()]
+        if "*" in origins:
+            logger.warning(
+                "[Gateway] CORS_ORIGINS contains '*' -- replacing with defaults "
+                "to prevent credential leakage with allow_credentials=True"
+            )
+            return DEFAULT_CORS_ORIGINS
+        return origins
     return DEFAULT_CORS_ORIGINS
 
 
@@ -72,12 +83,14 @@ def create_app(
 
     check_production_auth()
 
+    from .middleware.auth import _is_production
+
     application = FastAPI(
         title="{{ project_name }} API",
         description="AI agent platform with round table orchestration",
         version="0.1.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url=None if _is_production() else "/docs",
+        redoc_url=None if _is_production() else "/redoc",
     )
 
     application.add_middleware(

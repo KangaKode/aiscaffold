@@ -314,7 +314,11 @@ class ChatOrchestrator:
         )
 
         try:
-            data = json.loads(response.content)
+            from ..llm.json_parser import extract_json
+
+            data = extract_json(response.content)
+            if data is None:
+                return CrossCheckResult(agreement_level=0.5)
             agreement = float(data.get("agreement_level", 1.0))
             should_escalate = agreement < self._config.escalation_threshold
 

@@ -109,7 +109,7 @@ async def submit_task(
             ),
         )
 
-    task_id = str(uuid.uuid4())[:8]
+    task_id = uuid.uuid4().hex[:16]
     task = RoundTableTask(
         id=task_id,
         content=task_request.content,
@@ -175,7 +175,10 @@ async def submit_task(
     except Exception as e:
         metrics["tasks_failed"] += 1
         logger.error(f"[RoundTableAPI] Task {task_id} failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal error processing task {task_id}. Check server logs.",
+        )
 
 
 @router.get("/round-table/tasks/{task_id}", response_model=RoundTableResultResponse)

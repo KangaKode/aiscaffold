@@ -19,8 +19,8 @@ Keep this file under 400 lines.
 """
 
 import asyncio
-import json
 import logging
+import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -215,6 +215,10 @@ class RoundTable:
             self._write_artifact(task.id, "phase0_strategy", asdict(result.strategy))
 
         # Phase 1: Independent Analysis (PARALLEL -- separate context windows)
+        # Wire strategy focus areas into the task context so agents specialize
+        if result.strategy and result.strategy.agent_focus_areas:
+            task.context["agent_focus_areas"] = result.strategy.agent_focus_areas
+
         logger.info(f"[RoundTable] Phase 1: Independent analysis ({len(self.agents)} agents)")
         result.analyses = await self._phase_independent(task)
         self._write_artifact(task.id, "phase1_analyses", [asdict(a) for a in result.analyses])
@@ -279,8 +283,13 @@ class RoundTable:
             ),
         )
         try:
+            from ..llm.json_parser import extract_json
+
             response = await self.llm.call(prompt=prompt, role="synthesis", temperature=0.3)
-            data = json.loads(response.content)
+            data = extract_json(response.content)
+            if data is None:
+                logger.warning("[RoundTable] Strategy phase returned unparseable JSON")
+                return StrategyPlan(reasoning=response.content)
             return StrategyPlan(**data, reasoning=response.content)
         except Exception as e:
             logger.warning(f"[RoundTable] Strategy phase failed: {e}")
@@ -348,8 +357,13 @@ class RoundTable:
             ),
         )
         try:
+            from ..llm.json_parser import extract_json
+
             response = await self.llm.call(prompt=prompt, role="synthesis", temperature=0.2)
-            data = json.loads(response.content)
+            data = extract_json(response.content)
+            if data is None:
+                logger.warning("[RoundTable] Synthesis returned unparseable JSON")
+                return SynthesisResult(recommended_direction=response.content[:500])
             return SynthesisResult(**data)
         except Exception as e:
             logger.warning(f"[RoundTable] Synthesis failed: {e}")

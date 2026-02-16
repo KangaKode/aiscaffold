@@ -71,12 +71,34 @@ def validate_positive_number(value: float | int, field_name: str = "number") -> 
 
 
 def _is_private_ip(hostname: str) -> bool:
-    """Check if a hostname resolves to a private/loopback IP address."""
+    """Check if a hostname or its resolved IP is private/loopback/link-local."""
+    import socket
+
+    # First check if the hostname itself is a literal IP
     try:
         addr = ipaddress.ip_address(hostname)
         return addr.is_private or addr.is_loopback or addr.is_link_local
     except ValueError:
-        return False
+        pass
+
+    # Resolve the hostname and check ALL resolved IPs (DNS rebinding defense)
+    try:
+        results = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for family, socktype, proto, canonname, sockaddr in results:
+            ip_str = sockaddr[0]
+            try:
+                addr = ipaddress.ip_address(ip_str)
+                if addr.is_private or addr.is_loopback or addr.is_link_local:
+                    logger.warning(
+                        f"[Validators] DNS rebinding blocked: {hostname} resolved to {ip_str}"
+                    )
+                    return True
+            except ValueError:
+                continue
+    except socket.gaierror:
+        pass
+
+    return False
 
 
 def validate_url(

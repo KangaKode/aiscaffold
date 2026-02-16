@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_CONTENT_LENGTH = 50_000
+ALLOWED_SIGNAL_TYPES = {"accept", "reject", "modify", "rate", "dismiss", "escalate"}
 
 
 class FeedbackRequest(BaseModel):
@@ -67,10 +68,17 @@ async def record_feedback(
     _rate: None = Depends(check_rate_limit),
 ) -> FeedbackResponse:
     """Record a user feedback signal."""
+    if fb.signal_type not in ALLOWED_SIGNAL_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"signal_type must be one of: {', '.join(sorted(ALLOWED_SIGNAL_TYPES))}",
+        )
     try:
         validate_length(fb.signal_type, "signal_type", min_length=1, max_length=50)
         if fb.content:
             validate_length(fb.content, "content", max_length=MAX_CONTENT_LENGTH)
+        if fb.agent_id:
+            validate_length(fb.agent_id, "agent_id", max_length=100)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
