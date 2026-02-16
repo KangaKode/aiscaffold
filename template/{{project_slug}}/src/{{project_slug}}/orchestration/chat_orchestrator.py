@@ -393,3 +393,8 @@ class ChatOrchestrator:
     def history_length(self) -> int:
         """Number of messages in conversation history."""
         return len(self._conversation_history)
+
+    @property
+    def conversation_history(self) -> list[dict]:
+        """Read-only copy of conversation history."""
+        return list(self._conversation_history)

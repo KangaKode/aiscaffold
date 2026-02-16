@@ -59,7 +59,10 @@ async def create_session(
 
 
 @router.get("/sessions/{session_id}", response_model=SessionResponse)
-async def get_session(session_id: str) -> SessionResponse:
+async def get_session(
+    session_id: str,
+    _key: str | None = Depends(verify_api_key),
+) -> SessionResponse:
     """Get the current state of a session."""
     thread = _sessions.get(session_id)
     if thread is None:
@@ -113,7 +116,9 @@ async def add_turn(
 
 
 @router.get("/sessions")
-async def list_sessions() -> dict:
+async def list_sessions(
+    _key: str | None = Depends(verify_api_key),
+) -> dict:
     """List all active sessions."""
     return {
         "sessions": [

@@ -65,18 +65,27 @@ def main():
 
     # Environment variables
     print()
-    anthropic = os.getenv("ANTHROPIC_API_KEY")
+{% if llm_provider in ['anthropic', 'multi'] %}
     check(
         "ANTHROPIC_API_KEY set",
-        bool(anthropic),
+        bool(os.getenv("ANTHROPIC_API_KEY")),
         "Set in .env file: ANTHROPIC_API_KEY=sk-ant-...",
     )
-
-    warn(
-        "GOOGLE_API_KEY set (optional fallback)",
-        bool(os.getenv("GOOGLE_API_KEY")),
-        "Optional: set for Gemini fallback provider",
+{% endif %}
+{% if llm_provider in ['openai', 'multi'] %}
+    check(
+        "OPENAI_API_KEY set",
+        bool(os.getenv("OPENAI_API_KEY")),
+        "Set in .env file: OPENAI_API_KEY=sk-...",
     )
+{% endif %}
+{% if llm_provider in ['google', 'multi'] %}
+    warn(
+        "GOOGLE_API_KEY set{% if llm_provider == 'multi' %} (optional fallback){% endif %}",
+        bool(os.getenv("GOOGLE_API_KEY")),
+        "{% if llm_provider == 'google' %}Set in .env file: GOOGLE_API_KEY=...{% else %}Optional: set for Gemini fallback provider{% endif %}",
+    )
+{% endif %}
 
     # Dependencies
     print()
@@ -87,12 +96,30 @@ def main():
     except ImportError:
         check("pytest installed", False, "pip install pytest")
 
+{% if llm_provider in ['anthropic', 'multi'] %}
     try:
         import anthropic
 
         check("anthropic SDK installed", True)
     except ImportError:
         check("anthropic SDK installed", False, "pip install anthropic")
+{% endif %}
+{% if llm_provider in ['openai', 'multi'] %}
+    try:
+        import openai
+
+        check("openai SDK installed", True)
+    except ImportError:
+        check("openai SDK installed", False, "pip install openai")
+{% endif %}
+{% if llm_provider in ['google', 'multi'] %}
+    try:
+        import google.generativeai
+
+        check("google-generativeai SDK installed", True)
+    except ImportError:
+        check("google-generativeai SDK installed", False, "pip install google-generativeai")
+{% endif %}
 
     # Summary
     print(f"\n{'=' * 40}")

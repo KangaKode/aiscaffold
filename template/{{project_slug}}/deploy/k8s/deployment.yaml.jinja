@@ -27,7 +27,7 @@ spec:
     spec:
       containers:
         - name: {{ project_slug }}
-          image: {{ project_slug }}:latest
+          image: {{ project_slug }}:{{ "{{" }} version {{ "}}" }}
           ports:
             - containerPort: 8000
               name: http
@@ -60,9 +60,19 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           volumeMounts:
             - name: data
               mountPath: /app/data
       volumes:
         - name: data
           emptyDir: {}
+          # For persistent storage, replace emptyDir with a PVC:
+          # persistentVolumeClaim:
+          #   claimName: {{ project_slug }}-data

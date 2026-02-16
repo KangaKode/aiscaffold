@@ -182,7 +182,10 @@ async def submit_task(
 
 
 @router.get("/round-table/tasks/{task_id}", response_model=RoundTableResultResponse)
-async def get_task_result(task_id: str) -> RoundTableResultResponse:
+async def get_task_result(
+    task_id: str,
+    _key: str | None = Depends(verify_api_key),
+) -> RoundTableResultResponse:
     """Get a previously completed task result."""
     if task_id not in _results_cache:
         raise HTTPException(

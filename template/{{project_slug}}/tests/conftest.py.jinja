@@ -7,7 +7,6 @@ Provides:
   - mock_registry: AgentRegistry with 2 pre-registered mock agents
   - learning_db: Temp SQLite with learning schema initialized
   - test_project_id: Static project ID for tests
-{% if include_api_gateway %}  - test_client: FastAPI AsyncClient for API testing{% endif %}
 """
 
 import asyncio
@@ -122,25 +121,6 @@ def sample_task():
         content="Analyze the test scenario for correctness",
         context={"source": "unit_test"},
     )
-
-
-{% if include_api_gateway %}
-@pytest.fixture
-def test_client():
-    """FastAPI test client for API integration tests."""
-    from httpx import AsyncClient, ASGITransport
-    from src.{{ project_slug }}.api.gateway import create_app
-
-    os.environ.pop("API_KEY", None)
-    os.environ.pop("ENV", None)
-    app = create_app()
-    transport = ASGITransport(app=app)
-
-    async def _get_client():
-        return AsyncClient(transport=transport, base_url="http://test")
-
-    return _get_client
-{% endif %}
 
 
 {% if persistence == 'sqlite' %}

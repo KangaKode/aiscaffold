@@ -81,7 +81,10 @@ async def register_agent(
 
 
 @router.get("/agents", response_model=AgentListResponse)
-async def list_agents(request: Request) -> AgentListResponse:
+async def list_agents(
+    request: Request,
+    _key: str | None = Depends(verify_api_key),
+) -> AgentListResponse:
     """List all registered agents with their status."""
     registry = request.app.state.registry
     agents_info = [
@@ -91,7 +94,11 @@ async def list_agents(request: Request) -> AgentListResponse:
 
 
 @router.get("/agents/{agent_id}", response_model=AgentInfo)
-async def get_agent(agent_id: str, request: Request) -> AgentInfo:
+async def get_agent(
+    agent_id: str,
+    request: Request,
+    _key: str | None = Depends(verify_api_key),
+) -> AgentInfo:
     """Get detailed info about a specific agent."""
     registry = request.app.state.registry
     entry = registry.get_entry(agent_id)

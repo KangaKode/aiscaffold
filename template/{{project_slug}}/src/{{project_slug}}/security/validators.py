@@ -126,6 +126,12 @@ def validate_url(
 
     Raises:
         ValidationError: If the URL is unsafe.
+
+    Limitation (TOCTOU):
+        Hostname resolution occurs at validation time. A hostname could resolve
+        to a public IP during validation but to a private IP at connection time
+        (DNS rebinding). For highest assurance, validate at connection time or
+        use IP allowlists.
     """
     if not url or not url.strip():
         raise ValidationError(f"{field_name} cannot be empty")

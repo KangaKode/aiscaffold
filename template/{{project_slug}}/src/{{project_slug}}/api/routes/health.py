@@ -9,8 +9,9 @@ Health, readiness, and metrics endpoints.
 import logging
 import time
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from ..middleware.auth import verify_api_key
 from ..models.responses import HealthResponse, MetricsResponse, ReadinessResponse
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,10 @@ async def readiness(request: Request) -> ReadinessResponse:
 
 
 @router.get("/metrics", response_model=MetricsResponse)
-async def metrics(request: Request) -> MetricsResponse:
+async def metrics(
+    request: Request,
+    _key: str | None = Depends(verify_api_key),
+) -> MetricsResponse:
     """Basic operational metrics."""
     registry = request.app.state.registry
     m = request.app.state.metrics

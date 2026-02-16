@@ -230,11 +230,15 @@ make serve    # Starts at http://localhost:8000
 
 Open http://localhost:8000/docs to see the interactive API documentation.
 
+> **Note:** Set `API_KEY` in your `.env` file. In development mode (default), auth is
+> optional -- requests work without the header. In production, it's required.
+
 ### Send a chat message
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
   -d '{"message": "What are the key considerations for building a REST API?"}'
 ```
 
@@ -245,6 +249,7 @@ The chat orchestrator will select the most relevant agents, consult them, cross-
 ```bash
 curl -X POST http://localhost:8000/api/v1/round-table/tasks \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
   -d '{"content": "Review the pros and cons of microservices vs monolith architecture"}'
 ```
 
@@ -293,6 +298,7 @@ Register an agent running as a separate service:
 ```bash
 curl -X POST http://localhost:8000/api/v1/agents \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
   -d '{"name": "external_agent", "domain": "testing", "base_url": "http://localhost:3001"}'
 ```
 
@@ -307,6 +313,7 @@ Record feedback to teach the system your preferences:
 ```bash
 curl -X POST http://localhost:8000/api/v1/feedback \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
   -d '{"signal_type": "accept", "agent_id": "my_agent", "context_type": "chat"}'
 ```
 

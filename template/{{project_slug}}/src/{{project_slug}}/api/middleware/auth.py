@@ -88,11 +88,13 @@ async def verify_api_key(
         return None
 
     if credentials is None:
-        logger.warning(f"[Auth] Missing credentials from {request.client.host}")
+        client_host = request.client.host if request.client else "unknown"
+        logger.warning(f"[Auth] Missing credentials from {client_host}")
         raise HTTPException(status_code=401, detail="Missing API key")
 
     if not hmac.compare_digest(credentials.credentials, expected_key):
-        logger.warning(f"[Auth] Invalid API key from {request.client.host}")
+        client_host = request.client.host if request.client else "unknown"
+        logger.warning(f"[Auth] Invalid API key from {client_host}")
         raise HTTPException(status_code=403, detail="Invalid API key")
 
     return credentials.credentials

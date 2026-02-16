@@ -218,7 +218,7 @@ if [ -d "$GEN_ROOT/tests" ]; then
     done
 
     if [ -n "$UNIT_FILES" ]; then
-        if python3 -m pytest $UNIT_FILES -x -q --tb=short 2>&1 | tail -5; then
+        if python3 -m pytest $UNIT_FILES --cov=src --cov-fail-under=45 --cov-report=term-missing -x -q --tb=short 2>&1 | tail -20; then
             PYTEST_EXIT=${PIPESTATUS[0]}
             if [ "$PYTEST_EXIT" -eq 0 ]; then
                 pass "Unit tests passed"

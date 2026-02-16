@@ -33,7 +33,7 @@ class MockAgent:
         return self._domain
 
     async def analyze(self, task):
-        from src.orchestration.round_table import AgentAnalysis  # type: ignore
+        from src.{{ project_slug }}.orchestration.round_table import AgentAnalysis  # type: ignore
 
         return AgentAnalysis(
             agent_name=self.name,
@@ -53,18 +53,18 @@ class MockAgent:
         )
 
     async def challenge(self, task, other_analyses):
-        from src.orchestration.round_table import AgentChallenge  # type: ignore
+        from src.{{ project_slug }}.orchestration.round_table import AgentChallenge  # type: ignore
 
         return AgentChallenge(agent_name=self.name)
 
     async def vote(self, task, synthesis):
-        from src.orchestration.round_table import AgentVote  # type: ignore
+        from src.{{ project_slug }}.orchestration.round_table import AgentVote  # type: ignore
 
         return AgentVote(agent_name=self.name, approve=True)
 
 
 async def main():
-    from src.orchestration.round_table import RoundTable, RoundTableConfig, RoundTableTask  # type: ignore
+    from src.{{ project_slug }}.orchestration.round_table import RoundTable, RoundTableConfig, RoundTableTask  # type: ignore
 
     print("\n" + "=" * 60)
     print("  ROUND TABLE DEMO")

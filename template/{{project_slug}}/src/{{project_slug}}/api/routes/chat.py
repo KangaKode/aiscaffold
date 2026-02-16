@@ -289,7 +289,7 @@ async def escalate_to_round_table(
             detail=f"No active chat session: {escalate_request.session_id}",
         )
 
-    history = orchestrator._conversation_history
+    history = orchestrator.conversation_history
     context_summary = "\n".join(
         f"{h['role']}: {str(h['content'])[:300]}"
         for h in history[-10:]

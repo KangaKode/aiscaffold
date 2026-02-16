@@ -115,6 +115,7 @@ async def query_feedback(
     context_type: str | None = None,
     since: str | None = None,
     limit: int = 50,
+    _key: str | None = Depends(verify_api_key),
 ) -> dict:
     """Query feedback signals with optional filters."""
     tracker = _get_tracker(request)
@@ -146,6 +147,7 @@ async def feedback_counts(
     request: Request,
     agent_id: str | None = None,
     since: str | None = None,
+    _key: str | None = Depends(verify_api_key),
 ) -> dict:
     """Get signal counts grouped by type."""
     tracker = _get_tracker(request)
@@ -157,6 +159,7 @@ async def feedback_counts(
 async def acceptance_rates(
     request: Request,
     since: str | None = None,
+    _key: str | None = Depends(verify_api_key),
 ) -> dict:
     """Get acceptance rates per agent."""
     tracker = _get_tracker(request)

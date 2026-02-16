@@ -105,6 +105,17 @@ demo: ## Run round table demo (no API keys needed)
 check: ## Verify environment setup
 	python scripts/setup_check.py
 
+new-agent: ## Create a new agent from template (NAME=my_analyst DOMAIN="code review")
+	@test -n "$(NAME)" || (echo "Usage: make new-agent NAME=my_analyst DOMAIN=\"code review\"" && exit 1)
+	@test -n "$(DOMAIN)" || (echo "Usage: make new-agent NAME=my_analyst DOMAIN=\"code review\"" && exit 1)
+	$(eval AGENT_CLASS := $(shell python3 -c "print(''.join(w.capitalize() for w in '$(NAME)'.split('_')))"))
+	@cp src/{{ project_slug }}/agents/example_agent.py src/{{ project_slug }}/agents/$(NAME).py
+	@sed -i'' -e 's/ExampleAgent/$(AGENT_CLASS)/g' src/{{ project_slug }}/agents/$(NAME).py
+	@sed -i'' -e 's/example_analyst/$(NAME)/g' src/{{ project_slug }}/agents/$(NAME).py
+	@sed -i'' -e 's/general analysis/$(DOMAIN)/g' src/{{ project_slug }}/agents/$(NAME).py
+	@echo "Created src/{{ project_slug }}/agents/$(NAME).py (class $(AGENT_CLASS))"
+	@echo "Next: edit the analyze() method to add your domain logic"
+
 install: ## Install dependencies
 	pip install -r requirements.txt
 
