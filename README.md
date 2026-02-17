@@ -19,6 +19,8 @@ One-command scaffold ([copier](https://copier.readthedocs.io/)) for AI agent pro
 
 **Scalable** -- Docker & Kubernetes (HPA, secrets, security context), external agents via HTTP in any language.
 
+**Designed for regulated industries** -- evidence grading, adversarial review, speculation rejection, audit trails, and human-in-the-loop gates make AI agent output defensible in finance, healthcare, legal, and security contexts.
+
 *243 tests · 79% coverage · 16-check validation pipeline (ruff, bandit, red team, AI checks, pytest)*
 
 ---
