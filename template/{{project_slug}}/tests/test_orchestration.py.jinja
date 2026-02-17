@@ -84,7 +84,7 @@ class TestRoundTable:
         rt = RoundTable(agents=mock_agents, config=config, llm_client=mock_llm)
         result = await rt.run(sample_task)
         assert result.task_id == sample_task.id
-        assert len(result.analyses) == 2
+        assert len(result.analyses) == 5  # 3 core + 2 user agents
 
     @pytest.mark.asyncio
     async def test_consensus_threshold(self, mock_agents, mock_llm, sample_task):
@@ -92,6 +92,7 @@ class TestRoundTable:
             enable_strategy_phase=False,
             enable_challenge_phase=False,
             consensus_threshold=0.5,
+            include_core_agents=False,
         )
         rt = RoundTable(agents=mock_agents, config=config, llm_client=mock_llm)
         result = await rt.run(sample_task)
@@ -155,6 +156,62 @@ class TestSessionKey:
 # =============================================================================
 # ROUND TABLE SYNTHESIS ERROR HANDLING
 # =============================================================================
+
+
+class TestCoreAgents:
+    @pytest.mark.asyncio
+    async def test_core_agents_auto_included(self, mock_agents, mock_llm):
+        """Core agents are automatically added when include_core_agents=True."""
+        rt = RoundTable(agents=mock_agents, config=RoundTableConfig(
+            enable_strategy_phase=False, enable_challenge_phase=False,
+            include_core_agents=True,
+        ), llm_client=mock_llm)
+        agent_names = [a.name for a in rt.agents]
+        assert "skeptic" in agent_names
+        assert "quality" in agent_names
+        assert "evidence" in agent_names
+        assert len(rt.agents) == len(mock_agents) + 3
+
+    @pytest.mark.asyncio
+    async def test_core_agents_opt_out(self, mock_agents, mock_llm):
+        """Core agents excluded when include_core_agents=False."""
+        rt = RoundTable(agents=mock_agents, config=RoundTableConfig(
+            enable_strategy_phase=False, enable_challenge_phase=False,
+            include_core_agents=False,
+        ), llm_client=mock_llm)
+        agent_names = [a.name for a in rt.agents]
+        assert "skeptic" not in agent_names
+        assert "quality" not in agent_names
+        assert "evidence" not in agent_names
+        assert len(rt.agents) == len(mock_agents)
+
+    @pytest.mark.asyncio
+    async def test_core_agents_participate_in_round_table(self, mock_agents, mock_llm):
+        """Core agents produce analyses alongside user agents."""
+        rt = RoundTable(agents=mock_agents, config=RoundTableConfig(
+            enable_strategy_phase=False, enable_challenge_phase=False,
+            include_core_agents=True,
+        ), llm_client=mock_llm)
+        task = RoundTableTask(id="core_test", content="Test with core agents")
+        result = await rt.run(task)
+        analysis_names = [a.agent_name for a in result.analyses]
+        assert "skeptic" in analysis_names
+        assert "quality" in analysis_names
+        assert "evidence" in analysis_names
+
+    @pytest.mark.asyncio
+    async def test_core_agents_without_llm(self, mock_agents):
+        """Core agents produce placeholder analyses without LLM."""
+        rt = RoundTable(agents=mock_agents, config=RoundTableConfig(
+            enable_strategy_phase=False, enable_challenge_phase=False,
+            include_core_agents=True,
+        ))
+        task = RoundTableTask(id="no_llm_test", content="Test without LLM")
+        result = await rt.run(task)
+        core_analyses = [a for a in result.analyses if a.agent_name in ("skeptic", "quality", "evidence")]
+        assert len(core_analyses) == 3
+        for a in core_analyses:
+            assert len(a.observations) > 0
 
 
 class TestRoundTableSynthesis:

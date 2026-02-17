@@ -43,7 +43,7 @@ class TestE2ERoundTable:
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "completed"
-        assert len(data["analyses"]) == 2
+        assert len(data["analyses"]) == 5  # 3 core + 2 user agents
         assert data["task_id"] is not None
 
 

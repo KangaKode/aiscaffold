@@ -85,6 +85,12 @@ Lightweight orchestrator-worker pattern for real-time interaction. Lead agent se
 - `example_agent.py` -- Reference implementation of `AgentProtocol`
 - `remote.py` -- `RemoteAgent` adapter wrapping HTTP endpoints as `AgentProtocol`
 - `registry.py` -- `AgentRegistry` managing local + remote agents with health checks
+- `core/` -- Three core safety agents (auto-included in every round table):
+  - `skeptic.py` -- Devil's advocate: challenges assumptions, demands evidence, flags logical fallacies
+  - `quality.py` -- Completeness checker: tracks requirement coverage, flags gaps in scope
+  - `evidence.py` -- Claim verifier: grades evidence strength, flags speculation presented as fact
+
+Core agents are meta-agents that evaluate *how well* the analysis was done, not *what* was analyzed. They participate automatically unless `include_core_agents=False` is set in `RoundTableConfig`. This is a deliberate opt-out -- the default is safety-on
 
 External agents implement 3 HTTP endpoints (`/analyze`, `/challenge`, `/vote`) in any language.
 

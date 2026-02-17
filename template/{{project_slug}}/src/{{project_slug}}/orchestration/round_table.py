@@ -174,6 +174,7 @@ class RoundTableConfig:
     require_human_approval: bool = False  # Human gate after synthesis
     artifacts_dir: Path = Path(".aiscaffold/artifacts")
     write_artifacts: bool = True
+    include_core_agents: bool = True  # Auto-inject Skeptic, Quality, Evidence agents
 
 
 # =============================================================================
@@ -198,10 +199,27 @@ class RoundTable:
     """
 
     def __init__(self, agents: list, config: RoundTableConfig, llm_client: Any = None):
-        self.agents = agents
         self.config = config
         self.llm = llm_client
-        logger.info(f"[RoundTable] Initialized with {len(agents)} agents")
+
+        if config.include_core_agents:
+            try:
+                from ..agents.core import get_core_agents
+                core = get_core_agents(llm_client=llm_client)
+                core_names = {a.name for a in core}
+                user_agents = [a for a in agents if a.name not in core_names]
+                self.agents = core + user_agents
+                logger.info(
+                    f"[RoundTable] Initialized with {len(core)} core + "
+                    f"{len(user_agents)} user agents"
+                )
+            except Exception as e:
+                logger.warning(f"[RoundTable] Core agents failed to load: {e}")
+                self.agents = agents
+                logger.info(f"[RoundTable] Initialized with {len(agents)} agents")
+        else:
+            self.agents = agents
+            logger.info(f"[RoundTable] Initialized with {len(agents)} agents (core agents disabled)")
 
     async def run(self, task: RoundTableTask) -> RoundTableResult:
         """Execute the full 4-phase round table protocol."""
