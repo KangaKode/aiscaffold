@@ -21,8 +21,8 @@ project_description:
 
 author_name:
   type: str
-  default: "Brian Carter"
-  help: "Your name"
+  default: "Your Name"
+  help: "Your name (used in generated docs and configs)"
 
 # =============================================================================
 # PROJECT TYPE

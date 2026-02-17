@@ -122,7 +122,10 @@ async def unregister_agent(
 
 
 @router.post("/agents/health")
-async def health_check_all(request: Request) -> dict:
+async def health_check_all(
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+) -> dict:
     """Run health checks on all remote agents."""
     registry = request.app.state.registry
     results = await registry.health_check_all()

@@ -19,6 +19,7 @@ Multi-tenancy:
     deployments use the defaults ("default" tenant, "anon" user) transparently.
 """
 
+import hashlib
 import hmac
 import logging
 import os
@@ -123,8 +124,9 @@ async def verify_api_key(
         raise HTTPException(status_code=403, detail="Invalid API key")
 
     key = credentials.credentials
+    user_hash = hashlib.sha256(key.encode()).hexdigest()[:16] if key else "anon"
     return AuthContext(
         api_key=key,
-        user_id=key[:8] if key else "anon",
+        user_id=user_hash,
         tenant_id="default",
     )

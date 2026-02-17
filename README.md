@@ -4,10 +4,12 @@
 
 One-command scaffold ([copier](https://copier.readthedocs.io/)) for AI agent projects: multi-agent round table with adversarial safety agents, chat orchestrator, HTTP API for agents in any language, prompt caching, adaptive learning, and deployment templates (Docker + Kubernetes).
 
-**Safety-first deliberation** -- Every round table includes three core safety agents by default:
+**Safety-first deliberation** -- Every round table includes five core safety agents by default:
 - **Skeptic** -- challenges assumptions, demands evidence, flags logical fallacies
 - **Quality** -- tracks requirement coverage, catches gaps across agents
 - **Evidence** -- grades claim strength, flags speculation presented as fact
+- **FactChecker** -- scans for banned speculation language, explains why it's problematic
+- **Citation** -- enforces evidence level tagging (VERIFIED/CORROBORATED/INDICATED/POSSIBLE)
 
 **Secure** -- SSRF protection, prompt injection defense, rate limiting, HMAC-SHA256 webhook verification, input validation at every boundary, API key auth with multi-tenancy structural prep.
 

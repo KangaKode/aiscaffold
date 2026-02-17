@@ -348,12 +348,25 @@ class RoundTable:
             for analysis in analyses:
                 text = json.dumps(analysis.observations, default=str)
                 result = await pipeline.validate(analysis.agent_name, text, task)
-                if result.corrected_content and result.outcome != "accepted":
+                if result.violations:
                     logger.info(
                         f"[RoundTable] {analysis.agent_name}: "
                         f"{len(result.violations)} enforcement violations "
                         f"({result.outcome})"
                     )
+                if result.corrected_content and result.outcome != "accepted":
+                    try:
+                        from ..llm.json_parser import extract_json
+                        corrected_data = extract_json(result.corrected_content)
+                        if corrected_data and isinstance(corrected_data, list):
+                            analysis = AgentAnalysis(
+                                agent_name=analysis.agent_name,
+                                domain=analysis.domain,
+                                observations=corrected_data,
+                                recommendations=analysis.recommendations,
+                            )
+                    except Exception:
+                        pass
                 enforced.append(analysis)
             return enforced
         except Exception as e:
