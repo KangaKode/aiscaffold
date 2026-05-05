@@ -11,6 +11,7 @@ source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
+pip install -e .
 
 # See it in action (no API keys needed)
 make demo
@@ -50,7 +51,10 @@ make serve-prod
 make docker-build
 make docker-run        # http://localhost:8000
 
-# Kubernetes
+# Kubernetes manifests
+# Starter manifests use {{ project_slug }}:latest.
+# Set a registry image tag, secrets, persistence for /app/data and .aiscaffold/,
+# ingress, and TLS for production.
 make k8s-deploy
 make k8s-status
 ```
@@ -90,7 +94,7 @@ curl -X POST http://localhost:8000/api/v1/agents \
   docs/               # Documentation
   tests/              # Tests
   scripts/            # Utility scripts
-  .cursor/agents/     # 14 AI subagents
+  .cursor/agents/     # Development subagents
 ```
 
 ## Development
@@ -113,5 +117,7 @@ make docker-run  # Run with Docker
 ## Architecture
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for layering rules and dependency directions.
+
+See [docs/DEVELOPMENT_PROCESS.md](docs/DEVELOPMENT_PROCESS.md) for the gated AI-assisted development workflow.
 
 For AI agents, see [CLAUDE.md](CLAUDE.md).

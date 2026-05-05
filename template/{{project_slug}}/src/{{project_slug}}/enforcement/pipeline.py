@@ -1,10 +1,10 @@
 """
-EvidenceEnforcementPipeline -- orchestrates all validators with reject-and-rewrite.
+EvidenceEnforcementPipeline -- orchestrates all evidence validators.
 
 Runs FactChecker -> EvidenceLevelEnforcer -> CitationValidator -> MathVerifier
-on each agent response. Rejected responses get a correction prompt and are
-retried up to max_retries times. If still failing, the response passes through
-with warnings attached.
+for Phase 1 round-table analyses. Rejected results can be routed through a
+correction prompt when an LLM client is configured. If still failing, the
+response passes through with warnings attached.
 
 Keep this file under 150 lines.
 """
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class EvidenceEnforcementPipeline:
-    """Orchestrates evidence validation with reject-and-rewrite.
+    """Orchestrates evidence validation and optional correction.
 
     Usage:
         pipeline = EvidenceEnforcementPipeline(llm_client=llm)

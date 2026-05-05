@@ -4,9 +4,9 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
 
-from src.{{ project_slug }}.api.gateway import create_app
-from src.{{ project_slug }}.agents.registry import AgentRegistry
-from src.{{ project_slug }}.orchestration.round_table import RoundTableConfig
+from {{ project_slug }}.api.gateway import create_app
+from {{ project_slug }}.agents.registry import AgentRegistry
+from {{ project_slug }}.orchestration.round_table import RoundTableConfig
 
 
 @pytest.fixture

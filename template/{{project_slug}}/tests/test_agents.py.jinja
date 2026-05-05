@@ -3,9 +3,9 @@
 import json
 import pytest
 from pathlib import Path
-from src.{{project_slug}}.agents.registry import AgentRegistry
-from src.{{project_slug}}.agents.remote import RemoteAgent
-from src.{{project_slug}}.orchestration.round_table import AgentProtocol
+from {{project_slug}}.agents.registry import AgentRegistry
+from {{project_slug}}.agents.remote import RemoteAgent
+from {{project_slug}}.orchestration.round_table import AgentProtocol
 
 
 class TestAgentRegistry:
@@ -64,7 +64,7 @@ class TestAgentVisibility:
     def test_list_for_tenant_includes_same_tenant_team_agents(self, mock_agent, tmp_path):
         registry = AgentRegistry(persist_path=tmp_path / "agents.json")
         entry = registry._agents  # direct access for test setup
-        from src.{{project_slug}}.agents.registry import AgentEntry
+        from {{project_slug}}.agents.registry import AgentEntry
         entry[mock_agent.name] = AgentEntry(
             agent=mock_agent, visibility="team", tenant_id="acme",
         )
@@ -74,7 +74,7 @@ class TestAgentVisibility:
 
     def test_list_for_tenant_excludes_other_tenant_team_agents(self, mock_agent, tmp_path):
         registry = AgentRegistry(persist_path=tmp_path / "agents.json")
-        from src.{{project_slug}}.agents.registry import AgentEntry
+        from {{project_slug}}.agents.registry import AgentEntry
         registry._agents[mock_agent.name] = AgentEntry(
             agent=mock_agent, visibility="team", tenant_id="acme",
         )

@@ -4,6 +4,7 @@
 **Status:** Canonical -- all code must conform to these rules
 
 > **New here?** Start with the [Tutorial](TUTORIAL.md) or run `make demo` to see the system in action.
+> **Changing the system?** Follow the gated [Development Process](DEVELOPMENT_PROCESS.md): design docs, expert review, tests first, code review, red-team gate, then CI.
 
 ---
 
@@ -99,9 +100,9 @@ Core agents are meta-agents that evaluate *how well* the analysis was done, not 
 - `evidence_levels.py` -- Validates VERIFIED/CORROBORATED/INDICATED/POSSIBLE tag format
 - `citation_validator.py` -- Checks cited sources exist (pluggable SourceRegistry)
 - `math_verifier.py` -- Validates numeric claims against ground truth (pluggable GroundTruthProvider)
-- `pipeline.py` -- Orchestrates all validators with reject-and-rewrite behavior
+- `pipeline.py` -- Orchestrates validators and optional correction behavior
 
-The pipeline runs after Phase 1 (analysis) and before Phase 2 (challenge). Rejected responses get a correction prompt and are retried up to 2 times. Disable with `enforce_evidence=False` in `RoundTableConfig`
+The pipeline runs after Phase 1 (analysis) and before Phase 2 (challenge). It returns accepted, challenged, or rejected validation results; projects can add stricter correction behavior by configuring concrete validators and LLM correction paths. Disable with `enforce_evidence=False` in `RoundTableConfig`.
 
 External agents implement 3 HTTP endpoints (`/analyze`, `/challenge`, `/vote`) in any language.
 
@@ -137,7 +138,7 @@ Security is wired into every module that handles external input, not bolted on a
 - `user_profile.py` -- Aggregates preferences + trust into context bundles
 - `global_profile.py` -- Cross-project identity at `~/.aiscaffold/`
 - `graduation.py` -- Promotes stable patterns to global level (pluggable rules)
-- `rag/` -- Vector store (ChromaDB + fallback), embeddings, semantic preference search
+- `rag/` -- Vector store adapter, embeddings, semantic preference search
 - `rag/transcript_indexer.py` -- Indexes round table results for semantic search over past deliberations
 {% endif -%}
 
@@ -161,7 +162,7 @@ Security is wired into every module that handles external input, not bolted on a
 - **FastAPI over Flask/Django** -- Async-native, automatic OpenAPI docs, Pydantic validation built in
 - **SSE over WebSockets** -- Simpler protocol, works through proxies, sufficient for chat streaming
 - **SQLite for dev, Postgres for prod** -- Zero-config locally, production-grade when deployed
-- **ChromaDB optional** -- In-memory fallback for dev/testing, ChromaDB for persistent vector search
+- **Vector storage defaults lightweight** -- In-memory search for dev/testing; pgvector is the recommended production path when using Postgres, with other stores behind the vector-store adapter
 - **Adapter pattern for agents** -- `RemoteAgent` implements `AgentProtocol` over HTTP; round table/chat don't know the difference
 - **String categories over enums** -- Signal types, preference types, and check-in types are strings so projects define their own taxonomy without modifying scaffold code
 - **Security at boundaries** -- Every function that accepts external input sanitizes it; every SQL query is parameterized; every URL is validated

@@ -24,7 +24,7 @@ PERSISTENCE="${3:-sqlite}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TEST_DIR="/tmp/aiscaffold_test_$(date +%s)_$$"
+TEST_DIR="$REPO_ROOT/.tmp-validation/aiscaffold_test_$(date +%s)_$$"
 PROJECT_NAME="test_project"
 PROJECT_SLUG="test_project"
 
@@ -61,6 +61,33 @@ section "Step 1: Generate Test Project ($PROJECT_TYPE / $LLM_PROVIDER / $PERSIST
 mkdir -p "$TEST_DIR"
 
 if command -v copier &>/dev/null; then
+    COPIER_SOURCE="$TEST_DIR/template_source"
+    python3 - "$REPO_ROOT" "$COPIER_SOURCE" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+
+ignored = {
+    ".git",
+    ".cursor",
+    ".validation-venv",
+    ".tmp-copier-debug",
+    ".tmp-validation",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+}
+
+shutil.copytree(
+    source,
+    destination,
+    ignore=lambda _dir, names: [name for name in names if name in ignored],
+)
+PY
+
     # Determine layers based on project type (mirrors copier.yml default)
     case "$PROJECT_TYPE" in
         web-app)     LAYERS="data,analysis,components" ;;
@@ -70,7 +97,8 @@ if command -v copier &>/dev/null; then
         *)           LAYERS="data,analysis,components" ;;
     esac
 
-    copier copy "$REPO_ROOT" "$TEST_DIR/$PROJECT_SLUG" --trust --defaults \
+    COPIER_LOG="$TEST_DIR/copier.log"
+    (cd "$TEST_DIR" && copier copy "$COPIER_SOURCE" "$TEST_DIR/$PROJECT_SLUG" --trust --defaults \
         --data project_name="$PROJECT_NAME" \
         --data project_slug="$PROJECT_SLUG" \
         --data project_description="Validation test project" \
@@ -86,7 +114,82 @@ if command -v copier &>/dev/null; then
         --data include_api_gateway=true \
         --data include_deployment=true \
         --data include_learning=true \
-        2>/dev/null
+        >"$COPIER_LOG" 2>&1)
+    COPIER_STATUS=$?
+
+    if [ "$COPIER_STATUS" -ne 0 ] && [ "${ALLOW_COPIER_FALLBACK:-}" = "1" ]; then
+        warn "copier failed; using direct Jinja render fallback for sandbox validation"
+        python3 - "$REPO_ROOT/template" "$TEST_DIR/$PROJECT_SLUG" \
+            "$PROJECT_NAME" "$PROJECT_SLUG" "$PROJECT_TYPE" "$LAYERS" "$LLM_PROVIDER" "$PERSISTENCE" <<'PY'
+import sys
+from pathlib import Path
+
+from jinja2 import Environment, StrictUndefined
+
+template_root = Path(sys.argv[1])
+destination_root = Path(sys.argv[2])
+
+context = {
+    "project_name": sys.argv[3],
+    "project_slug": sys.argv[4],
+    "project_description": "Validation test project",
+    "author_name": "CI",
+    "project_type": sys.argv[5],
+    "layers": sys.argv[6],
+    "llm_provider": sys.argv[7],
+    "persistence": sys.argv[8],
+    "python_version": "3.13",
+    "include_evals": True,
+    "include_state_management": True,
+    "include_llm_client": True,
+    "include_api_gateway": True,
+    "include_deployment": True,
+    "include_learning": True,
+}
+
+env = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
+
+for source in template_root.rglob("*"):
+    relative = source.relative_to(template_root)
+    if ".cursor" in relative.parts:
+        continue
+    rendered_parts = [env.from_string(part).render(context) for part in relative.parts]
+    output = destination_root / Path(*rendered_parts)
+    if output.name.endswith(".jinja"):
+        output = output.with_name(output.name.removesuffix(".jinja"))
+
+    if source.is_dir():
+        output.mkdir(parents=True, exist_ok=True)
+        continue
+
+    try:
+        source_text = source.read_text()
+    except UnicodeDecodeError:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(source.read_bytes())
+        continue
+
+    rendered = env.from_string(source_text).render(context) if source.name.endswith(".jinja") else source_text
+
+    if source.name.endswith(".jinja") and rendered.strip() == "":
+        continue
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered)
+
+generated_project_root = destination_root / context["project_slug"]
+
+for layer in context["layers"].split(","):
+    layer_dir = generated_project_root / layer.strip()
+    layer_dir.mkdir(parents=True, exist_ok=True)
+    (layer_dir / "__init__.py").touch()
+
+for eval_dir in ["evals/capability", "evals/regression", "evals/graders", "evals/results"]:
+    (generated_project_root / eval_dir).mkdir(parents=True, exist_ok=True)
+(generated_project_root / "evals" / "__init__.py").touch()
+(generated_project_root / "evals" / "graders" / "__init__.py").touch()
+PY
+    fi
     
     # Copier creates: TEST_DIR/PROJECT_SLUG/PROJECT_SLUG/ (nested)
     GENERATED_DIR="$TEST_DIR/$PROJECT_SLUG/$PROJECT_SLUG"
@@ -99,6 +202,10 @@ if command -v copier &>/dev/null; then
         pass "Project generated at $GENERATED_DIR"
     else
         fail "Project generation failed -- src/ directory not found"
+        if [ -s "$COPIER_LOG" ]; then
+            echo "Copier output:"
+            sed -n '1,80p' "$COPIER_LOG"
+        fi
         echo "Contents of $TEST_DIR:"
         find "$TEST_DIR" -maxdepth 3 -type d 2>/dev/null
         exit 1
@@ -208,6 +315,9 @@ if [ -d "$GEN_ROOT/tests" ]; then
     cd "$GEN_ROOT"
     # Install project dependencies quietly (skip LLM providers to avoid API key issues)
     pip install -q pytest pytest-asyncio pytest-cov fastapi uvicorn httpx pydantic python-dotenv 2>/dev/null
+    if [ -f "pyproject.toml" ]; then
+        pip install -q -e . 2>/dev/null || warn "Editable install failed -- tests may rely on repo-root imports"
+    fi
 
     # Run all test files (all use mocks/in-process testing, no external deps)
     UNIT_FILES=""

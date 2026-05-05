@@ -9,4 +9,7 @@ dist/
 build/
 .pytest_cache/
 .ruff_cache/
+.tmp-validation/
+.validation-venv/
+.tmp-copier-debug/
 .DS_Store

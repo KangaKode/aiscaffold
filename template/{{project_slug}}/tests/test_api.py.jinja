@@ -4,14 +4,14 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
 
-from src.{{ project_slug }}.api.gateway import create_app
+from {{ project_slug }}.api.gateway import create_app
 
 
 @pytest.fixture
 async def client(tmp_path):
     """Async test client for the API gateway with isolated registry."""
     import os
-    from src.{{ project_slug }}.agents.registry import AgentRegistry
+    from {{ project_slug }}.agents.registry import AgentRegistry
 
     os.environ.pop("API_KEY", None)
     os.environ.pop("ENV", None)

@@ -50,10 +50,12 @@ pydantic>=2.0
 
 {% if include_learning -%}
 # Learning System (RAG / Vector Search)
-# Optional but recommended for production: persistent vector search + semantic embeddings.
-# Without these, the system uses an in-memory fallback (functional but non-persistent).
-chromadb>=0.5
-sentence-transformers>=3.0
+# Default is deterministic in-memory search for local development.
+# Production recommendation:
+#   - Postgres deployments: add pgvector and store embeddings with your app data.
+#   - Other deployments: wire your preferred vector store behind learning/rag/vector_store.py.
+# Optional local embeddings: sentence-transformers>=3.0
+# Optional Chroma adapter: chromadb>=0.5
 {% endif -%}
 
 {% if persistence == 'postgres' -%}

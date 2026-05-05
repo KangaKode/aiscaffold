@@ -4,11 +4,11 @@ API Gateway -- FastAPI application factory.
 Creates the FastAPI app with all routes, middleware, and dependencies.
 This is the entrypoint for uvicorn:
 
-    uvicorn src.{{project_slug}}.api.gateway:create_app --factory --host 0.0.0.0 --port 8000
+    uvicorn {{project_slug}}.api.gateway:create_app --factory --host 0.0.0.0 --port 8000
 
 Or for development:
 
-    uvicorn src.{{project_slug}}.api.gateway:app --reload
+    uvicorn {{project_slug}}.api.gateway:app --reload
 
 Security:
   - CORS restricted to configured origins (default: localhost only)

@@ -26,6 +26,9 @@ COPY --from=builder /install /usr/local
 # Copy application code
 COPY . .
 
+# Install the generated src-layout package so imports work without PYTHONPATH.
+RUN pip install --no-cache-dir --no-deps -e .
+
 # Switch to non-root user
 USER appuser
 
@@ -38,7 +41,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 {% if include_api_gateway -%}
 # Start the API gateway
-CMD ["python", "-m", "uvicorn", "src.{{ project_slug }}.api.gateway:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "{{ project_slug }}.api.gateway:app", "--host", "0.0.0.0", "--port", "8000"]
 {% else -%}
 # Default entrypoint -- override in docker-compose or K8s
 CMD ["python", "-m", "{{ project_slug }}"]

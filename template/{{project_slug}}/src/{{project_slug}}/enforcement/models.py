@@ -28,9 +28,9 @@ class ValidationResult:
 
     Attributes:
         outcome: "accepted" (no issues), "challenged" (warnings attached),
-                 or "rejected" (must be rewritten).
+                 or "rejected" (critical issues found).
         violations: All violations found.
-        corrected_content: If rejected and auto-rewritten, the corrected text.
+        corrected_content: Corrected text when optional LLM correction is configured.
     """
 
     outcome: str = "accepted"  # "accepted", "challenged", "rejected"

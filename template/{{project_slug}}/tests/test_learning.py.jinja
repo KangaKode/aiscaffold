@@ -1,11 +1,11 @@
 """Unit tests for the learning module -- feedback, trust, check-ins, profile."""
 
 import pytest
-from src.{{project_slug}}.learning.models import FeedbackSignal, UserPreference, SignalType, CheckInStatus
-from src.{{project_slug}}.learning.feedback_tracker import FeedbackTracker
-from src.{{project_slug}}.learning.agent_trust import AgentTrustManager, DEFAULT_TRUST, TRUST_FLOOR, TRUST_CEILING
-from src.{{project_slug}}.learning.checkin_manager import CheckInManager
-from src.{{project_slug}}.learning.user_profile import UserProfileManager
+from {{project_slug}}.learning.models import FeedbackSignal, UserPreference, SignalType, CheckInStatus
+from {{project_slug}}.learning.feedback_tracker import FeedbackTracker
+from {{project_slug}}.learning.agent_trust import AgentTrustManager, DEFAULT_TRUST, TRUST_FLOOR, TRUST_CEILING
+from {{project_slug}}.learning.checkin_manager import CheckInManager
+from {{project_slug}}.learning.user_profile import UserProfileManager
 
 
 class TestFeedbackTracker:
@@ -149,10 +149,10 @@ class TestUserProfileManager:
 
 
 # =============================================================================
-# VECTOR STORE (fallback mode -- no ChromaDB)
+# VECTOR STORE (in-memory default)
 # =============================================================================
 
-from src.{{ project_slug }}.learning.rag.vector_store import VectorStore, SearchResults
+from {{ project_slug }}.learning.rag.vector_store import VectorStore, SearchResults
 
 
 class TestVectorStore:
@@ -232,11 +232,11 @@ class TestVectorStore:
 
 
 # =============================================================================
-# EMBEDDING SERVICE (fallback mode -- no sentence-transformers/openai)
+# EMBEDDING SERVICE (deterministic default -- no sentence-transformers/openai)
 # =============================================================================
 
 from unittest.mock import MagicMock
-from src.{{ project_slug }}.learning.rag.embedding_service import EmbeddingService, EmbeddingResult
+from {{ project_slug }}.learning.rag.embedding_service import EmbeddingService, EmbeddingResult
 
 
 class TestEmbeddingService:
@@ -339,7 +339,7 @@ class TestEmbeddingService:
 # PREFERENCE RETRIEVER (using fallback services)
 # =============================================================================
 
-from src.{{ project_slug }}.learning.rag.preference_retriever import PreferenceRetriever
+from {{ project_slug }}.learning.rag.preference_retriever import PreferenceRetriever
 
 
 class TestPreferenceRetriever:
@@ -404,7 +404,7 @@ class TestPreferenceRetriever:
 # TRANSCRIPT INDEXER (round table transcript search)
 # =============================================================================
 
-from src.{{ project_slug }}.learning.rag.transcript_indexer import TranscriptIndexer
+from {{ project_slug }}.learning.rag.transcript_indexer import TranscriptIndexer
 
 
 class MockAnalysis:

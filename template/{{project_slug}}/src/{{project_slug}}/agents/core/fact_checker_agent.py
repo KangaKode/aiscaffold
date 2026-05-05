@@ -1,7 +1,7 @@
 """
 FactChecker Agent -- deliberation agent that challenges speculation in round table.
 
-Unlike the enforcement pipeline (which REJECTS), this agent EXPLAINS why
+Unlike the enforcement pipeline validators, this agent explains why
 speculation language is problematic and suggests evidence-based rewrites.
 Participates in Phase 2 (Challenge) to educate other agents.
 
@@ -41,7 +41,7 @@ class FactCheckerAgent:
 
     @property
     def domain(self) -> str:
-        return "speculation detection and evidence enforcement"
+        return "speculation detection and evidence review"
 
     def _system_prompt(self) -> str:
         banned_examples = []
@@ -54,7 +54,7 @@ class FactCheckerAgent:
             "are evidence-based, not speculative.\n\n"
             "BANNED language (challenge any agent using these):\n"
             + "\n".join(banned_examples) + "\n\n"
-            "REQUIRED: All findings must use evidence level tags:\n"
+            "PREFERRED: Findings should use evidence level tags when possible:\n"
             "  [VERIFIED: source:reference] -- direct proof\n"
             "  [CORROBORATED: source_1 + source_2] -- multiple sources agree\n"
             "  [INDICATED: source_name] -- single source, gaps acknowledged\n"
@@ -68,7 +68,7 @@ class FactCheckerAgent:
             agent_name=self.name,
             domain=self.domain,
             observations=[{
-                "finding": "Evidence enforcement active -- all findings require evidence level tags",
+                "finding": "Evidence review active -- findings should use evidence level tags when possible",
                 "evidence": "FactChecker monitoring for speculation, opinions, and hedging",
                 "severity": "info",
                 "confidence": 1.0,

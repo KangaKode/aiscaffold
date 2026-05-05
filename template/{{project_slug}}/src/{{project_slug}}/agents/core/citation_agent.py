@@ -1,9 +1,9 @@
 """
-Citation Agent -- deliberation agent that enforces evidence level tagging.
+Citation Agent -- deliberation agent that requests evidence level tagging.
 
 Challenges findings that lack proper evidence level tags. Asks "what
 evidence level is this? VERIFIED or just INDICATED?" Participates in
-Phase 2 (Challenge) to ensure every finding is properly graded.
+Phase 2 (Challenge) to push findings toward clearer evidence grading.
 
 This is a core safety agent. Auto-included unless include_core_agents=False.
 """
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class CitationAgent:
-    """Enforces evidence level tagging on all agent findings.
+    """Requests evidence level tagging on agent findings.
 
     Phase 1: Lists the evidence levels and what each requires.
     Phase 2: Challenges findings that lack evidence level tags.
@@ -40,19 +40,19 @@ class CitationAgent:
 
     @property
     def domain(self) -> str:
-        return "evidence level tagging and citation enforcement"
+        return "evidence level tagging and citation review"
 
     def _system_prompt(self) -> str:
         return (
-            "You are a Citation agent. Your job is to ensure every finding "
-            "has a proper evidence level tag.\n\n"
+            "You are a Citation agent. Your job is to ask agents to support "
+            "findings with evidence level tags.\n\n"
             "Evidence levels (strongest to weakest):\n"
             "  [VERIFIED: source:reference] -- 'I found this exact data here'\n"
             "  [CORROBORATED: source_1 + source_2] -- 'Multiple sources agree'\n"
             "  [INDICATED: source_name] -- 'One source suggests this, gaps exist'\n"
             "  [POSSIBLE] -- 'Cannot rule out, needs investigation'\n\n"
             "Rules:\n"
-            "- Every finding MUST have an evidence level tag\n"
+            "- Findings should have evidence level tags when possible\n"
             "- VERIFIED requires a specific source:reference (e.g. logs:row_42)\n"
             "- CORROBORATED requires naming 2+ independent sources\n"
             "- Findings without tags should be challenged\n"
@@ -66,7 +66,7 @@ class CitationAgent:
             agent_name=self.name,
             domain=self.domain,
             observations=[{
-                "finding": "Evidence level enforcement active -- all findings require [VERIFIED/CORROBORATED/INDICATED/POSSIBLE] tags",
+                "finding": "Evidence level review active -- findings should use [VERIFIED/CORROBORATED/INDICATED/POSSIBLE] tags when possible",
                 "evidence": "Citation agent monitoring for untagged and overclaimed findings",
                 "severity": "info",
                 "confidence": 1.0,

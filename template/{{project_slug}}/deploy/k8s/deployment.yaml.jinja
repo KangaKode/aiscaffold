@@ -27,7 +27,8 @@ spec:
     spec:
       containers:
         - name: {{ project_slug }}
-          image: {{ project_slug }}:{{ "{{" }} version {{ "}}" }}
+          # Replace `latest` with an immutable release tag in production.
+          image: {{ project_slug }}:latest
           ports:
             - containerPort: 8000
               name: http
@@ -53,8 +54,11 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
+            # Starter readiness uses liveness so fresh deployments become ready
+            # before agents are registered. Use /health/ready after bootstrapping
+            # required agents and dependencies for your environment.
             httpGet:
-              path: /health/ready
+              path: /health
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -70,9 +74,16 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+            - name: artifacts
+              mountPath: /app/.aiscaffold
       volumes:
         - name: data
           emptyDir: {}
           # For persistent storage, replace emptyDir with a PVC:
           # persistentVolumeClaim:
           #   claimName: {{ project_slug }}-data
+        - name: artifacts
+          emptyDir: {}
+          # For persistent artifacts/state, replace emptyDir with a PVC:
+          # persistentVolumeClaim:
+          #   claimName: {{ project_slug }}-artifacts

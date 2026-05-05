@@ -118,7 +118,7 @@ async def register_agent(auth: AuthContext = Depends(require_role("admin"))): ..
 
 ### Recommended route-to-role matrix
 
-Apply `require_role` to every route. Here's the recommended minimum:
+Apply `require_role` to every authenticated route, while keeping health probes public. Here's the recommended minimum:
 
 | Route | Method | Minimum Role | Rationale |
 |-------|--------|-------------|-----------|
@@ -129,6 +129,10 @@ Apply `require_role` to every route. Here's the recommended minimum:
 | `/round-table/tasks` | POST | member | Expensive (LLM calls) |
 | `/round-table/tasks/{id}` | GET | viewer | Read-only |
 | `/round-table/search` | GET | viewer | Read-only |
+| `/sessions` | POST | member | Creates user state |
+| `/sessions` | GET | viewer | Lists accessible sessions |
+| `/sessions/{id}` | GET | viewer | Read-only |
+| `/sessions/{id}/turns` | POST | member | Appends conversation state |
 | `/agents` | GET | viewer | List visible agents |
 | `/agents` | POST | admin | Registers new agent |
 | `/agents/{id}` | GET | viewer | Read-only |
@@ -136,10 +140,15 @@ Apply `require_role` to every route. Here's the recommended minimum:
 | `/agents/health` | POST | admin | Triggers outbound HTTP |
 | `/feedback` | POST | member | Records signals |
 | `/feedback` | GET | viewer | Read-only |
+| `/feedback/counts` | GET | viewer | Aggregated read-only metrics |
+| `/feedback/rates` | GET | viewer | Aggregated read-only metrics |
 | `/preferences` | POST | member | Modifies preferences |
 | `/preferences` | GET | viewer | Read-only |
+| `/preferences/search` | GET | viewer | Read-only semantic search |
+| `/profile` | GET | viewer | Read-only preference profile |
 | `/checkins` | GET | viewer | Read-only |
 | `/checkins/{id}/respond` | POST | member | Approves/rejects |
+| `/checkins/{id}/skip` | POST | member | Modifies check-in state |
 | `/webhooks/agents/{id}` | POST | member | Receives agent results |
 | `/health` | GET | (public) | K8s probes, no auth |
 | `/health/ready` | GET | (public) | K8s probes, no auth |
@@ -373,7 +382,7 @@ Define retention policies for each data store and document them for your legal/c
 
 | Capability | Status | Notes |
 |------------|--------|-------|
-| AuthContext with tenant_id | **Built** | Propagates to all 25+ routes |
+| AuthContext with tenant_id | **Built** | Propagates across API routes |
 | Agent visibility (public/team/private) | **Built** | `list_for_tenant()` filters by rules |
 | Session isolation | **Built** | `{tenant_id}:{user_id}:{session_id}` |
 | Core safety agents | **Built** | Auto-included in every round table |

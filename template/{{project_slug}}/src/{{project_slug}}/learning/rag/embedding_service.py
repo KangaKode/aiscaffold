@@ -1,10 +1,13 @@
 """
 EmbeddingService -- Multi-provider text embeddings with caching.
 
-Provider priority:
-  1. Local (sentence-transformers) -- free, no API calls, ~384 dimensions
-  2. OpenAI (text-embedding-3-small) -- high quality, ~1536 dimensions
-  3. Deterministic fallback -- hash-based, works without any dependencies
+Default provider:
+  1. Deterministic fallback -- hash-based, works without any dependencies
+
+Opt-in providers:
+  - Set `ROUNDTABLE_EMBEDDING_PROVIDER=local` for sentence-transformers
+  - Set `ROUNDTABLE_EMBEDDING_PROVIDER=openai` for text-embedding-3-small
+  - Set `ROUNDTABLE_EMBEDDING_PROVIDER=auto` to try OpenAI, then local, then fallback
 
 Caching: embeddings are cached in-memory (LRU) to avoid recomputing.
 All providers produce normalized vectors suitable for cosine similarity.
@@ -59,11 +62,13 @@ class EmbeddingService:
 
     def _init_provider(self, preferred: str | None) -> None:
         """Initialize the best available provider."""
-        if preferred == "openai" or (preferred is None and os.environ.get("OPENAI_API_KEY")):
+        preferred = preferred or os.environ.get("ROUNDTABLE_EMBEDDING_PROVIDER", "fallback")
+
+        if preferred in {"openai", "auto"}:
             if self._try_openai():
                 return
 
-        if preferred != "openai":
+        if preferred in {"local", "auto"}:
             if self._try_local():
                 return
 

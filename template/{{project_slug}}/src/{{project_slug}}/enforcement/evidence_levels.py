@@ -1,5 +1,5 @@
 """
-EvidenceLevelEnforcer -- validates that evidence tags follow required format.
+EvidenceLevelEnforcer -- validates provided evidence tags follow required format.
 
 Four evidence levels (strongest to weakest):
   VERIFIED:      [VERIFIED: source:reference] -- direct proof at specific location

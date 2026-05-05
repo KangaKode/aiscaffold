@@ -7,7 +7,7 @@ Mix of CODE-BASED graders and a HUMAN grader example.
 import os
 import pytest
 
-from src.{{ project_slug }}.llm.client import TokenUsage, CacheablePrompt
+from {{ project_slug }}.llm.client import TokenUsage, CacheablePrompt
 from evals.graders.code_grader import CodeGrader
 
 
@@ -44,15 +44,15 @@ class TestAgentProtocolCompliance:
 
     def test_core_agents_implement_protocol(self):
         """All core agents must have name, domain, analyze, challenge, vote."""
-        from src.{{ project_slug }}.agents.core import get_core_agents
-        from src.{{ project_slug }}.orchestration.round_table import AgentProtocol
+        from {{ project_slug }}.agents.core import get_core_agents
+        from {{ project_slug }}.orchestration.round_table import AgentProtocol
 
         agents = get_core_agents(llm_client=None)
         for agent in agents:
             assert isinstance(agent, AgentProtocol), f"{agent.name} doesn't implement AgentProtocol"
 
     def test_core_agents_have_unique_names(self):
-        from src.{{ project_slug }}.agents.core import get_core_agents
+        from {{ project_slug }}.agents.core import get_core_agents
         agents = get_core_agents(llm_client=None)
         names = [a.name for a in agents]
         assert len(names) == len(set(names)), f"Duplicate names: {names}"

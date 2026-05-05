@@ -15,6 +15,8 @@ Exit code 0 = all passed, 1 = failures found.
 import os
 import re
 import sys
+from pathlib import Path
+from urllib.parse import unquote
 
 TEMPLATE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -37,9 +39,20 @@ IP_PROTECTION_PATTERNS = [
 
 MAX_FILE_LINES_WARN = 500
 MAX_FILE_LINES_FAIL = 800
+SKIP_DIRS = {
+    ".git",
+    ".validation-venv",
+    ".tmp-validation",
+    ".tmp-copier-debug",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+}
 
 findings = []
 warnings = []
+
+MARKDOWN_LINK_RE = re.compile(r'(?<!!)\[[^\]]+\]\(([^)]+)\)')
 
 
 def check_banned_patterns(filepath, content):
@@ -112,7 +125,7 @@ def rel(filepath):
 def scan_directory(directory, extensions=(".py", ".jinja")):
     count = 0
     for root, dirs, files in os.walk(directory):
-        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for fname in files:
             if not any(fname.endswith(ext) for ext in extensions):
                 continue
@@ -133,6 +146,38 @@ def scan_directory(directory, extensions=(".py", ".jinja")):
     return count
 
 
+def check_markdown_links():
+    """Validate local Markdown links so public GitHub docs do not 404."""
+    repo_root = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    checked = 0
+    for filepath in repo_root.rglob("*.md"):
+        if any(part in SKIP_DIRS for part in filepath.parts):
+            continue
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        for line_no, line in enumerate(content.splitlines(), 1):
+            for match in MARKDOWN_LINK_RE.finditer(line):
+                raw_target = match.group(1).strip()
+                if not raw_target or raw_target.startswith(("#", "http://", "https://", "mailto:")):
+                    continue
+
+                target = raw_target.split("#", 1)[0].strip()
+                if not target:
+                    continue
+
+                target = unquote(target)
+                if not (filepath.parent / target).exists():
+                    findings.append(
+                        f"  FAIL: {filepath.relative_to(repo_root)}:{line_no} -- broken local Markdown link: {raw_target}"
+                    )
+                    findings.append(f"        {line.strip()[:100]}")
+                checked += 1
+    return checked
+
+
 def main():
     print(f"Scanning template files...")
 
@@ -140,17 +185,18 @@ def main():
     jinja_count = scan_directory(TEMPLATE_DIR, extensions=(".jinja",))
     other_py = scan_directory(os.path.join(TEMPLATE_DIR, "scripts"), extensions=(".py",))
     other_py += scan_directory(os.path.join(TEMPLATE_DIR, "evals"), extensions=(".py",))
-    other_py += scan_directory(os.path.join(TEMPLATE_DIR, "tests"), extensions=(".py", ".jinja"))
+    other_py += scan_directory(os.path.join(TEMPLATE_DIR, "tests"), extensions=(".py",))
 
     total = py_count + jinja_count + other_py
 
     also_scan = scan_directory(
         os.path.join(TEMPLATE_DIR, ".cursor"), extensions=(".md", ".mdc")
     )
+    markdown_links = check_markdown_links()
 
     for pattern, message in IP_PROTECTION_PATTERNS:
         for root, dirs, files in os.walk(TEMPLATE_DIR):
-            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             for fname in files:
                 if fname.endswith((".md", ".mdc", ".yml", ".yaml")):
                     filepath = os.path.join(root, fname)
@@ -162,6 +208,7 @@ def main():
                         pass
 
     print(f"  Scanned {total} code files + {also_scan} doc files")
+    print(f"  Checked {markdown_links} local Markdown links")
     print()
 
     if warnings:

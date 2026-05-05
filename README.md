@@ -1,15 +1,19 @@
 # roundtable
 
-**AI Agent Platform Scaffold -- Multi-Agent Deliberation with Safety Agents Built In**
+**AI-Assisted Investigation Scaffold -- Evidence-Grounded Multi-Agent Workflows**
 
-Multi-agent systems need structured deliberation and evidence discipline -- or they drift toward overconfident, unsupported claims. This scaffold gives you both from the first command.
+`roundtable` is a public reference scaffold for building AI-assisted investigation and analysis systems where unsupported claims, weak evidence, unsafe automation, and access-boundary risks must be explicit and reviewable.
+
+The scaffold combines multi-agent deliberation, adversarial safety agents, evidence-level enforcement, prompt-injection guardrails, tenant-aware context patterns, and validation gates into a reusable starting point for security-sensitive teams.
 
 One-command scaffold ([copier](https://copier.readthedocs.io/)) for AI agent projects: multi-agent round table with adversarial safety agents, chat orchestrator, HTTP API for agents in any language, prompt caching, adaptive learning, and deployment templates (Docker + Kubernetes).
 
 **Safety-first deliberation** -- Every round table includes five core safety agents by default:
 - **Skeptic** -- challenges assumptions, demands evidence, flags logical fallacies
 - **Quality** -- tracks requirement coverage, catches gaps across agents
-- **Evidence & compliance** -- grades claim strength, flags speculation-as-fact language, enforces evidence-level tagging (VERIFIED/CORROBORATED/INDICATED/POSSIBLE)
+- **Evidence & compliance** -- grades claim strength, flags speculation-as-fact language, validates evidence-level tags when agents provide them (VERIFIED/CORROBORATED/INDICATED/POSSIBLE)
+- **Fact checking** -- flags unsupported certainty and challenges hedging presented as analysis
+- **Citation enforcement** -- asks agents for source-backed claims and explicit evidence levels
 
 **Secure** -- SSRF protection, prompt injection defense, rate limiting, HMAC-SHA256 webhook verification, API key auth with tenant-scoped request isolation.
 
@@ -17,17 +21,57 @@ One-command scaffold ([copier](https://copier.readthedocs.io/)) for AI agent pro
 
 **Learning** -- Feedback loops, trust scores, human-in-the-loop approval gates.
 
-**Scalable** -- Docker & Kubernetes (HPA, secrets, security context), external agents via HTTP in any language.
+**Scalable** -- Docker and Kubernetes templates (HPA, secrets, security context), external agents via HTTP in any language.
 
-**Designed for regulated industries** -- evidence grading, adversarial review, speculation rejection, audit trails, and human-in-the-loop gates make AI agent output defensible in finance, healthcare, legal, and security contexts.
+**Designed for regulated industries** -- evidence grading, adversarial review, speculation checks, audit trails, and human-in-the-loop gates make AI agent output easier to inspect in finance, healthcare, legal, and security contexts.
 
 *243 tests · 79% coverage · 16-check validation pipeline (ruff, bandit, red team, AI checks, pytest)*
 
 ---
 
+## What This Demonstrates
+
+- **Detection and response infrastructure mindset:** validation gates, red-team checks, evals, CI, architecture tests, and repeatable workflows.
+- **Investigation-grade evidence discipline:** evidence levels, citation validation hooks, fact checking, numeric verification, explicit dissent, and source-aware findings.
+- **AI security relevance:** multi-agent deliberation, adversarial safety agents, hallucination controls, prompt-injection guardrails, and human-in-the-loop workflows.
+- **Access-boundary design:** tenant-aware context patterns, agent visibility rules, session isolation primitives, and RBAC extension points.
+- **Systems thinking:** generated project architecture, platform guide, Docker/Kubernetes templates, API gateway, external agent protocol, and validation pipeline.
+- **Operational empathy:** cloneable scaffold, docs, quick start, generated tests, and clear commands for inspection.
+
+---
+
+## Gated AI Development Workflow
+
+`roundtable` is designed to avoid unreviewed "vibe coding." The scaffold includes a gated AI-assisted development process: design before code, expert review before implementation, tests before production logic, and automated security checks before commit.
+
+```mermaid
+flowchart TD
+    Request["Feature or Investigation Need"] --> Scout["Codebase Scout: map existing system"]
+    Scout --> Architect["Solution Architect: architecture review"]
+    Architect --> DesignDocs["Design Docs Required"]
+    DesignDocs --> ArchMap["Architecture Map"]
+    DesignDocs --> DataFlow["Data Flow Diagram"]
+    DesignDocs --> Wireframes["Wireframes Doc: UI or workflow states"]
+    ArchMap --> Review["Expert Design Review"]
+    DataFlow --> Review
+    Wireframes --> Review
+    Review -->|"changes requested"| DesignDocs
+    Review -->|"approved"| Tests["Test Architect: tests first"]
+    Tests --> Code["Implementation"]
+    Code --> CodeReview["Code Reviewer Gate"]
+    CodeReview --> RedTeam["Red Team Security Gate"]
+    RedTeam --> CI["CI: tests, architecture, lint, Bandit"]
+    CI -->|"fail"| Code
+    CI -->|"pass"| Commit["Commit or Merge"]
+```
+
+See [DEVELOPMENT_PROCESS.md](docs/DEVELOPMENT_PROCESS.md) for the full workflow.
+
+---
+
 ## Who Is This For?
 
-**If you're tired of LLM hallucinations** -- the enforcement pipeline rejects speculation ("probably", "I think", "90% confident") and requires evidence citations on every finding. Agents that can't cite their sources get auto-corrected via LLM rewrite. Four evidence levels inspired by intelligence analysis frameworks (VERIFIED, CORROBORATED, INDICATED, POSSIBLE) make claim strength explicit.
+**If you're tired of LLM hallucinations** -- the enforcement pipeline flags speculation ("probably", "I think", "90% confident"), checks evidence-level formatting, and records weak-output findings so teams can add stricter correction policies where needed. Four evidence levels inspired by intelligence analysis frameworks (VERIFIED, CORROBORATED, INDICATED, POSSIBLE) make claim strength explicit.
 
 **If you're building internal AI tools** -- security is baked in, not bolted on. SSRF protection, prompt injection defense, HMAC-SHA256 webhooks, rate limiting, and API auth are already wired into every endpoint. You don't have to build this yourself.
 
@@ -45,8 +89,10 @@ If you just want a single agent behind an API (no round table, no multi-agent), 
 
 ```bash
 copier copy gh:KangaKode/roundtable my-project --trust
-cd my-project && python3 -m venv venv && source venv/bin/activate
+cd my-project/<project_slug>  # use the slug printed by Copier
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+pip install -e .
 make new-agent NAME=my_analyst DOMAIN="code review"
 make serve
 curl -X POST http://localhost:8000/api/v1/chat \
@@ -139,12 +185,12 @@ flowchart LR
         V[Voting]
     end
     phase1 --> enforce
-    enforce -->|"accepted / rewritten"| phase2
+    enforce -->|"validation findings logged"| phase2
     phase2 --> phase3
     phase3 --> Result[Consensus or Dissent]
 ```
 
-Each agent analyzes the task independently. The enforcement pipeline validates responses (rejecting speculation, requiring evidence tags). Agents then challenge each other's findings with counter-evidence, and finally vote on a synthesized recommendation.
+Each agent analyzes the task independently. The enforcement pipeline validates Phase 1 analyses, flags speculation, checks evidence-tag formatting when tags are present, and logs weak-claim findings before challenge. Agents then challenge each other's findings with counter-evidence, and finally vote on a synthesized recommendation.
 
 ### Core Safety Agents
 
@@ -154,6 +200,8 @@ flowchart TD
         Skeptic["Skeptic\nChallenges assumptions\nDemands evidence\nFlags logical fallacies"]
         Quality["Quality\nTracks requirement coverage\nFinds gaps in scope\nChecks edge cases"]
         Evidence["Evidence\nGrades claim strength\nFlags speculation as fact\nChecks citation quality"]
+        FactChecker["FactChecker\nFlags unsupported certainty\nChallenges weak claims"]
+        Citation["Citation\nRequests source-backed claims\nChecks evidence levels"]
     end
     subgraph user [Your Domain Specialists]
         UserA["Your Agent A"]
@@ -175,9 +223,12 @@ pip install copier
 
 copier copy gh:KangaKode/roundtable my-project --trust
 
-cd my-project
+# Copier creates the generated app inside my-project/<project_slug>.
+# Use the exact cd command printed at the end of generation.
+cd my-project/<project_slug>
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+pip install -e .
 pre-commit install
 make test       # Architecture tests pass from day 1
 make demo       # See the round table in action (no API keys needed)
@@ -192,6 +243,7 @@ make serve      # Start the API gateway
 |------------|------------|
 | Building your first agent | [TUTORIAL.md](docs/TUTORIAL.md) -- create, test, register, and run an agent in 30 minutes |
 | Understanding the architecture | [ARCHITECTURE.md](docs/ARCHITECTURE.md) -- modules, layering rules, design decisions |
+| Reviewing the development process | [DEVELOPMENT_PROCESS.md](docs/DEVELOPMENT_PROCESS.md) -- gated AI-assisted workflow from design docs to CI |
 | Deploying as a multi-team platform | [PLATFORM_GUIDE.md](docs/PLATFORM_GUIDE.md) -- RBAC, tenant isolation, team onboarding |
 | Connecting an external agent (any language) | [AGENT_PROTOCOL.md](docs/AGENT_PROTOCOL.md) -- HTTP contract, JSON schemas, examples |
 | A manager or stakeholder | [TEAM_OVERVIEW.md](docs/TEAM_OVERVIEW.md) -- 5-minute plain-language overview |
@@ -210,7 +262,7 @@ Every scaffolded project includes **53+ Python source files** across 8 modules:
 
 ### API Gateway (FastAPI)
 
-9 route modules exposing everything over HTTP:
+API route modules expose the core workflow over HTTP:
 
 - `POST /api/v1/round-table/tasks` -- Submit task for full multi-agent deliberation
 - `GET  /api/v1/round-table/search?q=` -- Semantic search over past deliberations
@@ -221,7 +273,9 @@ Every scaffolded project includes **53+ Python source files** across 8 modules:
 - `POST /api/v1/feedback` -- Record user feedback signal
 - `GET  /api/v1/preferences/search?q=` -- Semantic preference search
 - `GET  /api/v1/checkins` -- List pending check-ins
-- `GET  /health` -- Liveness, readiness, and metrics
+- `GET  /health` -- Liveness
+- `GET  /health/ready` -- Readiness
+- `GET  /metrics` -- Basic operational metrics
 
 ### External Agent Protocol (Any Language)
 
@@ -252,7 +306,7 @@ Teaches your project to learn from user interactions:
 - **Agent Trust** -- EMA-based trust scores that influence agent routing
 - **Check-in Manager** -- Never adapts silently; asks permission first
 - **User Profile** -- Aggregates preferences into context bundles for LLM prompts
-- **RAG** -- ChromaDB vector search over preferences and round table transcripts (in-memory fallback)
+- **RAG** -- in-memory vector search for local development, with pgvector recommended for Postgres production deployments
 - **Graduation** -- Promotes stable patterns to global profile across projects
 
 ### Security (Baked In Everywhere)
@@ -277,13 +331,13 @@ Every agent's output is validated before it enters the challenge phase. Four evi
 | **INDICATED** | "Data suggests this, but there are gaps" | Must name the source and acknowledge missing data |
 | **POSSIBLE** | "Cannot rule out -- warrants investigation" | Must explain what would confirm or deny the finding |
 
-The enforcement pipeline runs automatically after Phase 1:
+The enforcement pipeline runs automatically after Phase 1 and records validation findings before challenge:
 1. **FactChecker** -- scans for banned patterns: "probably", "I think", "90% confident", "seems to"
 2. **EvidenceLevelEnforcer** -- validates tag format (VERIFIED needs source:ref, CORROBORATED needs 2+ sources)
 3. **CitationValidator** -- checks cited sources exist (pluggable SourceRegistry)
 4. **MathVerifier** -- validates numeric claims against ground truth (pluggable)
 
-Responses with 3+ critical violations are **rejected and auto-rewritten** via LLM correction prompt (up to 2 retries).
+Projects can configure stricter correction behavior by providing concrete source registries, math verifiers, and LLM correction settings.
 
 ### Multi-Tenancy Structural Prep
 
@@ -293,7 +347,7 @@ The scaffold includes isolation primitives that make adding multi-tenancy straig
 flowchart LR
     Request[HTTP Request] --> Auth[verify_api_key]
     Auth --> AC["AuthContext\n(api_key, user_id, tenant_id)"]
-    AC --> Routes[All 25 Routes]
+    AC --> Routes[API Routes]
     AC --> Sessions["Sessions\n(tenant:user:session)"]
     AC --> Registry["Agent Registry\n(visibility: public/team/private)"]
 ```
@@ -308,11 +362,11 @@ flowchart LR
 
 - **Dockerfile** -- Multi-stage build, non-root user, health check
 - **docker-compose.yml** -- App + Postgres, one command to run
-- **Kubernetes** -- Deployment (security context, version tags), Service, HPA (auto-scale 2-10 pods), ConfigMap, Secret template
+- **Kubernetes manifests** -- Deployment (security context, replaceable image tag), Service, HPA (auto-scale 2-10 pods), ConfigMap, Secret template
 
-### 14 Development Subagents (`.cursor/agents/`)
+### Development Subagents (`.cursor/agents/`)
 
-Cursor IDE agent definitions that assist during development (not runtime agents). These prompts are portable to any agent framework including Claude Code.
+Cursor IDE agent definitions that assist during development (not runtime agents). Generated projects include 12 always-on development agents plus up to 3 conditional specialists depending on project type and persistence choices. These prompts are portable to any agent framework including Claude Code.
 
 | Agent | Role |
 |-------|------|
@@ -324,12 +378,12 @@ Cursor IDE agent definitions that assist during development (not runtime agents)
 | **red-team** | Adversarial pre-commit security gate (BLOCKS on findings) |
 | **security-hardener** | Blue team -- proactive defensive security |
 | **prompt-engineer** | 2026 Anthropic Skills patterns for prompt design |
-| **ai-engineer** | Multi-agent architecture and orchestration |
 | **test-architect** | Test strategy, eval design, coverage analysis |
 | **debugger** | Systematic root cause analysis |
 | **project-curator** | Directory structure and root cleanliness |
-| **sql-pro** | Database optimization (conditional on persistence choice) |
-| **ux-researcher** | User workflow optimization (conditional on project type) |
+| **ai-engineer** | Conditional: multi-agent architecture and orchestration |
+| **sql-pro** | Conditional: database optimization when persistence is enabled |
+| **ux-researcher** | Conditional: user workflow optimization for web apps |
 
 ---
 
@@ -361,7 +415,7 @@ make demo          # Run round table demo (no API keys needed)
 make new-agent NAME=my_analyst DOMAIN="code review"  # Scaffold a new agent
 make docker-build  # Build Docker image
 make docker-run    # Run with docker-compose
-make k8s-deploy    # Deploy to Kubernetes
+make k8s-deploy    # Apply Kubernetes manifests
 make red-team      # Run red team on all source files
 make lint          # Run linters
 make format        # Format code
@@ -397,7 +451,7 @@ template/{{project_slug}}/
       remote.py       # HTTP adapter for any-language agents
       registry.py     # Agent management with tenant visibility
     api/              # FastAPI gateway
-      routes/         # 10 route modules
+      routes/         # API route modules
       middleware/      # Auth (AuthContext), rate limiting
       models/         # Request/response schemas
     harness/          # Session lifecycle (Item/Turn/Thread)
@@ -407,7 +461,7 @@ template/{{project_slug}}/
     learning/         # Feedback, trust, preferences, RAG, graduation
       rag/            # VectorStore, embeddings, transcript search
   deploy/k8s/         # Kubernetes manifests
-  .cursor/agents/     # 14 development subagent definitions
+  .cursor/agents/     # development subagent definitions
   docs/               # Progressive disclosure documentation
   tests/              # 243 tests across 12 test files
   evals/              # Eval infrastructure

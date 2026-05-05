@@ -19,8 +19,10 @@ Reference: docs/REFERENCES.md (Anthropic harness guide -- three-layer external s
 
 import json
 import logging
+import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -99,22 +101,28 @@ class ProgressNotesManager:
             print(entry.to_summary())
     """
 
-    def __init__(self, db=None):
+    def __init__(self, db=None, db_path: str | Path | None = None):
         """
         Initialize progress notes manager.
 
         Args:
             db: Database instance (lazy-loaded if not provided)
+            db_path: SQLite path for standalone use without an application database
         """
         self._db = db
+        self._db_path = Path(db_path) if db_path is not None else None
         logger.info("[ProgressNotes] Manager initialized")
 
     def _get_db(self):
         """Lazy-load database."""
         if self._db is None:
-            from data.database import get_database
+            if self._db_path is not None:
+                self._db_path.parent.mkdir(parents=True, exist_ok=True)
+                self._db = _SQLiteProgressDatabase(self._db_path)
+            else:
+                from data.database import get_database
 
-            self._db = get_database()
+                self._db = get_database()
         return self._db
 
     def ensure_table(self) -> None:
@@ -244,3 +252,13 @@ class ProgressNotesManager:
             lines.append("---")
 
         return "\n".join(lines)
+
+
+class _SQLiteProgressDatabase:
+    """Small adapter that provides the database API expected by ProgressNotesManager."""
+
+    def __init__(self, db_path: Path):
+        self._db_path = db_path
+
+    def _get_connection(self):
+        return sqlite3.connect(self._db_path)

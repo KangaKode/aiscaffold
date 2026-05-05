@@ -28,7 +28,7 @@ make demo
 
 This runs entirely locally with no API keys and no network calls.
 
-> **Key takeaway:** Every agent must cite evidence for its findings. The system surfaces disagreements rather than hiding them.
+> **Key takeaway:** Agent prompts request evidence-backed findings. The system surfaces disagreements rather than hiding them.
 
 ---
 
@@ -176,7 +176,7 @@ Create `tests/test_my_agent.py`:
 
 ```python
 import pytest
-from src.{{ project_slug }}.agents.my_agent import MyAgent
+from {{ project_slug }}.agents.my_agent import MyAgent
 
 
 class TestMyAgent:
@@ -254,9 +254,9 @@ registry.register_local(SecurityAnalyst(llm_client=llm_client), capabilities=["s
 Register your agent when creating a round table:
 
 ```python
-from src.{{ project_slug }}.agents.my_agent import MyAgent
-from src.{{ project_slug }}.orchestration.round_table import RoundTable, RoundTableConfig, RoundTableTask
-from src.{{ project_slug }}.llm import create_client
+from {{ project_slug }}.agents.my_agent import MyAgent
+from {{ project_slug }}.orchestration.round_table import RoundTable, RoundTableConfig, RoundTableTask
+from {{ project_slug }}.llm import create_client
 
 llm = create_client()
 agents = [MyAgent(llm)]
@@ -311,9 +311,9 @@ Use the round table directly in Python:
 
 ```python
 import asyncio
-from src.{{ project_slug }}.orchestration import RoundTable, RoundTableConfig, RoundTableTask
-from src.{{ project_slug }}.llm import create_client
-from src.{{ project_slug }}.agents.my_agent import MyAgent
+from {{ project_slug }}.orchestration import RoundTable, RoundTableConfig, RoundTableTask
+from {{ project_slug }}.llm import create_client
+from {{ project_slug }}.agents.my_agent import MyAgent
 
 async def main():
     llm = create_client()
@@ -428,7 +428,7 @@ make docker-build   # Build the image
 make docker-run     # Start with docker-compose
 ```
 
-For Kubernetes: `make k8s-deploy`. See `deploy/k8s/` for manifests.
+For Kubernetes manifests: update `deploy/k8s/deployment.yaml` with your image tag, secrets, persistence for `/app/data` and `.aiscaffold/`, ingress, and TLS before running `make k8s-deploy`.
 
 {% endif -%}
 ### Explore all commands

@@ -1,7 +1,7 @@
 """Unit tests for the security module -- validators and prompt_guard."""
 
 import pytest
-from src.{{project_slug}}.security.validators import (
+from {{project_slug}}.security.validators import (
     ValidationError,
     validate_url,
     validate_length,
@@ -9,7 +9,7 @@ from src.{{project_slug}}.security.validators import (
     validate_list_size,
     validate_dict_size,
 )
-from src.{{project_slug}}.security.prompt_guard import (
+from {{project_slug}}.security.prompt_guard import (
     sanitize_for_prompt,
     detect_injection_attempt,
     wrap_user_content,

@@ -7,12 +7,12 @@ They test the scaffold's own security systems.
 
 import re
 
-from src.{{ project_slug }}.enforcement.fact_checker import FactChecker
-from src.{{ project_slug }}.security.prompt_guard import (
+from {{ project_slug }}.enforcement.fact_checker import FactChecker
+from {{ project_slug }}.security.prompt_guard import (
     detect_injection_attempt,
     sanitize_for_prompt,
 )
-from src.{{ project_slug }}.security.validators import validate_length, validate_url
+from {{ project_slug }}.security.validators import validate_length, validate_url
 
 
 class TestPromptInjectionDefense:
@@ -72,7 +72,7 @@ class TestInputValidation:
     """Eval: Do validators reject malicious input at boundaries?"""
 
     def test_ssrf_blocked_on_private_ips(self):
-        from src.{{ project_slug }}.security import ValidationError
+        from {{ project_slug }}.security import ValidationError
         for url in ["http://127.0.0.1", "http://10.0.0.1", "http://169.254.169.254"]:
             try:
                 validate_url(url, "test_url")
@@ -81,7 +81,7 @@ class TestInputValidation:
                 pass
 
     def test_ssrf_blocked_on_dangerous_schemes(self):
-        from src.{{ project_slug }}.security import ValidationError
+        from {{ project_slug }}.security import ValidationError
         for url in ["file:///etc/passwd", "gopher://evil.com", "ftp://internal"]:
             try:
                 validate_url(url, "test_url")
@@ -90,7 +90,7 @@ class TestInputValidation:
                 pass
 
     def test_length_limits_enforced(self):
-        from src.{{ project_slug }}.security import ValidationError
+        from {{ project_slug }}.security import ValidationError
         try:
             validate_length("x" * 1_000_001, "test_field", max_length=1_000_000)
             assert False, "Length limit not enforced"

@@ -21,7 +21,7 @@ def mock_llm():
 @pytest.fixture
 def sample_task():
     """Sample round table task for testing."""
-    from src.orchestration.round_table import RoundTableTask  # type: ignore
+    from {{ project_slug }}.orchestration.round_table import RoundTableTask
 
     return RoundTableTask(
         id="eval_test_001",

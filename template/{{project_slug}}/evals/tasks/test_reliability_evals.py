@@ -6,7 +6,7 @@ CODE-BASED graders testing the scaffold's reliability properties.
 
 import pytest
 
-from src.{{ project_slug }}.orchestration.round_table import (
+from {{ project_slug }}.orchestration.round_table import (
     AgentAnalysis,
     AgentChallenge,
     AgentVote,

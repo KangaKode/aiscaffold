@@ -200,7 +200,7 @@ class LLMClient:
 
         prompt = self._sanitize_prompt(prompt)
 
-        if self._max_cost_usd and self._total_usage.estimated_cost_usd >= self._max_cost_usd:
+        if self._max_cost_usd is not None and self._total_usage.estimated_cost_usd >= self._max_cost_usd:
             logger.error(
                 f"[LLM] Budget exhausted: ${self._total_usage.estimated_cost_usd:.4f} "
                 f">= ${self._max_cost_usd:.4f}. Call blocked."

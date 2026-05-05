@@ -4,8 +4,10 @@ AI project scaffold with 2026 best practices -- CLI and core utilities.
 
 ## Install
 
+From the repository root:
+
 ```bash
-pip install aiscaffold
+python -m pip install -e core
 ```
 
 ## CLI Usage

@@ -8,7 +8,7 @@ Code-based evals run without LLM. Model-based show the pattern for when you need
 import os
 import pytest
 
-from src.{{ project_slug }}.enforcement.evidence_levels import EvidenceLevelEnforcer
+from {{ project_slug }}.enforcement.evidence_levels import EvidenceLevelEnforcer
 from evals.graders.code_grader import CodeGrader
 
 
@@ -42,7 +42,7 @@ class TestAgentOutputStructure:
 
     def test_analysis_has_required_fields(self):
         """Every AgentAnalysis must have agent_name, domain, and observations."""
-        from src.{{ project_slug }}.orchestration.round_table import AgentAnalysis
+        from {{ project_slug }}.orchestration.round_table import AgentAnalysis
 
         grader = CodeGrader("analysis_structure")
         grader.add_check("has_agent_name", lambda a: bool(a.agent_name))
@@ -73,7 +73,7 @@ class TestModelBasedQualityEval:
     async def test_synthesis_is_actionable(self):
         """Use LLM-as-judge to evaluate synthesis quality."""
         from evals.graders.model_graders import ModelGraderConfig, grade_with_model
-        from src.{{ project_slug }}.llm import create_client
+        from {{ project_slug }}.llm import create_client
 
         llm = create_client()
         config = ModelGraderConfig(

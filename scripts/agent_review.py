@@ -49,14 +49,12 @@ def review_code_quality(filepath, content, rel_path):
         # Functions without docstrings (only public functions)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not node.name.startswith("_"):
-                if not (node.body and isinstance(node.body[0], ast.Expr)
-                        and isinstance(node.body[0].value, (ast.Constant, ast.Str))):
+                if ast.get_docstring(node) is None:
                     warn("code-reviewer", f"{rel_path}:{node.lineno} -- Public function '{node.name}' missing docstring")
 
         # Classes without docstrings
         if isinstance(node, ast.ClassDef):
-            if not (node.body and isinstance(node.body[0], ast.Expr)
-                    and isinstance(node.body[0].value, (ast.Constant, ast.Str))):
+            if ast.get_docstring(node) is None:
                 fail("code-reviewer", f"{rel_path}:{node.lineno} -- Class '{node.name}' missing docstring")
 
 

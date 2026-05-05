@@ -186,7 +186,7 @@ def _add_evals(root: Path):
 def _add_state(root: Path):
     """Add state management utilities."""
     console.print("[green]State management utilities available via:[/green]")
-    console.print("  pip install aiscaffold")
+    console.print("  python -m pip install -e <roundtable-repo>/core")
     console.print("  from aiscaffold import TaskList, ProgressNotesManager")
 
 

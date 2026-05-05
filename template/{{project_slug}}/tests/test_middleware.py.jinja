@@ -7,13 +7,13 @@ import time
 import pytest
 from unittest.mock import MagicMock
 
-from src.{{ project_slug }}.api.middleware.auth import (
+from {{ project_slug }}.api.middleware.auth import (
     AuthContext,
     check_production_auth,
     get_api_key,
     verify_api_key,
 )
-from src.{{ project_slug }}.api.middleware.rate_limit import (
+from {{ project_slug }}.api.middleware.rate_limit import (
     MAX_TRACKED_IPS,
     _cleanup_old_entries,
     _global_cleanup,
@@ -150,7 +150,7 @@ class TestRateLimitCleanup:
         assert len(_request_log["192.168.1.1"]) == 2
 
     def test_global_cleanup_removes_empty_entries(self):
-        import src.{{ project_slug }}.api.middleware.rate_limit as rl_mod
+        import {{ project_slug }}.api.middleware.rate_limit as rl_mod
         old_ts = rl_mod._last_global_cleanup
         rl_mod._last_global_cleanup = 0.0
         try:
@@ -163,7 +163,7 @@ class TestRateLimitCleanup:
             rl_mod._last_global_cleanup = old_ts
 
     def test_global_cleanup_respects_interval(self):
-        import src.{{ project_slug }}.api.middleware.rate_limit as rl_mod
+        import {{ project_slug }}.api.middleware.rate_limit as rl_mod
         rl_mod._last_global_cleanup = time.time()
         _request_log["stale_ip"] = [time.time() - 120]
         _global_cleanup(window_seconds=60.0)
@@ -182,7 +182,7 @@ class TestCheckRateLimit:
     @pytest.mark.asyncio
     async def test_allows_under_limit(self, monkeypatch):
         monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "10")
-        import src.{{ project_slug }}.api.middleware.rate_limit as rl_mod
+        import {{ project_slug }}.api.middleware.rate_limit as rl_mod
         rl_mod._last_global_cleanup = 0.0
         request = MagicMock()
         request.client = MagicMock(host="10.0.0.1")
@@ -193,7 +193,7 @@ class TestCheckRateLimit:
     async def test_rejects_over_limit(self, monkeypatch):
         from fastapi import HTTPException
         monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
-        import src.{{ project_slug }}.api.middleware.rate_limit as rl_mod
+        import {{ project_slug }}.api.middleware.rate_limit as rl_mod
         rl_mod._last_global_cleanup = 0.0
         request = MagicMock()
         request.client = MagicMock(host="10.0.0.2")
@@ -206,7 +206,7 @@ class TestCheckRateLimit:
     @pytest.mark.asyncio
     async def test_503_when_table_full(self, monkeypatch):
         from fastapi import HTTPException
-        import src.{{ project_slug }}.api.middleware.rate_limit as rl_mod
+        import {{ project_slug }}.api.middleware.rate_limit as rl_mod
         rl_mod._last_global_cleanup = time.time()
         now = time.time()
         for i in range(MAX_TRACKED_IPS):
@@ -220,7 +220,7 @@ class TestCheckRateLimit:
     @pytest.mark.asyncio
     async def test_none_client_uses_unknown(self, monkeypatch):
         monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "100")
-        import src.{{ project_slug }}.api.middleware.rate_limit as rl_mod
+        import {{ project_slug }}.api.middleware.rate_limit as rl_mod
         rl_mod._last_global_cleanup = 0.0
         request = MagicMock()
         request.client = None

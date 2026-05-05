@@ -210,7 +210,7 @@ class SessionProtocol:
             task_path = self.work_dir / "tasks.json"
             if task_path.exists():
                 self._task_list = TaskList.load(task_path)
-                incomplete = [t for t in self._task_list.tasks if t.status.value in ("pending", "in_progress")]
+                incomplete = [t for t in self._task_list.tasks if t.status in ("pending", "in_progress")]
                 logger.info(f"[Session] Loaded task list: {len(incomplete)} incomplete tasks")
         except ImportError:
             logger.debug("[Session] aiscaffold core not installed -- task tracking unavailable")
@@ -221,6 +221,7 @@ class SessionProtocol:
             from aiscaffold.progress_notes import ProgressNotesManager
 
             self._progress_mgr = ProgressNotesManager(db_path=self.work_dir / "data" / "progress.db")
+            self._progress_mgr.ensure_table()
             recent = self._progress_mgr.get_recent(limit=3)
             if recent:
                 logger.info(f"[Session] Loaded {len(recent)} recent progress notes")
