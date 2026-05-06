@@ -208,6 +208,29 @@ class TestEvidenceEnforcementPipeline:
         assert result.outcome == "rejected"
 
     @pytest.mark.asyncio
+    async def test_failed_rewrite_remains_rejected(self):
+        class BadRewriteLLM:
+            async def call(self, **kwargs):
+                class Response:
+                    content = (
+                        "I think this probably indicates a breach and I believe "
+                        "the attacker likely used stolen credentials. It appears "
+                        "that the system was compromised. This suggests lateral movement."
+                    )
+
+                return Response()
+
+        pipeline = EvidenceEnforcementPipeline(llm_client=BadRewriteLLM(), max_retries=1)
+        result = await pipeline.validate(
+            "test_agent",
+            "I think this probably indicates a breach and I believe "
+            "the attacker likely used stolen credentials. It appears "
+            "that the system was compromised. This suggests lateral movement."
+        )
+        assert result.outcome == "rejected"
+        assert result.corrected_content is None
+
+    @pytest.mark.asyncio
     async def test_combines_violations_from_all_validators(self):
         pipeline = EvidenceEnforcementPipeline()
         result = await pipeline.validate(

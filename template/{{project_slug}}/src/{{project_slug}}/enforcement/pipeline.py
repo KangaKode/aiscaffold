@@ -90,13 +90,9 @@ class EvidenceEnforcementPipeline:
 
             logger.warning(
                 f"[Enforcement] {agent_name}: rewrite failed after "
-                f"{self._max_retries} attempts, passing with warnings"
+                f"{self._max_retries} attempts, rejecting response"
             )
-            return ValidationResult(
-                outcome="challenged",
-                violations=all_violations,
-                corrected_content=response_text,
-            )
+            return ValidationResult(outcome="rejected", violations=all_violations)
 
         if critical_count >= 3:
             outcome = "rejected"

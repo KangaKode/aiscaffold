@@ -360,6 +360,12 @@ class RoundTable:
                         f"{len(result.violations)} enforcement violations "
                         f"({result.outcome})"
                     )
+                if result.outcome == "rejected":
+                    logger.warning(
+                        f"[RoundTable] Dropping rejected analysis from "
+                        f"{analysis.agent_name}"
+                    )
+                    continue
                 if result.corrected_content and result.outcome != "accepted":
                     try:
                         from ..llm.json_parser import extract_json
@@ -371,8 +377,19 @@ class RoundTable:
                                 observations=corrected_data,
                                 recommendations=analysis.recommendations,
                             )
+                        else:
+                            logger.warning(
+                                f"[RoundTable] Dropping {analysis.agent_name}: "
+                                "corrected analysis was not parseable"
+                            )
+                            continue
                     except Exception:
-                        pass
+                        logger.warning(
+                            f"[RoundTable] Dropping {analysis.agent_name}: "
+                            "corrected analysis could not be applied",
+                            exc_info=True,
+                        )
+                        continue
                 enforced.append(analysis)
             return enforced
         except Exception as e:

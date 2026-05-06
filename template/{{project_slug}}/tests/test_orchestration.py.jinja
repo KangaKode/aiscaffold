@@ -3,7 +3,9 @@
 import pytest
 from unittest.mock import AsyncMock
 
-from {{project_slug}}.orchestration.round_table import RoundTable, RoundTableConfig, RoundTableTask
+from {{project_slug}}.orchestration.round_table import (
+    AgentAnalysis, RoundTable, RoundTableConfig, RoundTableTask,
+)
 from {{project_slug}}.orchestration.chat_orchestrator import ChatOrchestrator, ChatConfig
 from {{project_slug}}.orchestration.agent_router import AgentRouter
 
@@ -109,6 +111,33 @@ class TestRoundTable:
         rt = RoundTable(agents=mock_agents, config=config, llm_client=mock_llm)
         result = await rt.run(sample_task)
         assert result.task_id == sample_task.id
+
+    @pytest.mark.asyncio
+    async def test_evidence_enforcement_drops_rejected_analysis(self, sample_task):
+        config = RoundTableConfig(
+            enable_strategy_phase=False,
+            enable_challenge_phase=False,
+            include_core_agents=False,
+            enforce_evidence=True,
+        )
+        rt = RoundTable(agents=[], config=config)
+        rejected = AgentAnalysis(
+            agent_name="unsafe_agent",
+            domain="security",
+            observations=[{
+                "finding": (
+                    "I think this probably indicates a breach and I believe "
+                    "the attacker likely used stolen credentials. It appears "
+                    "that the system was compromised."
+                ),
+                "evidence": "This suggests lateral movement.",
+                "severity": "critical",
+            }],
+        )
+
+        enforced = await rt._enforce_evidence([rejected], sample_task)
+
+        assert enforced == []
 
 
 class TestChatOrchestrator:
