@@ -361,35 +361,25 @@ class RoundTable:
                         f"({result.outcome})"
                     )
                 if result.outcome == "rejected":
-                    logger.warning(
-                        f"[RoundTable] Dropping rejected analysis from "
-                        f"{analysis.agent_name}"
-                    )
+                    logger.warning(f"[RoundTable] Dropping rejected analysis from {analysis.agent_name}")
                     continue
                 if result.corrected_content and result.outcome != "accepted":
                     try:
                         from ..llm.json_parser import extract_json
                         corrected_data = extract_json(result.corrected_content)
-                        if corrected_data and isinstance(corrected_data, list):
-                            analysis = AgentAnalysis(
-                                agent_name=analysis.agent_name,
-                                domain=analysis.domain,
-                                observations=corrected_data,
-                                recommendations=analysis.recommendations,
-                            )
-                        else:
-                            logger.warning(
-                                f"[RoundTable] Dropping {analysis.agent_name}: "
-                                "corrected analysis was not parseable"
-                            )
-                            continue
                     except Exception:
+                        corrected_data = None
+                    if not isinstance(corrected_data, list):
                         logger.warning(
-                            f"[RoundTable] Dropping {analysis.agent_name}: "
-                            "corrected analysis could not be applied",
-                            exc_info=True,
+                            f"[RoundTable] Dropping {analysis.agent_name}: corrected analysis was not parseable"
                         )
                         continue
+                    analysis = AgentAnalysis(
+                        agent_name=analysis.agent_name,
+                        domain=analysis.domain,
+                        observations=corrected_data,
+                        recommendations=analysis.recommendations,
+                    )
                 enforced.append(analysis)
             return enforced
         except Exception as e:
