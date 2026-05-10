@@ -11,6 +11,7 @@ This documentation is for reviewers and builders evaluating the `roundtable` sca
 | Understand the gated AI development workflow | [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md) |
 | Deploy as a multi-team platform | [PLATFORM_GUIDE.md](PLATFORM_GUIDE.md) |
 | Connect an external agent | [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) |
+| Hand off a roundtable-based POC | [ROUNDTABLE_HANDOFF.md](ROUNDTABLE_HANDOFF.md) |
 | Share a non-technical overview | [TEAM_OVERVIEW.md](TEAM_OVERVIEW.md) |
 | Look up terminology | [GLOSSARY.md](GLOSSARY.md) |
 

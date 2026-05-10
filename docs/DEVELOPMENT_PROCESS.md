@@ -50,6 +50,13 @@ Small test-only changes and tiny bug fixes can skip the full ceremony when the m
 | Red-team review | Security regressions, prompt-injection risk, data leaks, and unsafe automation |
 | CI validation | Broken tests, lint failures, security findings, and generated-template regressions |
 
+## Roundtable POC Handoff
+
+If a POC changes agents, orchestration, external agent protocol behavior, or
+evidence enforcement, complete [ROUNDTABLE_HANDOFF.md](ROUNDTABLE_HANDOFF.md)
+before engineering review. The handoff captures agent contracts, phase evidence,
+failure behavior, observability, and demo-only production blockers.
+
 ## Why This Matters
 
 AI assistants can write code quickly, but speed without review creates fragile systems. This workflow keeps agentic development aligned with engineering discipline:

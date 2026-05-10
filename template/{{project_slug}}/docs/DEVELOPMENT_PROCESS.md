@@ -50,6 +50,13 @@ Use `docs/designs/<feature-name>/` for feature-specific artifacts if your team p
 | Red-team review | Security regressions, prompt-injection risk, data leaks, and unsafe automation |
 | CI validation | Broken tests, lint failures, security findings, and template regressions |
 
+## Roundtable POC Handoff
+
+If a POC changes agents, orchestration, external agent protocol behavior, or
+evidence enforcement, complete [ROUNDTABLE_HANDOFF.md](ROUNDTABLE_HANDOFF.md)
+before engineering review. The handoff captures agent contracts, phase evidence,
+failure behavior, observability, and demo-only production blockers.
+
 ## Operating Rule
 
 Do not combine design and implementation for meaningful feature work. First create the required design artifacts, get review, then implement with tests. Small test-only changes and tiny bug fixes can skip the full ceremony when the maintainer explicitly decides the risk is low.
