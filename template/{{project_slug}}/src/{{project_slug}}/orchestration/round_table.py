@@ -360,16 +360,18 @@ class RoundTable:
                         f"{len(result.violations)} enforcement violations "
                         f"({result.outcome})"
                     )
-                if result.corrected_content and result.outcome != "accepted":
+                if result.corrected_content:
                     try:
                         from ..llm.json_parser import extract_json
                         corrected_data = extract_json(result.corrected_content)
-                        if corrected_data and isinstance(corrected_data, list):
+                        if isinstance(corrected_data, list):
                             analysis = AgentAnalysis(
                                 agent_name=analysis.agent_name,
                                 domain=analysis.domain,
                                 observations=corrected_data,
                                 recommendations=analysis.recommendations,
+                                confidence=analysis.confidence,
+                                raw_response=analysis.raw_response,
                             )
                     except Exception:
                         pass

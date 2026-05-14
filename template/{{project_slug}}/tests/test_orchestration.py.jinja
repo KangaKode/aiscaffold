@@ -110,6 +110,53 @@ class TestRoundTable:
         result = await rt.run(sample_task)
         assert result.task_id == sample_task.id
 
+    @pytest.mark.asyncio
+    async def test_enforcement_applies_accepted_correction(self, monkeypatch, mock_llm):
+        from {{project_slug}} import enforcement
+        from {{project_slug}}.enforcement import ValidationResult
+        from {{project_slug}}.orchestration.round_table import AgentAnalysis
+
+        corrected_observations = (
+            '[{"finding": "Corrected finding", '
+            '"evidence": "[VERIFIED: logs:row_1] Event confirmed."}]'
+        )
+
+        class StubPipeline:
+            def __init__(self, llm_client=None):
+                pass
+
+            async def validate(self, agent_name, response_text, task):
+                return ValidationResult(
+                    outcome="accepted",
+                    violations=[],
+                    corrected_content=corrected_observations,
+                )
+
+        monkeypatch.setattr(enforcement, "EvidenceEnforcementPipeline", StubPipeline)
+        rt = RoundTable(
+            agents=[],
+            config=RoundTableConfig(include_core_agents=False),
+            llm_client=mock_llm,
+        )
+        original = AgentAnalysis(
+            agent_name="analyst",
+            domain="analysis",
+            observations=[{"finding": "Original unsupported finding"}],
+            recommendations=[{"action": "Keep recommendation"}],
+            confidence=0.75,
+            raw_response="original raw response",
+        )
+
+        enforced = await rt._enforce_evidence(
+            [original],
+            RoundTableTask(id="enforce_test", content="test"),
+        )
+
+        assert enforced[0].observations[0]["finding"] == "Corrected finding"
+        assert enforced[0].recommendations == original.recommendations
+        assert enforced[0].confidence == original.confidence
+        assert enforced[0].raw_response == original.raw_response
+
 
 class TestChatOrchestrator:
     @pytest.mark.asyncio
