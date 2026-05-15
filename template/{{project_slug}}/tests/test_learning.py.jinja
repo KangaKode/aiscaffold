@@ -1,5 +1,9 @@
 """Unit tests for the learning module -- feedback, trust, check-ins, profile."""
 
+import sys
+import types
+from unittest.mock import MagicMock
+
 import pytest
 from {{project_slug}}.learning.models import FeedbackSignal, UserPreference, SignalType, CheckInStatus
 from {{project_slug}}.learning.feedback_tracker import FeedbackTracker
@@ -149,7 +153,7 @@ class TestUserProfileManager:
 
 
 # =============================================================================
-# VECTOR STORE (in-memory default)
+# VECTOR STORE (persistent adapter with in-memory fallback)
 # =============================================================================
 
 from {{ project_slug }}.learning.rag.vector_store import VectorStore, SearchResults
@@ -157,7 +161,7 @@ from {{ project_slug }}.learning.rag.vector_store import VectorStore, SearchResu
 
 class TestVectorStore:
     def test_add_and_count(self):
-        store = VectorStore(project_id="test_vs")
+        store = VectorStore(project_id="test_vs", use_chroma=False)
         assert store.count == 0
         store.add("d1", "first document", {"tag": "a"})
         assert store.count == 1
@@ -165,13 +169,13 @@ class TestVectorStore:
         assert store.count == 2
 
     def test_upsert_existing_id(self):
-        store = VectorStore(project_id="test_vs")
+        store = VectorStore(project_id="test_vs", use_chroma=False)
         store.add("d1", "version 1")
         store.add("d1", "version 2")
         assert store.count == 1
 
     def test_search_keyword_match(self):
-        store = VectorStore(project_id="test_vs")
+        store = VectorStore(project_id="test_vs", use_chroma=False)
         store.add("d1", "Python programming language")
         store.add("d2", "Java programming language")
         store.add("d3", "French cooking recipes")
@@ -180,13 +184,13 @@ class TestVectorStore:
         assert results.results[0].id == "d1"
 
     def test_search_empty_store(self):
-        store = VectorStore(project_id="test_vs")
+        store = VectorStore(project_id="test_vs", use_chroma=False)
         results = store.search("anything")
         assert results.results == []
         assert results.total == 0
 
     def test_search_cosine_similarity(self):
-        store = VectorStore(project_id="test_vs")
+        store = VectorStore(project_id="test_vs", use_chroma=False)
         store.add("d1", "doc one", embedding=[1.0, 0.0, 0.0])
         store.add("d2", "doc two", embedding=[0.0, 1.0, 0.0])
         results = store.search("query", query_embedding=[0.9, 0.1, 0.0])
@@ -194,14 +198,14 @@ class TestVectorStore:
         assert results.results[0].id == "d1"
 
     def test_delete(self):
-        store = VectorStore(project_id="test_vs")
+        store = VectorStore(project_id="test_vs", use_chroma=False)
         store.add("d1", "document one")
         store.add("d2", "document two")
         store.delete("d1")
         assert store.count == 1
 
     def test_clear(self):
-        store = VectorStore(project_id="test_vs")
+        store = VectorStore(project_id="test_vs", use_chroma=False)
         store.add("d1", "a")
         store.add("d2", "b")
         store.clear()
@@ -224,18 +228,52 @@ class TestVectorStore:
         assert sim == 0.0
 
     def test_search_respects_limit(self):
-        store = VectorStore(project_id="test_vs")
+        store = VectorStore(project_id="test_vs", use_chroma=False)
         for i in range(10):
             store.add(f"d{i}", f"document about topic {i}")
         results = store.search("document topic", limit=3)
         assert len(results.results) <= 3
+
+    def test_default_uses_chroma_when_available(self, monkeypatch):
+        class FakeCollection:
+            def count(self):
+                return 0
+
+        class FakeClient:
+            def __init__(self, path):
+                self.path = path
+
+            def get_or_create_collection(self, name, metadata):
+                self.name = name
+                self.metadata = metadata
+                return FakeCollection()
+
+        fake_chromadb = types.SimpleNamespace(PersistentClient=FakeClient)
+        monkeypatch.setitem(sys.modules, "chromadb", fake_chromadb)
+        monkeypatch.delenv("ROUNDTABLE_USE_CHROMA", raising=False)
+
+        store = VectorStore(project_id="test_vs")
+
+        assert store._collection is not None
+        assert store._fallback_store is None
+
+    def test_env_can_force_in_memory_even_if_chroma_available(self, monkeypatch):
+        fake_chromadb = types.SimpleNamespace(
+            PersistentClient=MagicMock(side_effect=AssertionError("should not load"))
+        )
+        monkeypatch.setitem(sys.modules, "chromadb", fake_chromadb)
+        monkeypatch.setenv("ROUNDTABLE_USE_CHROMA", "0")
+
+        store = VectorStore(project_id="test_vs")
+
+        assert store._collection is None
+        assert store._fallback_store == []
 
 
 # =============================================================================
 # EMBEDDING SERVICE (deterministic default -- no sentence-transformers/openai)
 # =============================================================================
 
-from unittest.mock import MagicMock
 from {{ project_slug }}.learning.rag.embedding_service import EmbeddingService, EmbeddingResult
 
 
@@ -345,7 +383,7 @@ from {{ project_slug }}.learning.rag.preference_retriever import PreferenceRetri
 class TestPreferenceRetriever:
     @pytest.fixture
     def retriever(self, learning_db):
-        store = VectorStore(project_id="test_retriever")
+        store = VectorStore(project_id="test_retriever", use_chroma=False)
         svc = EmbeddingService()
         return PreferenceRetriever(
             project_id="test",
@@ -442,7 +480,7 @@ class MockRoundTableResult:
 class TestTranscriptIndexer:
     @pytest.fixture
     def indexer(self):
-        store = VectorStore(project_id="test_transcripts")
+        store = VectorStore(project_id="test_transcripts", use_chroma=False)
         svc = EmbeddingService()
         return TranscriptIndexer(vector_store=store, embedding_service=svc)
 

@@ -4,8 +4,9 @@ VectorStore -- lightweight vector-search adapter with in-memory fallback.
 Provides project-isolated vector storage for semantic search over preferences,
 feedback, and any other text the learning system needs to retrieve.
 
-By default: uses a deterministic in-memory cosine similarity store for local
-development and tests.
+By default: uses ChromaDB persistent storage when installed, otherwise falls
+back to a deterministic in-memory cosine similarity store for local development
+and tests. Set `ROUNDTABLE_USE_CHROMA=0` to force in-memory storage.
 
 Production recommendation: if the project uses Postgres, add pgvector and
 store embeddings alongside application data so retention, backups, tenant
@@ -54,7 +55,7 @@ class SearchResults:
 
 class VectorStore:
     """
-    Vector storage with an in-memory default and optional Chroma adapter.
+    Vector storage with an automatic Chroma adapter and in-memory fallback.
 
     Usage:
         store = VectorStore(project_id="my_project")
@@ -70,23 +71,32 @@ class VectorStore:
     ):
         self._project_id = project_id
         self._persist_dir = persist_dir
-        self._use_chroma = (
-            os.environ.get("ROUNDTABLE_USE_CHROMA") == "1"
-            if use_chroma is None
-            else use_chroma
-        )
+        self._use_chroma = self._should_use_chroma(use_chroma)
         self._collection: Any = None
         self._fallback_store: list[dict] | None = None
 
         self._init_store()
+
+    @staticmethod
+    def _should_use_chroma(use_chroma: bool | None) -> bool:
+        """Decide whether to try the persistent Chroma adapter."""
+        if use_chroma is not None:
+            return use_chroma
+
+        flag = os.environ.get("ROUNDTABLE_USE_CHROMA", "").strip().lower()
+        if flag in {"0", "false", "no", "off"}:
+            return False
+        if flag in {"1", "true", "yes", "on"}:
+            return True
+        return True
 
     def _init_store(self) -> None:
         """Initialize the configured store or fall back to in-memory."""
         if not self._use_chroma:
             self._fallback_store = []
             logger.info(
-                "[VectorStore] Using in-memory vector store. "
-                "For production with Postgres, add a pgvector-backed adapter."
+                "[VectorStore] ChromaDB disabled -- using in-memory vector store. "
+                "Set ROUNDTABLE_USE_CHROMA=1 or install a persistent adapter for production."
             )
             return
 
