@@ -22,6 +22,29 @@ class TestAgentRegistry:
         assert registry.remote_count == 1
         assert (tmp_path / "agents.json").exists()
 
+    def test_load_remote_agents_rejects_private_urls(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "metadata",
+                    "domain": "security",
+                    "base_url": "http://169.254.169.254",
+                },
+                {
+                    "name": "safe_remote",
+                    "domain": "testing",
+                    "base_url": "https://agents.example.com",
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+
+        assert registry.get("metadata") is None
+        assert registry.get("safe_remote") is not None
+        assert registry.remote_count == 1
+
     def test_unregister_removes(self, mock_agent, tmp_path):
         registry = AgentRegistry(persist_path=tmp_path / "agents.json")
         registry.register_local(mock_agent)
