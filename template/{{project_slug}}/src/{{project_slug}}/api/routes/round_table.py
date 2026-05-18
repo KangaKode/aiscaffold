@@ -88,16 +88,20 @@ async def submit_task(
         )
 
     if task_request.agent_ids:
-        agents = [
-            registry.get(aid)
+        resolved_agents = {
+            aid: registry.get(aid)
             for aid in task_request.agent_ids
-            if registry.get(aid) is not None
+        }
+        missing_agent_ids = [
+            aid for aid, agent in resolved_agents.items()
+            if agent is None
         ]
-        if not agents:
+        if missing_agent_ids:
             raise HTTPException(
                 status_code=400,
-                detail=f"None of the requested agents found: {task_request.agent_ids}",
+                detail=f"Requested agents not found: {missing_agent_ids}",
             )
+        agents = [resolved_agents[aid] for aid in task_request.agent_ids]
     else:
         agents = registry.get_all()
 

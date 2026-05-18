@@ -46,6 +46,17 @@ class TestE2ERoundTable:
         assert len(data["analyses"]) == 7  # 5 core + 2 user agents
         assert data["task_id"] is not None
 
+    @pytest.mark.asyncio
+    async def test_round_table_rejects_missing_requested_agent(self, e2e_client):
+        """Requested agent subsets must fail closed if any named agent is absent."""
+        r = await e2e_client.post("/api/v1/round-table/tasks", json={
+            "content": "Analyze the test scenario for quality",
+            "agent_ids": ["analyst_a", "missing_agent"],
+        })
+
+        assert r.status_code == 400
+        assert "missing_agent" in r.json()["detail"]
+
 
 class TestE2EChat:
     @pytest.mark.asyncio
