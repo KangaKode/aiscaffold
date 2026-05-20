@@ -48,7 +48,7 @@ def init(
     console.print(f"\n[bold blue]aiscaffold init[/bold blue]")
     console.print(f"Template: {source}\n")
 
-    cmd = ["copier", "copy", source, "."]
+    cmd = ["copier", "copy", source, ".", "--trust"]
     if name:
         cmd.extend(["--data", f"project_name={name}"])
 
@@ -234,7 +234,7 @@ def update():
     console.print("Pulling template updates...\n")
 
     try:
-        subprocess.run(["copier", "update"], check=True)
+        subprocess.run(["copier", "update", "--trust"], check=True)
         console.print("\n[bold green]Update complete![/bold green]")
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")
