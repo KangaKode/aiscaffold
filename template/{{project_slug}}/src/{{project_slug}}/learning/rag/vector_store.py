@@ -1,16 +1,15 @@
 """
-VectorStore -- lightweight vector-search adapter with in-memory fallback.
+VectorStore -- lightweight vector-search adapter with persistent fallback.
 
 Provides project-isolated vector storage for semantic search over preferences,
 feedback, and any other text the learning system needs to retrieve.
 
-By default: uses a deterministic in-memory cosine similarity store for local
-development and tests.
+By default: uses persistent ChromaDB storage when the adapter is installed,
+then falls back to deterministic in-memory cosine similarity.
 
-Production recommendation: if the project uses Postgres, add pgvector and
-store embeddings alongside application data so retention, backups, tenant
-isolation, and access control stay in one datastore. ChromaDB remains a small
-optional adapter path for prototypes or single-node deployments.
+Production recommendation: if the project uses Postgres, consider pgvector so
+retention, backups, tenant isolation, and access control stay in one datastore.
+ChromaDB remains supported for prototypes and single-node deployments.
 
 Security:
   - Documents are sanitized before indexing (size-limited)
@@ -54,7 +53,7 @@ class SearchResults:
 
 class VectorStore:
     """
-    Vector storage with an in-memory default and optional Chroma adapter.
+    Vector storage with ChromaDB auto-detection and in-memory fallback.
 
     Usage:
         store = VectorStore(project_id="my_project")
@@ -70,23 +69,40 @@ class VectorStore:
     ):
         self._project_id = project_id
         self._persist_dir = persist_dir
-        self._use_chroma = (
-            os.environ.get("ROUNDTABLE_USE_CHROMA") == "1"
-            if use_chroma is None
-            else use_chroma
-        )
+        self._use_chroma = self._resolve_chroma_setting(use_chroma)
         self._collection: Any = None
         self._fallback_store: list[dict] | None = None
 
         self._init_store()
 
+    @staticmethod
+    def _resolve_chroma_setting(use_chroma: bool | None) -> bool | None:
+        """Return True/False for explicit settings, None for auto-detect."""
+        if use_chroma is not None:
+            return use_chroma
+
+        env_value = os.environ.get("ROUNDTABLE_USE_CHROMA")
+        if env_value is None:
+            return None
+
+        normalized = env_value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        logger.warning(
+            "[VectorStore] Ignoring invalid ROUNDTABLE_USE_CHROMA=%r; using auto-detect",
+            env_value,
+        )
+        return None
+
     def _init_store(self) -> None:
-        """Initialize the configured store or fall back to in-memory."""
-        if not self._use_chroma:
+        """Initialize ChromaDB when enabled/available, otherwise use memory."""
+        if self._use_chroma is False:
             self._fallback_store = []
             logger.info(
                 "[VectorStore] Using in-memory vector store. "
-                "For production with Postgres, add a pgvector-backed adapter."
+                "Set ROUNDTABLE_USE_CHROMA=1 to force the Chroma adapter."
             )
             return
 
@@ -105,7 +121,7 @@ class VectorStore:
             self._fallback_store = []
             logger.info(
                 "[VectorStore] ChromaDB not installed -- using in-memory fallback. "
-                "For production with Postgres, add a pgvector-backed adapter."
+                "Install chromadb for persistent vector search."
             )
 
     def add(

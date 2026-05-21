@@ -1,10 +1,13 @@
 """
 EmbeddingService -- Multi-provider text embeddings with caching.
 
-Default provider:
-  1. Deterministic fallback -- hash-based, works without any dependencies
+Default provider auto-detection:
+  1. OpenAI (text-embedding-3-small) -- when OPENAI_API_KEY is configured
+  2. Local (sentence-transformers) -- when installed
+  3. Deterministic fallback -- hash-based, works without any dependencies
 
-Opt-in providers:
+Explicit providers:
+  - Set `ROUNDTABLE_EMBEDDING_PROVIDER=fallback` for deterministic hashes
   - Set `ROUNDTABLE_EMBEDDING_PROVIDER=local` for sentence-transformers
   - Set `ROUNDTABLE_EMBEDDING_PROVIDER=openai` for text-embedding-3-small
   - Set `ROUNDTABLE_EMBEDDING_PROVIDER=auto` to try OpenAI, then local, then fallback
@@ -62,7 +65,7 @@ class EmbeddingService:
 
     def _init_provider(self, preferred: str | None) -> None:
         """Initialize the best available provider."""
-        preferred = preferred or os.environ.get("ROUNDTABLE_EMBEDDING_PROVIDER", "fallback")
+        preferred = preferred or os.environ.get("ROUNDTABLE_EMBEDDING_PROVIDER", "auto")
 
         if preferred in {"openai", "auto"}:
             if self._try_openai():
@@ -71,6 +74,12 @@ class EmbeddingService:
         if preferred in {"local", "auto"}:
             if self._try_local():
                 return
+
+        if preferred not in {"fallback", "local", "openai", "auto"}:
+            logger.warning(
+                "[Embeddings] Unknown provider %r; using deterministic fallback",
+                preferred,
+            )
 
         self._provider = "fallback"
         self._dimensions = 128
