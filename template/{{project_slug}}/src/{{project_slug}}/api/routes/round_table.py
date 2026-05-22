@@ -43,9 +43,14 @@ MAX_CACHED_RESULTS = 1000
 _results_cache: OrderedDict[str, RoundTableResultResponse] = OrderedDict()
 
 
-def _cache_result(task_id: str, result: RoundTableResultResponse) -> None:
+def _result_cache_key(task_id: str, auth: AuthContext) -> str:
+    """Bind cached task results to the authenticated tenant and user."""
+    return f"{auth.tenant_id}:{auth.user_id}:{task_id}"
+
+
+def _cache_result(task_id: str, auth: AuthContext, result: RoundTableResultResponse) -> None:
     """Store result with LRU eviction."""
-    _results_cache[task_id] = result
+    _results_cache[_result_cache_key(task_id, auth)] = result
     while len(_results_cache) > MAX_CACHED_RESULTS:
         _results_cache.popitem(last=False)
 
@@ -176,7 +181,7 @@ async def submit_task(
             duration_seconds=result.duration_seconds,
         )
 
-        _cache_result(task_id, response)
+        _cache_result(task_id, auth, response)
         return response
 
     except Exception as e:
@@ -194,11 +199,12 @@ async def get_task_result(
     auth: AuthContext = Depends(verify_api_key),
 ) -> RoundTableResultResponse:
     """Get a previously completed task result."""
-    if task_id not in _results_cache:
+    cache_key = _result_cache_key(task_id, auth)
+    if cache_key not in _results_cache:
         raise HTTPException(
             status_code=404, detail=f"Task '{task_id}' not found"
         )
-    return _results_cache[task_id]
+    return _results_cache[cache_key]
 
 
 @router.get("/round-table/search")

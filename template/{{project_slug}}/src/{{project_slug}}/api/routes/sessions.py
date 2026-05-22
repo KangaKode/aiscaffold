@@ -33,6 +33,11 @@ MAX_SESSIONS = 500
 _sessions: OrderedDict[str, Thread] = OrderedDict()
 
 
+def _session_key(session_id: str, auth: AuthContext) -> str:
+    """Bind session state to the authenticated tenant and user."""
+    return f"{auth.tenant_id}:{auth.user_id}:{session_id}"
+
+
 @router.post("/sessions", response_model=SessionResponse)
 async def create_session(
     request: CreateSessionRequest | None = None,
@@ -43,7 +48,8 @@ async def create_session(
     session_id = f"session_{uuid.uuid4().hex[:16]}"
     metadata = request.metadata if request else {}
     thread = Thread(id=session_id, metadata=metadata)
-    _sessions[session_id] = thread
+    cache_key = _session_key(session_id, auth)
+    _sessions[cache_key] = thread
 
     while len(_sessions) > MAX_SESSIONS:
         _sessions.popitem(last=False)
@@ -64,10 +70,11 @@ async def get_session(
     auth: AuthContext = Depends(verify_api_key),
 ) -> SessionResponse:
     """Get the current state of a session."""
-    thread = _sessions.get(session_id)
+    cache_key = _session_key(session_id, auth)
+    thread = _sessions.get(cache_key)
     if thread is None:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
-    _sessions.move_to_end(session_id)
+    _sessions.move_to_end(cache_key)
     return SessionResponse(
         session_id=thread.id,
         status=thread.status,
@@ -89,11 +96,12 @@ async def add_turn(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    thread = _sessions.get(session_id)
+    cache_key = _session_key(session_id, auth)
+    thread = _sessions.get(cache_key)
     if thread is None:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 
-    _sessions.move_to_end(session_id)
+    _sessions.move_to_end(cache_key)
 
     turn_id = f"turn_{len(thread.turns) + 1}"
     turn = Turn(id=turn_id)
@@ -120,6 +128,10 @@ async def list_sessions(
     auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """List all active sessions."""
+    auth_prefix = f"{auth.tenant_id}:{auth.user_id}:"
+    visible_sessions = [
+        thread for key, thread in _sessions.items() if key.startswith(auth_prefix)
+    ]
     return {
         "sessions": [
             {
@@ -128,7 +140,7 @@ async def list_sessions(
                 "turn_count": len(t.turns),
                 "created_at": t.created_at,
             }
-            for t in _sessions.values()
+            for t in visible_sessions
         ],
-        "total": len(_sessions),
+        "total": len(visible_sessions),
     }

@@ -116,6 +116,29 @@ class TestRoundTableAPI:
         })
         assert r.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_task_results_are_isolated_by_auth_context(self):
+        from fastapi import HTTPException
+
+        from {{ project_slug }}.api.middleware.auth import AuthContext
+        from {{ project_slug }}.api.models.responses import RoundTableResultResponse
+        from {{ project_slug }}.api.routes import round_table
+
+        round_table._results_cache.clear()
+        alice = AuthContext(user_id="alice", tenant_id="tenant_a")
+        bob = AuthContext(user_id="bob", tenant_id="tenant_a")
+        response = RoundTableResultResponse(task_id="task_secret", status="completed")
+
+        try:
+            round_table._cache_result(response.task_id, alice, response)
+
+            assert await round_table.get_task_result(response.task_id, auth=alice) == response
+            with pytest.raises(HTTPException) as exc_info:
+                await round_table.get_task_result(response.task_id, auth=bob)
+            assert exc_info.value.status_code == 404
+        finally:
+            round_table._results_cache.clear()
+
 
 # =============================================================================
 # CHAT
@@ -165,6 +188,48 @@ class TestSessionsAPI:
         sid = create_r.json()["session_id"]
         r = await client.post(f"/api/v1/sessions/{sid}/turns", json={"content": ""})
         assert r.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_sessions_are_isolated_by_auth_context(self):
+        from fastapi import HTTPException
+
+        from {{ project_slug }}.api.middleware.auth import AuthContext
+        from {{ project_slug }}.api.models.requests import AddTurnRequest, CreateSessionRequest
+        from {{ project_slug }}.api.routes import sessions
+
+        sessions._sessions.clear()
+        alice = AuthContext(user_id="alice", tenant_id="tenant_a")
+        bob = AuthContext(user_id="bob", tenant_id="tenant_a")
+
+        try:
+            created = await sessions.create_session(
+                CreateSessionRequest(metadata={"owner": "alice"}),
+                auth=alice,
+                _rate=None,
+            )
+            await sessions.add_turn(
+                created.session_id,
+                AddTurnRequest(content="alice private turn"),
+                auth=alice,
+            )
+
+            with pytest.raises(HTTPException) as exc_info:
+                await sessions.get_session(created.session_id, auth=bob)
+            assert exc_info.value.status_code == 404
+
+            with pytest.raises(HTTPException) as exc_info:
+                await sessions.add_turn(
+                    created.session_id,
+                    AddTurnRequest(content="bob overwrite attempt"),
+                    auth=bob,
+                )
+            assert exc_info.value.status_code == 404
+
+            assert (await sessions.list_sessions(auth=bob))["total"] == 0
+            own_session = await sessions.get_session(created.session_id, auth=alice)
+            assert own_session.turn_count == 1
+        finally:
+            sessions._sessions.clear()
 
 
 # =============================================================================

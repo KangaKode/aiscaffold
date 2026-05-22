@@ -225,28 +225,25 @@ For a team like Team C that handles sensitive data (security incidents, legal, H
 
 ### Data isolation
 
-Sessions, round table results, and transcript search are already keyed by `{tenant_id}:{user_id}:{session_id}` in the chat routes. To complete isolation:
+Chat sessions, session API state, and round table results are keyed by
+`tenant_id:user_id:<resource_id>`. To complete isolation for durable stores:
 
-1. **Round table results**: Key the `_results_cache` by `auth.tenant_id`:
-   ```python
-   cache_key = f"{auth.tenant_id}:{task_id}"
-   ```
-
-2. **Transcript search**: The `TranscriptIndexer` stores `tenant_id` in metadata. Filter search results:
+1. **Transcript search**: The `TranscriptIndexer` stores `tenant_id` in metadata. Filter search results:
    ```python
    results = indexer.search(query=q, ...)
    results.results = [r for r in results.results
                        if r.metadata.get("tenant_id", "default") == auth.tenant_id]
    ```
 
-3. **Feedback and trust**: Already scoped by `project_id` in all database tables. Map `auth.tenant_id` to `project_id` when creating trackers.
+2. **Feedback and trust**: Already scoped by `project_id` in all database tables. Map `auth.tenant_id` to `project_id` when creating trackers.
 
 ### Complete data store isolation checklist
 
 | Data Store | Current Isolation | What You Add |
 |------------|------------------|--------------|
 | Chat sessions (`_orchestrators`) | Keyed by `tenant_id:user_id:session_id` | **Already isolated** |
-| Round table result cache | Keyed by `task_id` only | Key by `auth.tenant_id:task_id` |
+| Session API state (`_sessions`) | Keyed by `tenant_id:user_id:session_id` | **Already isolated** |
+| Round table result cache | Keyed by `tenant_id:user_id:task_id` | **Already isolated** |
 | Transcript search index | Stores `tenant_id` in metadata | Filter results by `auth.tenant_id` |
 | Feedback signals (SQLite) | Has `project_id` column | Map `auth.tenant_id` to `project_id` |
 | Agent trust scores (SQLite) | Has `project_id` column | Map `auth.tenant_id` to `project_id` |
