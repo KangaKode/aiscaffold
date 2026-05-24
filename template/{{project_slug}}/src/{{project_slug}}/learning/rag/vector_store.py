@@ -155,7 +155,7 @@ class VectorStore:
         if self._collection is not None:
             return self._search_chroma(query, limit, where, query_embedding)
         elif self._fallback_store is not None:
-            return self._search_fallback(query, limit, query_embedding)
+            return self._search_fallback(query, limit, where, query_embedding)
         return SearchResults(query=query)
 
     def delete(self, doc_id: str) -> None:
@@ -227,7 +227,11 @@ class VectorStore:
         return SearchResults(results=items, total=len(items), query=query)
 
     def _search_fallback(
-        self, query: str, limit: int, query_embedding: list[float] | None
+        self,
+        query: str,
+        limit: int,
+        where: dict | None,
+        query_embedding: list[float] | None,
     ) -> SearchResults:
         """Simple keyword + cosine similarity fallback search."""
         if not self._fallback_store:
@@ -238,6 +242,9 @@ class VectorStore:
         query_words = set(query_lower.split())
 
         for doc in self._fallback_store:
+            if not self._matches_where(doc.get("metadata", {}), where):
+                continue
+
             score = 0.0
 
             if query_embedding and doc.get("embedding"):
@@ -266,6 +273,13 @@ class VectorStore:
             total=len([s for s in scored if s[0] > 0]),
             query=query,
         )
+
+    @staticmethod
+    def _matches_where(metadata: dict, where: dict | None) -> bool:
+        """Evaluate simple exact-match metadata filters for the fallback store."""
+        if not where:
+            return True
+        return all(metadata.get(key) == value for key, value in where.items())
 
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:

@@ -43,9 +43,18 @@ MAX_CACHED_RESULTS = 1000
 _results_cache: OrderedDict[str, RoundTableResultResponse] = OrderedDict()
 
 
-def _cache_result(task_id: str, result: RoundTableResultResponse) -> None:
+def _auth_scope(auth: AuthContext) -> str:
+    """Scope user-owned round-table artifacts to the auth context."""
+    return f"{auth.tenant_id}:{auth.user_id}"
+
+
+def _result_key(task_id: str, auth: AuthContext) -> str:
+    return f"{_auth_scope(auth)}:{task_id}"
+
+
+def _cache_result(cache_key: str, result: RoundTableResultResponse) -> None:
     """Store result with LRU eviction."""
-    _results_cache[task_id] = result
+    _results_cache[cache_key] = result
     while len(_results_cache) > MAX_CACHED_RESULTS:
         _results_cache.popitem(last=False)
 
@@ -125,7 +134,11 @@ async def submit_task(
         try:
             indexer = getattr(request.app.state, "transcript_indexer", None)
             if indexer:
-                indexer.index_result(result, task_content=task_request.content)
+                indexer.index_result(
+                    result,
+                    task_content=task_request.content,
+                    owner_key=_auth_scope(auth),
+                )
         except Exception as e:
             logger.warning(f"[RoundTableAPI] Transcript indexing failed: {e}")
 
@@ -176,7 +189,7 @@ async def submit_task(
             duration_seconds=result.duration_seconds,
         )
 
-        _cache_result(task_id, response)
+        _cache_result(_result_key(task_id, auth), response)
         return response
 
     except Exception as e:
@@ -194,11 +207,13 @@ async def get_task_result(
     auth: AuthContext = Depends(verify_api_key),
 ) -> RoundTableResultResponse:
     """Get a previously completed task result."""
-    if task_id not in _results_cache:
+    cache_key = _result_key(task_id, auth)
+    if cache_key not in _results_cache:
         raise HTTPException(
             status_code=404, detail=f"Task '{task_id}' not found"
         )
-    return _results_cache[task_id]
+    _results_cache.move_to_end(cache_key)
+    return _results_cache[cache_key]
 
 
 @router.get("/round-table/search")
@@ -223,7 +238,12 @@ async def search_transcripts(
             detail="Transcript search not available (indexer not initialized)",
         )
 
-    results = indexer.search(query=q, limit=min(limit, 50), consensus_only=consensus_only)
+    results = indexer.search(
+        query=q,
+        limit=min(limit, 50),
+        consensus_only=consensus_only,
+        owner_key=_auth_scope(auth),
+    )
     return {
         "query": q,
         "results": [

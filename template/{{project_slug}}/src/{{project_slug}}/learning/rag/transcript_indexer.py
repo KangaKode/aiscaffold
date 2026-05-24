@@ -13,6 +13,7 @@ Usage:
 Keep this file under 200 lines.
 """
 
+import hashlib
 import logging
 from datetime import datetime
 from typing import Any
@@ -40,7 +41,12 @@ class TranscriptIndexer:
         self._store = vector_store or VectorStore(project_id="round_table_transcripts")
         self._embedder = embedding_service or EmbeddingService()
 
-    def index_result(self, result: Any, task_content: str = "") -> None:
+    def index_result(
+        self,
+        result: Any,
+        task_content: str = "",
+        owner_key: str | None = None,
+    ) -> None:
         """Index a round table result for semantic search.
 
         Combines task content, agent analyses, synthesis recommendation,
@@ -49,6 +55,7 @@ class TranscriptIndexer:
         Args:
             result: A RoundTableResult (imported lazily to avoid circular deps).
             task_content: The original task text submitted by the user.
+            owner_key: Optional tenant/user key used to isolate transcript search.
         """
         doc_parts = []
 
@@ -90,18 +97,22 @@ class TranscriptIndexer:
 
         embedding_result = self._embedder.embed(doc_text)
 
+        metadata = {
+            "task_id": task_id,
+            "agent_names": agent_names,
+            "consensus_reached": str(consensus),
+            "approval_rate": str(round(approval, 2)),
+            "duration_seconds": str(round(duration, 2)),
+            "timestamp": datetime.now().isoformat(),
+            "doc_type": "round_table_transcript",
+        }
+        if owner_key:
+            metadata["owner_key"] = owner_key
+
         self._store.add(
-            doc_id=f"transcript_{task_id}",
+            doc_id=self._doc_id(task_id, owner_key),
             content=doc_text,
-            metadata={
-                "task_id": task_id,
-                "agent_names": agent_names,
-                "consensus_reached": str(consensus),
-                "approval_rate": str(round(approval, 2)),
-                "duration_seconds": str(round(duration, 2)),
-                "timestamp": datetime.now().isoformat(),
-                "doc_type": "round_table_transcript",
-            },
+            metadata=metadata,
             embedding=embedding_result.embedding,
         )
         logger.debug(f"[TranscriptIndexer] Indexed transcript for task {task_id}")
@@ -111,6 +122,7 @@ class TranscriptIndexer:
         query: str,
         limit: int = 10,
         consensus_only: bool = False,
+        owner_key: str | None = None,
     ) -> SearchResults:
         """Semantic search over past round table results.
 
@@ -118,12 +130,15 @@ class TranscriptIndexer:
             query: Natural language search query.
             limit: Maximum number of results.
             consensus_only: If True, only return results where consensus was reached.
+            owner_key: Optional tenant/user key to restrict results.
         """
         embedding_result = self._embedder.embed(query)
 
+        where = {"owner_key": owner_key} if owner_key else None
         results = self._store.search(
             query=query,
             limit=limit,
+            where=where,
             query_embedding=embedding_result.embedding,
         )
 
@@ -136,17 +151,29 @@ class TranscriptIndexer:
 
         return results
 
-    def get_by_task_id(self, task_id: str) -> SearchResult | None:
+    def get_by_task_id(
+        self,
+        task_id: str,
+        owner_key: str | None = None,
+    ) -> SearchResult | None:
         """Direct lookup of a transcript by task ID."""
         results = self._store.search(
             query=task_id,
             limit=50,
+            where={"owner_key": owner_key} if owner_key else None,
         )
-        doc_id = f"transcript_{task_id}"
+        doc_id = self._doc_id(task_id, owner_key)
         for r in results.results:
             if r.id == doc_id:
                 return r
         return None
+
+    @staticmethod
+    def _doc_id(task_id: str, owner_key: str | None = None) -> str:
+        if not owner_key:
+            return f"transcript_{task_id}"
+        owner_hash = hashlib.sha256(owner_key.encode()).hexdigest()[:16]
+        return f"transcript_{owner_hash}_{task_id}"
 
     @property
     def indexed_count(self) -> int:

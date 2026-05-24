@@ -2,9 +2,13 @@
 """API integration tests using FastAPI TestClient."""
 
 import pytest
+from fastapi import Request
 from httpx import AsyncClient, ASGITransport
 
 from {{ project_slug }}.api.gateway import create_app
+from {{ project_slug }}.api.middleware.auth import AuthContext, verify_api_key
+from {{ project_slug }}.api.models.responses import RoundTableResultResponse
+from {{ project_slug }}.api.routes import round_table
 
 
 @pytest.fixture
@@ -20,6 +24,33 @@ async def client(tmp_path):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+@pytest.fixture
+async def scoped_client(tmp_path):
+    """API client whose auth context is selected by test headers."""
+    import os
+    from {{ project_slug }}.agents.registry import AgentRegistry
+
+    os.environ.pop("API_KEY", None)
+    os.environ.pop("ENV", None)
+    registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+    app = create_app(registry=registry)
+
+    async def auth_override(request: Request) -> AuthContext:
+        user_id = request.headers.get("X-Test-User", "alice")
+        tenant_id = request.headers.get("X-Test-Tenant", "tenant-a")
+        return AuthContext(
+            api_key=f"test-{tenant_id}-{user_id}",
+            user_id=user_id,
+            tenant_id=tenant_id,
+        )
+
+    app.dependency_overrides[verify_api_key] = auth_override
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+    app.dependency_overrides.clear()
 
 
 # =============================================================================
@@ -165,6 +196,59 @@ class TestSessionsAPI:
         sid = create_r.json()["session_id"]
         r = await client.post(f"/api/v1/sessions/{sid}/turns", json={"content": ""})
         assert r.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_sessions_are_scoped_to_auth_context(self, scoped_client):
+        alice_headers = {"X-Test-User": "alice", "X-Test-Tenant": "tenant-a"}
+        bob_headers = {"X-Test-User": "bob", "X-Test-Tenant": "tenant-a"}
+
+        create_r = await scoped_client.post(
+            "/api/v1/sessions",
+            json={"metadata": {"case": "private"}},
+            headers=alice_headers,
+        )
+        assert create_r.status_code == 200
+        sid = create_r.json()["session_id"]
+
+        bob_get = await scoped_client.get(
+            f"/api/v1/sessions/{sid}",
+            headers=bob_headers,
+        )
+        assert bob_get.status_code == 404
+
+        bob_add = await scoped_client.post(
+            f"/api/v1/sessions/{sid}/turns",
+            json={"content": "should not be accepted"},
+            headers=bob_headers,
+        )
+        assert bob_add.status_code == 404
+
+        alice_list = await scoped_client.get("/api/v1/sessions", headers=alice_headers)
+        bob_list = await scoped_client.get("/api/v1/sessions", headers=bob_headers)
+        assert alice_list.json()["total"] == 1
+        assert bob_list.json()["total"] == 0
+
+    @pytest.mark.asyncio
+    async def test_round_table_results_are_scoped_to_auth_context(self, scoped_client):
+        round_table._results_cache.clear()
+        task_id = "task_private"
+        alice_auth = AuthContext(user_id="alice", tenant_id="tenant-a")
+        round_table._cache_result(
+            round_table._result_key(task_id, alice_auth),
+            RoundTableResultResponse(task_id=task_id, status="completed"),
+        )
+
+        alice_r = await scoped_client.get(
+            f"/api/v1/round-table/tasks/{task_id}",
+            headers={"X-Test-User": "alice", "X-Test-Tenant": "tenant-a"},
+        )
+        bob_r = await scoped_client.get(
+            f"/api/v1/round-table/tasks/{task_id}",
+            headers={"X-Test-User": "bob", "X-Test-Tenant": "tenant-a"},
+        )
+
+        assert alice_r.status_code == 200
+        assert bob_r.status_code == 404
 
 
 # =============================================================================
