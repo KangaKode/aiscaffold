@@ -13,6 +13,10 @@ project_slug:
   type: str
   default: "{{ project_name | lower | replace(' ', '_') | replace('-', '_') }}"
   help: "Python-safe project directory name"
+  validator: >-
+    {% if not project_slug.isascii() or not project_slug.isidentifier() %}
+    project_slug must be an ASCII Python identifier (letters, numbers, and underscores; cannot start with a number).
+    {% endif %}
 
 project_description:
   type: str
@@ -46,6 +50,17 @@ layers:
   type: str
   help: "Architecture layers (comma-separated, bottom-to-top dependency order)"
   default: "{% if project_type == 'web-app' %}data,analysis,components{% elif project_type == 'cli-tool' %}data,logic{% elif project_type == 'multi-agent' %}data,analysis,orchestration,specialists,prompts{% elif project_type == 'api-service' %}data,service,routes{% endif %}"
+  validator: >-
+    {% set invalid = namespace(value=false) %}
+    {% for layer in layers.split(',') %}
+    {% set layer_name = layer.strip() %}
+    {% if not layer_name or not layer_name.isascii() or not layer_name.isidentifier() %}
+    {% set invalid.value = true %}
+    {% endif %}
+    {% endfor %}
+    {% if invalid.value %}
+    layers must be comma-separated ASCII Python identifiers (for example: data,analysis,components).
+    {% endif %}
 
 # =============================================================================
 # TECH CHOICES
@@ -122,7 +137,7 @@ _tasks:
   - "cd {{ project_slug }} && git init"
   # Summary
   - "echo ''"
-  - "echo 'Project {{ project_name }} created!'"
+  - "echo 'Project created!'"
   - "echo ''"
   - "echo '  Development subagents (.cursor/agents/)'"
   - "echo '  Architecture enforcement (tests/test_architecture.py)'"
