@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from ..security import ValidationError, validate_identifier, validate_url
 from .remote import RemoteAgent
 
 logger = logging.getLogger(__name__)
@@ -108,26 +109,34 @@ class AgentRegistry:
         try:
             with open(self._persist_path) as f:
                 data = json.load(f)
+            loaded_count = 0
             for entry in data.get("remote_agents", []):
-                name = entry["name"]
-                api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
-                api_key = os.environ.get(api_key_env, "")
+                try:
+                    name = validate_identifier(entry["name"], "agent name")
+                    base_url = validate_url(entry["base_url"], "base_url")
+                    api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
+                    api_key = os.environ.get(api_key_env, "")
 
-                agent = RemoteAgent(
-                    name=name,
-                    domain=entry["domain"],
-                    base_url=entry["base_url"],
-                    api_key=api_key,
-                    timeout=entry.get("timeout", 120),
-                    mode=entry.get("mode", "sync"),
-                )
-                self._agents[name] = AgentEntry(
-                    agent=agent,
-                    agent_type="remote",
-                    capabilities=entry.get("capabilities", []),
-                )
+                    agent = RemoteAgent(
+                        name=name,
+                        domain=entry["domain"],
+                        base_url=base_url,
+                        api_key=api_key,
+                        timeout=entry.get("timeout", 120),
+                        mode=entry.get("mode", "sync"),
+                    )
+                    self._agents[name] = AgentEntry(
+                        agent=agent,
+                        agent_type="remote",
+                        capabilities=entry.get("capabilities", []),
+                    )
+                    loaded_count += 1
+                except (KeyError, ValidationError) as e:
+                    logger.warning(
+                        f"[AgentRegistry] Skipping invalid persisted agent: {e}"
+                    )
             logger.info(
-                f"[AgentRegistry] Loaded {len(data.get('remote_agents', []))} "
+                f"[AgentRegistry] Loaded {loaded_count} "
                 f"remote agents from {self._persist_path}"
             )
         except Exception as e:
