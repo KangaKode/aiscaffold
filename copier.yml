@@ -154,6 +154,7 @@ _tasks:
   - "echo '  cd {{ project_slug }}'"
   - "echo '  python3 -m venv venv && source venv/bin/activate'"
   - "echo '  pip install -r requirements.txt'"
+  - "echo '  pip install -e .       # Install the src-layout package'"
   - "echo '  cp .env.example .env  # Add your API keys'"
   - "echo '  pre-commit install'"
   - "echo '  make test'"
