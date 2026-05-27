@@ -178,6 +178,29 @@ def check_markdown_links():
     return checked
 
 
+def check_src_layout_install_instructions():
+    """Ensure onboarding installs the generated src-layout package before imports."""
+    repo_root = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    required = "pip install -e ."
+    files = [
+        repo_root / "copier.yml",
+        repo_root / "template" / "{{project_slug}}" / "README.md.jinja",
+    ]
+
+    for filepath in files:
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except Exception as e:
+            findings.append(f"  FAIL: {filepath.relative_to(repo_root)} -- could not read: {e}")
+            findings.append("        Required to validate generated-project install instructions")
+            continue
+        if required not in content:
+            findings.append(
+                f"  FAIL: {filepath.relative_to(repo_root)} -- missing editable install step"
+            )
+            findings.append(f"        Add `{required}` before make test/demo/serve")
+
+
 def main():
     print(f"Scanning template files...")
 
@@ -193,6 +216,7 @@ def main():
         os.path.join(TEMPLATE_DIR, ".cursor"), extensions=(".md", ".mdc")
     )
     markdown_links = check_markdown_links()
+    check_src_layout_install_instructions()
 
     for pattern, message in IP_PROTECTION_PATTERNS:
         for root, dirs, files in os.walk(TEMPLATE_DIR):
