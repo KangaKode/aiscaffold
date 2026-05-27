@@ -234,29 +234,19 @@ For a team like Team C that handles sensitive data (security incidents, legal, H
 
 ### Data isolation
 
-Sessions, round table results, and transcript search are already keyed by `{tenant_id}:{user_id}:{session_id}` in the chat routes. To complete isolation:
-
-1. **Round table results**: Key the `_results_cache` by `auth.tenant_id`:
-   ```python
-   cache_key = f"{auth.tenant_id}:{task_id}"
-   ```
-
-2. **Transcript search**: The `TranscriptIndexer` stores `tenant_id` in metadata. Filter search results:
-   ```python
-   results = indexer.search(query=q, ...)
-   results.results = [r for r in results.results
-                       if r.metadata.get("tenant_id", "default") == auth.tenant_id]
-   ```
-
-3. **Feedback and trust**: Already scoped by `project_id` in all database tables. Map `auth.tenant_id` to `project_id` when creating trackers.
+Chat sessions, harness sessions, round table results, and transcript search are
+keyed or filtered by `{tenant_id}:{user_id}`. To complete isolation, map
+`auth.tenant_id` to `project_id` when creating feedback, trust, preference, and
+check-in trackers.
 
 ### Complete data store isolation checklist
 
 | Data Store | Current Isolation | What You Add |
 |------------|------------------|--------------|
 | Chat sessions (`_orchestrators`) | Keyed by `tenant_id:user_id:session_id` | **Already isolated** |
-| Round table result cache | Keyed by `task_id` only | Key by `auth.tenant_id:task_id` |
-| Transcript search index | Stores `tenant_id` in metadata | Filter results by `auth.tenant_id` |
+| Harness sessions (`_sessions`) | Keyed by `tenant_id:user_id:session_id` | **Already isolated** |
+| Round table result cache | Keyed by `tenant_id:user_id:task_id` | **Already isolated** |
+| Transcript search index | Stores and filters by `tenant_id:user_id` owner key | **Already isolated** |
 | Feedback signals (SQLite) | Has `project_id` column | Map `auth.tenant_id` to `project_id` |
 | Agent trust scores (SQLite) | Has `project_id` column | Map `auth.tenant_id` to `project_id` |
 | User preferences (SQLite) | Has `project_id` column | Map `auth.tenant_id` to `project_id` |
@@ -389,6 +379,6 @@ Define retention policies for each data store and document them for your legal/c
 | Evidence enforcement | **Built** | Runs on Phase 1 round-table analyses; extend validators for chat, challenge, and vote paths as needed |
 | JWT/OIDC auth | **You add** | Replace `verify_api_key` (~20 lines) |
 | RBAC role checks | **You add** | `require_role()` dependency (~15 lines) |
-| Per-tenant data scoping | **You add** | Key caches by `auth.tenant_id` (~5 lines per route) |
+| Per-tenant data scoping | **Partially built** | Request caches/search are scoped; map learning DB `project_id` to `auth.tenant_id` |
 | Per-tenant LLM clients | **You add** | Optional, for credential isolation |
 | Agent marketplace UI | **You add** | `list_for_tenant()` provides the data |

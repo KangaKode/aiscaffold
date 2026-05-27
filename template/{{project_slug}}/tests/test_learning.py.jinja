@@ -230,6 +230,18 @@ class TestVectorStore:
         results = store.search("document topic", limit=3)
         assert len(results.results) <= 3
 
+    def test_search_honors_metadata_filter_in_fallback(self):
+        store = VectorStore(project_id="test_vs")
+        store.add("alice_doc", "shared transcript content", {"owner_key": "alice"})
+        store.add("bob_doc", "shared transcript content", {"owner_key": "bob"})
+
+        results = store.search(
+            "shared transcript",
+            where={"owner_key": "bob"},
+        )
+
+        assert [r.id for r in results.results] == ["bob_doc"]
+
 
 # =============================================================================
 # EMBEDDING SERVICE (deterministic default -- no sentence-transformers/openai)
@@ -479,6 +491,26 @@ class TestTranscriptIndexer:
         assert len(results.results) >= 1
         task_ids = [r.metadata.get("task_id", "") for r in results.results]
         assert "task_auth" in task_ids
+
+    def test_search_is_scoped_by_owner_key(self, indexer):
+        indexer.index_result(
+            MockRoundTableResult(task_id="shared_task"),
+            task_content="Investigate private billing workflow",
+            owner_key="tenant-a:alice",
+        )
+        indexer.index_result(
+            MockRoundTableResult(task_id="shared_task"),
+            task_content="Investigate private billing workflow",
+            owner_key="tenant-a:bob",
+        )
+
+        results = indexer.search(
+            "Task ID: shared_task\nTask: Investigate private billing workflow",
+            owner_key="tenant-a:bob",
+        )
+
+        assert indexer.indexed_count == 2
+        assert [r.metadata["owner_key"] for r in results.results] == ["tenant-a:bob"]
 
     def test_get_by_task_id(self, indexer):
         indexer.index_result(
