@@ -417,6 +417,7 @@ class TestPreferenceRetriever:
 # =============================================================================
 
 from {{ project_slug }}.learning.rag.transcript_indexer import TranscriptIndexer
+from {{ project_slug }}.api.middleware.auth import AuthContext, auth_scope_key
 
 
 class MockAnalysis:
@@ -511,6 +512,27 @@ class TestTranscriptIndexer:
 
         assert indexer.indexed_count == 2
         assert [r.metadata["owner_key"] for r in results.results] == ["tenant-a:bob"]
+
+    def test_search_owner_key_does_not_collide_when_auth_fields_contain_delimiters(self, indexer):
+        victim_owner = auth_scope_key(
+            AuthContext(tenant_id="tenant-a", user_id="alice:bob")
+        )
+        attacker_owner = auth_scope_key(
+            AuthContext(tenant_id="tenant-a:alice", user_id="bob")
+        )
+
+        indexer.index_result(
+            MockRoundTableResult(task_id="private_task"),
+            task_content="Investigate private billing workflow",
+            owner_key=victim_owner,
+        )
+
+        results = indexer.search(
+            "private billing workflow",
+            owner_key=attacker_owner,
+        )
+
+        assert results.results == []
 
     def test_get_by_task_id(self, indexer):
         indexer.index_result(
