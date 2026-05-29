@@ -51,6 +51,11 @@ class TestAgentRegistry:
             "remote_agents": [
                 None,
                 {
+                    "name": "bad_url_agent",
+                    "domain": "testing",
+                    "base_url": 123,
+                },
+                {
                     "name": "safe_agent",
                     "domain": "testing",
                     "base_url": "https://example.com",
@@ -61,6 +66,7 @@ class TestAgentRegistry:
         registry = AgentRegistry(persist_path=persist_path)
 
         assert registry.get("safe_agent") is not None
+        assert registry.get("bad_url_agent") is None
         assert registry.remote_count == 1
 
     def test_unregister_removes(self, mock_agent, tmp_path):
