@@ -131,7 +131,7 @@ class AgentRegistry:
                         capabilities=entry.get("capabilities", []),
                     )
                     loaded_count += 1
-                except (KeyError, ValidationError) as e:
+                except (KeyError, TypeError, AttributeError, ValidationError) as e:
                     logger.warning(
                         f"[AgentRegistry] Skipping invalid persisted agent: {e}"
                     )
