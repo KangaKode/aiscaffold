@@ -25,11 +25,45 @@ TEMPLATE_REPO = "gh:KangaKode/roundtable"
 LOCAL_TEMPLATE = str(Path(__file__).parent.parent.parent.parent / "aiscaffold-template")
 
 
+def _as_optional_str(value: object) -> str | None:
+    """Normalize Typer's direct-call defaults to plain optional strings."""
+    return value if isinstance(value, str) else None
+
+
+def _as_bool(value: object) -> bool:
+    """Normalize Typer's direct-call defaults to booleans."""
+    return value if isinstance(value, bool) else False
+
+
 def _get_template_source() -> str:
     """Use local template if available, otherwise GitHub."""
     if Path(LOCAL_TEMPLATE).exists():
         return LOCAL_TEMPLATE
     return TEMPLATE_REPO
+
+
+def _is_trusted_template_source(source: str | None) -> bool:
+    """Return True for template sources controlled by this package/project."""
+    if source == TEMPLATE_REPO:
+        return True
+    if not source:
+        return False
+    try:
+        return Path(source).resolve(strict=False) == Path(LOCAL_TEMPLATE).resolve(strict=False)
+    except OSError:
+        return False
+
+
+def _copier_answers_source(path: Path = Path(".copier-answers.yml")) -> str | None:
+    """Read the Copier source path without adding a YAML runtime dependency."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("_src_path:"):
+                return stripped.split(":", 1)[1].strip().strip("\"'")
+    except OSError:
+        return None
+    return None
 
 
 # =============================================================================
@@ -41,14 +75,22 @@ def _get_template_source() -> str:
 def init(
     name: str = typer.Argument(None, help="Project name"),
     template: str = typer.Option(None, help="Template source (default: auto-detect)"),
+    trust: bool = typer.Option(
+        False,
+        "--trust",
+        help="Trust and run tasks from a custom Copier template source.",
+    ),
 ):
     """Create a new AI tool project with 2026 best practices."""
-    source = template or _get_template_source()
+    custom_template = _as_optional_str(template)
+    source = custom_template or _get_template_source()
 
     console.print(f"\n[bold blue]aiscaffold init[/bold blue]")
     console.print(f"Template: {source}\n")
 
-    cmd = ["copier", "copy", source, ".", "--trust"]
+    cmd = ["copier", "copy", source, "."]
+    if _as_bool(trust) or _is_trusted_template_source(source):
+        cmd.append("--trust")
     if name:
         cmd.extend(["--data", f"project_name={name}"])
 
@@ -224,7 +266,13 @@ def _add_layer(root: Path, name: str):
 
 
 @app.command()
-def update():
+def update(
+    trust: bool = typer.Option(
+        False,
+        "--trust",
+        help="Trust and run tasks from the Copier template recorded in this project.",
+    ),
+):
     """Pull template updates into the current project."""
     if not Path(".copier-answers.yml").exists():
         console.print("[red]Not a scaffolded project (no .copier-answers.yml)[/red]")
@@ -234,7 +282,10 @@ def update():
     console.print("Pulling template updates...\n")
 
     try:
-        subprocess.run(["copier", "update", "--trust"], check=True)
+        cmd = ["copier", "update"]
+        if _as_bool(trust) or _is_trusted_template_source(_copier_answers_source()):
+            cmd.append("--trust")
+        subprocess.run(cmd, check=True)
         console.print("\n[bold green]Update complete![/bold green]")
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")
