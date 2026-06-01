@@ -32,6 +32,30 @@ def _get_template_source() -> str:
     return TEMPLATE_REPO
 
 
+def _is_trusted_template_source(source: str) -> bool:
+    """Return whether a template source is maintained by this package."""
+    if source == TEMPLATE_REPO:
+        return True
+
+    try:
+        return Path(source).resolve() == Path(LOCAL_TEMPLATE).resolve()
+    except OSError:
+        return False
+
+
+def _recorded_template_source(answers_path: Path) -> str | None:
+    """Read Copier's recorded source without trusting malformed YAML."""
+    sources = []
+    for line in answers_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("_src_path:"):
+            sources.append(stripped.split(":", 1)[1].strip().strip("'\""))
+
+    if len(sources) != 1:
+        return None
+    return sources[0]
+
+
 # =============================================================================
 # INIT
 # =============================================================================
@@ -41,14 +65,23 @@ def _get_template_source() -> str:
 def init(
     name: str = typer.Argument(None, help="Project name"),
     template: str = typer.Option(None, help="Template source (default: auto-detect)"),
+    trust_template_tasks: bool = typer.Option(
+        False,
+        "--trust-template-tasks",
+        help="Trust Copier tasks from a custom template source.",
+    ),
 ):
     """Create a new AI tool project with 2026 best practices."""
+    explicit_trust = trust_template_tasks is True
+    user_supplied_template = template is not None
     source = template or _get_template_source()
 
     console.print(f"\n[bold blue]aiscaffold init[/bold blue]")
     console.print(f"Template: {source}\n")
 
-    cmd = ["copier", "copy", source, ".", "--trust"]
+    cmd = ["copier", "copy", source, "."]
+    if explicit_trust or (not user_supplied_template and _is_trusted_template_source(source)):
+        cmd.append("--trust")
     if name:
         cmd.extend(["--data", f"project_name={name}"])
 
@@ -224,9 +257,17 @@ def _add_layer(root: Path, name: str):
 
 
 @app.command()
-def update():
+def update(
+    trust_template_tasks: bool = typer.Option(
+        False,
+        "--trust-template-tasks",
+        help="Trust Copier tasks from the recorded template source.",
+    ),
+):
     """Pull template updates into the current project."""
-    if not Path(".copier-answers.yml").exists():
+    explicit_trust = trust_template_tasks is True
+    answers_path = Path(".copier-answers.yml")
+    if not answers_path.exists():
         console.print("[red]Not a scaffolded project (no .copier-answers.yml)[/red]")
         raise typer.Exit(1)
 
@@ -234,7 +275,12 @@ def update():
     console.print("Pulling template updates...\n")
 
     try:
-        subprocess.run(["copier", "update", "--trust"], check=True)
+        cmd = ["copier", "update"]
+        source = _recorded_template_source(answers_path)
+        if explicit_trust or (source is not None and _is_trusted_template_source(source)):
+            cmd.append("--trust")
+
+        subprocess.run(cmd, check=True)
         console.print("\n[bold green]Update complete![/bold green]")
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")

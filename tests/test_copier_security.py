@@ -24,19 +24,25 @@ class CopierSecurityTests(unittest.TestCase):
         self.assertEqual("", self.render_validator("project_slug", "safe_project"))
         self.assertTrue(self.render_validator("project_slug", 'safe_project"; touch /tmp/pwned #'))
 
+    def test_project_slug_rejects_python_keywords(self):
+        self.assertTrue(self.render_validator("project_slug", "class"))
+
     def test_layers_reject_shell_metacharacters_and_path_traversal(self):
         self.assertEqual("", self.render_validator("layers", "data,analysis,components"))
         self.assertTrue(self.render_validator("layers", 'data"; touch /tmp/pwned #'))
         self.assertTrue(self.render_validator("layers", "data,../secrets"))
 
+    def test_layers_reject_python_keywords(self):
+        self.assertTrue(self.render_validator("layers", "data,class,components"))
+
     def test_tasks_do_not_render_project_name_into_shell_commands(self):
         tasks = "\n".join(self.config["_tasks"])
         self.assertNotIn("{{ project_name }}", tasks)
 
-    def test_cli_uses_trust_for_template_tasks(self):
+    def test_cli_does_not_unconditionally_trust_template_tasks(self):
         cli_source = (REPO_ROOT / "core" / "src" / "aiscaffold" / "cli.py").read_text(encoding="utf-8")
-        self.assertIn('["copier", "copy", source, ".", "--trust"]', cli_source)
-        self.assertIn('["copier", "update", "--trust"]', cli_source)
+        self.assertNotIn('["copier", "copy", source, ".", "--trust"]', cli_source)
+        self.assertNotIn('["copier", "update", "--trust"]', cli_source)
 
 
 if __name__ == "__main__":
