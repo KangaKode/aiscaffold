@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -44,16 +45,19 @@ def _is_trusted_template_source(source: str) -> bool:
 
 
 def _recorded_template_source(answers_path: Path) -> str | None:
-    """Read Copier's recorded source without trusting malformed YAML."""
-    sources = []
-    for line in answers_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("_src_path:"):
-            sources.append(stripped.split(":", 1)[1].strip().strip("'\""))
-
-    if len(sources) != 1:
+    """Read Copier's top-level recorded source."""
+    try:
+        answers = yaml.safe_load(answers_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
         return None
-    return sources[0]
+
+    if not isinstance(answers, dict):
+        return None
+
+    source = answers.get("_src_path")
+    if not isinstance(source, str):
+        return None
+    return source
 
 
 # =============================================================================

@@ -113,6 +113,23 @@ def test_update_does_not_trust_custom_template_tasks_by_default(monkeypatch, tmp
     assert calls == [(["copier", "update"], True)]
 
 
+def test_update_does_not_trust_nested_official_source(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        f'metadata:\n  _src_path: {cli.TEMPLATE_REPO}\n"_src_path": /tmp/template\n'
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.update()
+
+    assert calls == [(["copier", "update"], True)]
+
+
 def test_update_can_explicitly_trust_custom_template_tasks(monkeypatch, tmp_path):
     calls = []
 
