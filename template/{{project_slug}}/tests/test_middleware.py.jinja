@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 from {{ project_slug }}.api.middleware.auth import (
     AuthContext,
+    auth_scope_key,
     check_production_auth,
     get_api_key,
     verify_api_key,
@@ -132,6 +133,19 @@ class TestVerifyApiKey:
         with pytest.raises(HTTPException) as exc_info:
             await verify_api_key(request, credentials=None)
         assert exc_info.value.status_code == 401
+
+
+class TestAuthScopeKey:
+    def test_auth_scope_key_preserves_legacy_format_for_safe_ids(self):
+        auth = AuthContext(tenant_id="tenant-a", user_id="alice_1")
+
+        assert auth_scope_key(auth) == "tenant-a:alice_1"
+
+    def test_auth_scope_key_distinguishes_delimiter_colliding_contexts(self):
+        first = AuthContext(tenant_id="tenant-a", user_id="alice:bob")
+        second = AuthContext(tenant_id="tenant-a:alice", user_id="bob")
+
+        assert auth_scope_key(first) != auth_scope_key(second)
 
 
 # =============================================================================

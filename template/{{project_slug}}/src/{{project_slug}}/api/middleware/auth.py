@@ -21,8 +21,10 @@ Multi-tenancy:
 
 import hashlib
 import hmac
+import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 from fastapi import HTTPException, Request, Security
@@ -31,6 +33,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 logger = logging.getLogger(__name__)
 
 security_scheme = HTTPBearer(auto_error=False)
+LEGACY_SCOPE_SAFE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 @dataclass
@@ -49,6 +52,19 @@ class AuthContext:
     api_key: str | None = None
     user_id: str = "anon"
     tenant_id: str = "default"
+
+
+def auth_scope_key(auth: AuthContext) -> str:
+    """Return an unambiguous cache/storage scope for tenant-owned user data."""
+    tenant_id = str(auth.tenant_id)
+    user_id = str(auth.user_id)
+    if LEGACY_SCOPE_SAFE.fullmatch(tenant_id) and LEGACY_SCOPE_SAFE.fullmatch(user_id):
+        return f"{tenant_id}:{user_id}"
+    return json.dumps(
+        [tenant_id, user_id],
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
 
 
 def get_api_key() -> str | None:

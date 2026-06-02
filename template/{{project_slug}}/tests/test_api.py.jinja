@@ -8,7 +8,7 @@ from httpx import AsyncClient, ASGITransport
 from {{ project_slug }}.api.gateway import create_app
 from {{ project_slug }}.api.middleware.auth import AuthContext, verify_api_key
 from {{ project_slug }}.api.models.responses import RoundTableResultResponse
-from {{ project_slug }}.api.routes import round_table
+from {{ project_slug }}.api.routes import chat, round_table
 
 
 @pytest.fixture
@@ -167,6 +167,15 @@ class TestChatAPI:
         assert r.status_code == 200
         assert r.json()["status"] == "cleared"
 
+    def test_chat_session_keys_do_not_collide_when_auth_fields_contain_delimiters(self):
+        victim_auth = AuthContext(tenant_id="tenant-a", user_id="alice:bob")
+        attacker_auth = AuthContext(tenant_id="tenant-a:alice", user_id="bob")
+
+        assert (
+            chat._session_key("default", victim_auth)
+            != chat._session_key("default", attacker_auth)
+        )
+
 
 # =============================================================================
 # SESSIONS
@@ -229,6 +238,34 @@ class TestSessionsAPI:
         assert bob_list.json()["total"] == 0
 
     @pytest.mark.asyncio
+    async def test_sessions_do_not_collide_when_auth_fields_contain_delimiters(self, scoped_client):
+        victim_headers = {"X-Test-Tenant": "tenant-a", "X-Test-User": "alice:bob"}
+        attacker_headers = {"X-Test-Tenant": "tenant-a:alice", "X-Test-User": "bob"}
+
+        create_r = await scoped_client.post(
+            "/api/v1/sessions",
+            json={"metadata": {"case": "sensitive"}},
+            headers=victim_headers,
+        )
+        assert create_r.status_code == 200
+        sid = create_r.json()["session_id"]
+
+        attacker_get = await scoped_client.get(
+            f"/api/v1/sessions/{sid}",
+            headers=attacker_headers,
+        )
+        attacker_add = await scoped_client.post(
+            f"/api/v1/sessions/{sid}/turns",
+            json={"content": "cross-tenant write"},
+            headers=attacker_headers,
+        )
+        attacker_list = await scoped_client.get("/api/v1/sessions", headers=attacker_headers)
+
+        assert attacker_get.status_code == 404
+        assert attacker_add.status_code == 404
+        assert attacker_list.json()["total"] == 0
+
+    @pytest.mark.asyncio
     async def test_round_table_results_are_scoped_to_auth_context(self, scoped_client):
         round_table._results_cache.clear()
         task_id = "task_private"
@@ -249,6 +286,23 @@ class TestSessionsAPI:
 
         assert alice_r.status_code == 200
         assert bob_r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_round_table_results_do_not_collide_when_auth_fields_contain_delimiters(self, scoped_client):
+        round_table._results_cache.clear()
+        task_id = "task_private"
+        victim_auth = AuthContext(user_id="alice:bob", tenant_id="tenant-a")
+        round_table._cache_result(
+            round_table._result_key(task_id, victim_auth),
+            RoundTableResultResponse(task_id=task_id, status="completed"),
+        )
+
+        attacker_r = await scoped_client.get(
+            f"/api/v1/round-table/tasks/{task_id}",
+            headers={"X-Test-Tenant": "tenant-a:alice", "X-Test-User": "bob"},
+        )
+
+        assert attacker_r.status_code == 404
 
 
 # =============================================================================
