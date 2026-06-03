@@ -21,7 +21,23 @@ project_name:
 
 project_slug:
   type: str
-  default: "{{ project_name | lower | replace(' ', '_') | replace('-', '_') }}"
+  default: >-
+    {%- set slug = namespace(value='') -%}
+    {%- for char in project_name | lower -%}
+    {%- if char.isascii() and (char.isalnum() or char == '_') -%}
+    {%- set slug.value = slug.value + char -%}
+    {%- else -%}
+    {%- set slug.value = slug.value + '_' -%}
+    {%- endif -%}
+    {%- endfor -%}
+    {%- set candidate = slug.value.strip('_') -%}
+    {%- if not candidate -%}
+    project
+    {%- elif candidate[0].isdigit() -%}
+    project_{{ candidate }}
+    {%- else -%}
+    {{ candidate }}
+    {%- endif -%}
   help: "Python-safe project directory name"
   validator: >-
     {% if not project_slug.isascii() or not project_slug.isidentifier() %}
