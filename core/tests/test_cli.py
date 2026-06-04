@@ -31,7 +31,7 @@ def test_init_trusts_copier_tasks(monkeypatch):
     ]
 
 
-def test_update_trusts_copier_tasks(monkeypatch, tmp_path):
+def test_update_trusts_template_but_skips_generation_tasks(monkeypatch, tmp_path):
     calls = []
 
     def fake_run(cmd, check):
@@ -43,7 +43,7 @@ def test_update_trusts_copier_tasks(monkeypatch, tmp_path):
 
     cli.update()
 
-    assert calls == [(["copier", "update", "--trust"], True)]
+    assert calls == [(["copier", "update", "--trust", "--skip-tasks"], True)]
 
 
 def test_init_surfaces_copier_failures(monkeypatch):

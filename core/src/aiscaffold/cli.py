@@ -234,7 +234,7 @@ def update():
     console.print("Pulling template updates...\n")
 
     try:
-        subprocess.run(["copier", "update", "--trust"], check=True)
+        subprocess.run(["copier", "update", "--trust", "--skip-tasks"], check=True)
         console.print("\n[bold green]Update complete![/bold green]")
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")

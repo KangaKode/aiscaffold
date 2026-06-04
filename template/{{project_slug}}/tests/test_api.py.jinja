@@ -8,7 +8,7 @@ from httpx import AsyncClient, ASGITransport
 from {{ project_slug }}.api.gateway import create_app
 from {{ project_slug }}.api.middleware.auth import AuthContext, verify_api_key
 from {{ project_slug }}.api.models.responses import RoundTableResultResponse
-from {{ project_slug }}.api.routes import round_table
+from {{ project_slug }}.api.routes import round_table, sessions
 
 
 @pytest.fixture
@@ -227,6 +227,17 @@ class TestSessionsAPI:
         bob_list = await scoped_client.get("/api/v1/sessions", headers=bob_headers)
         assert alice_list.json()["total"] == 1
         assert bob_list.json()["total"] == 0
+
+    def test_scope_keys_do_not_collide_when_ids_contain_delimiters(self):
+        left = AuthContext(user_id="bob", tenant_id="acme:user")
+        right = AuthContext(user_id="user:bob", tenant_id="acme")
+
+        assert sessions._session_key("same_session", left) != sessions._session_key(
+            "same_session", right
+        )
+        assert round_table._result_key("same_task", left) != round_table._result_key(
+            "same_task", right
+        )
 
     @pytest.mark.asyncio
     async def test_round_table_results_are_scoped_to_auth_context(self, scoped_client):

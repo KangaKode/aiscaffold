@@ -152,6 +152,15 @@ class TestSessionKey:
         key = _session_key("my_session", auth)
         assert key == "default:anon:my_session"
 
+    def test_session_key_does_not_collide_when_ids_contain_delimiters(self):
+        from {{project_slug}}.api.routes.chat import _session_key
+        from {{project_slug}}.api.middleware.auth import AuthContext
+
+        left = AuthContext(user_id="bob", tenant_id="acme:user")
+        right = AuthContext(user_id="user:bob", tenant_id="acme")
+
+        assert _session_key("same_session", left) != _session_key("same_session", right)
+
 
 # =============================================================================
 # ROUND TABLE SYNTHESIS ERROR HANDLING
