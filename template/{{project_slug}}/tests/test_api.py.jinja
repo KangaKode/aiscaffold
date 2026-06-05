@@ -8,7 +8,7 @@ from httpx import AsyncClient, ASGITransport
 from {{ project_slug }}.api.gateway import create_app
 from {{ project_slug }}.api.middleware.auth import AuthContext, verify_api_key
 from {{ project_slug }}.api.models.responses import RoundTableResultResponse
-from {{ project_slug }}.api.routes import round_table
+from {{ project_slug }}.api.routes import round_table, sessions
 
 
 @pytest.fixture
@@ -227,6 +227,26 @@ class TestSessionsAPI:
         bob_list = await scoped_client.get("/api/v1/sessions", headers=bob_headers)
         assert alice_list.json()["total"] == 1
         assert bob_list.json()["total"] == 0
+
+    @pytest.mark.asyncio
+    async def test_session_listing_requires_exact_auth_scope(self, scoped_client):
+        sessions._sessions.clear()
+        victim_headers = {"X-Test-User": "alice:admin", "X-Test-Tenant": "tenant-a"}
+        attacker_headers = {"X-Test-User": "alice", "X-Test-Tenant": "tenant-a"}
+
+        create_r = await scoped_client.post(
+            "/api/v1/sessions",
+            json={"metadata": {"case": "colon-delimited-user"}},
+            headers=victim_headers,
+        )
+        assert create_r.status_code == 200
+
+        attacker_list = await scoped_client.get(
+            "/api/v1/sessions",
+            headers=attacker_headers,
+        )
+        assert attacker_list.status_code == 200
+        assert attacker_list.json()["total"] == 0
 
     @pytest.mark.asyncio
     async def test_round_table_results_are_scoped_to_auth_context(self, scoped_client):
