@@ -14,8 +14,9 @@ project_slug:
   default: "{{ project_name | lower | replace(' ', '_') | replace('-', '_') }}"
   help: "Python-safe project directory name"
   validator: >-
-    {% if not project_slug.isascii() or not project_slug.isidentifier() %}
-    project_slug must be an ASCII Python identifier (letters, numbers, and underscores; cannot start with a number).
+    {% set python_keywords = ["False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while", "with", "yield"] %}
+    {% if not project_slug.isascii() or not project_slug.isidentifier() or project_slug in python_keywords %}
+    project_slug must be an ASCII Python identifier (letters, numbers, and underscores; cannot start with a number) and cannot be a Python keyword.
     {% endif %}
 
 project_description:

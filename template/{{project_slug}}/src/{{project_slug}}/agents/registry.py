@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from ..security import ValidationError, validate_identifier, validate_url
+from ..security import validate_identifier, validate_url
 from .remote import RemoteAgent
 
 logger = logging.getLogger(__name__)
@@ -110,11 +110,26 @@ class AgentRegistry:
             with open(self._persist_path) as f:
                 data = json.load(f)
             loaded_count = 0
-            for entry in data.get("remote_agents", []):
+            remote_agents = data.get("remote_agents", [])
+            if not isinstance(remote_agents, list):
+                logger.warning(
+                    "[AgentRegistry] Invalid persisted agents: remote_agents "
+                    "must be a list"
+                )
+                return
+            for entry in remote_agents:
+                if not isinstance(entry, dict):
+                    logger.warning(
+                        "[AgentRegistry] Skipping invalid persisted agent: "
+                        "entry must be an object"
+                    )
+                    continue
                 try:
                     name = validate_identifier(entry["name"], "agent name")
                     base_url = validate_url(entry["base_url"], "base_url")
-                    api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
+                    api_key_env = entry.get(
+                        "api_key_env", f"AGENT_{name.upper()}_API_KEY"
+                    )
                     api_key = os.environ.get(api_key_env, "")
 
                     agent = RemoteAgent(
@@ -131,7 +146,7 @@ class AgentRegistry:
                         capabilities=entry.get("capabilities", []),
                     )
                     loaded_count += 1
-                except (KeyError, ValidationError) as e:
+                except (AttributeError, KeyError, TypeError, ValueError) as e:
                     logger.warning(
                         f"[AgentRegistry] Skipping invalid persisted agent: {e}"
                     )

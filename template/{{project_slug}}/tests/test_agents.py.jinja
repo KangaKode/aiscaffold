@@ -1,8 +1,6 @@
 """Unit tests for the agents module -- registry, remote agent, protocol."""
 
 import json
-import pytest
-from pathlib import Path
 from {{project_slug}}.agents.registry import AgentRegistry
 from {{project_slug}}.agents.remote import RemoteAgent
 from {{project_slug}}.orchestration.round_table import AgentProtocol
@@ -43,6 +41,28 @@ class TestAgentRegistry:
 
         assert registry.get("safe_agent") is not None
         assert registry.get("metadata_agent") is None
+        assert registry.remote_count == 1
+
+    def test_load_remote_agents_skips_malformed_entries_without_aborting(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": 123,
+                    "domain": "testing",
+                    "base_url": "https://invalid.example.com",
+                },
+                {
+                    "name": "safe_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+
+        assert registry.get("safe_agent") is not None
         assert registry.remote_count == 1
 
     def test_unregister_removes(self, mock_agent, tmp_path):
