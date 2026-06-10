@@ -45,6 +45,61 @@ class TestAgentRegistry:
         assert registry.get("metadata_agent") is None
         assert registry.remote_count == 1
 
+    def test_load_remote_agents_skips_malformed_entries_without_aborting(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "first_safe_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                },
+                {
+                    "name": None,
+                    "domain": "testing",
+                    "base_url": "https://bad-name.example.com",
+                },
+                "not an object",
+                {
+                    "name": "second_safe_agent",
+                    "domain": "testing",
+                    "base_url": "https://second.example.com",
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+
+        assert registry.get("first_safe_agent") is not None
+        assert registry.get("second_safe_agent") is not None
+        assert registry.remote_count == 2
+
+    def test_save_preserves_skipped_persisted_remote_agents(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "safe_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                },
+                {
+                    "name": "metadata_agent",
+                    "domain": "testing",
+                    "base_url": "http://169.254.169.254",
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+        registry.register_remote("new_agent", "testing", "https://new.example.com")
+
+        saved_names = {
+            entry["name"]
+            for entry in json.loads(persist_path.read_text())["remote_agents"]
+        }
+        assert saved_names == {"safe_agent", "metadata_agent", "new_agent"}
+
     def test_unregister_removes(self, mock_agent, tmp_path):
         registry = AgentRegistry(persist_path=tmp_path / "agents.json")
         registry.register_local(mock_agent)

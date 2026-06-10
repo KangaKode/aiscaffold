@@ -95,6 +95,7 @@ class AgentRegistry:
 
     def __init__(self, persist_path: Path = DEFAULT_PERSIST_PATH):
         self._agents: dict[str, AgentEntry] = {}
+        self._skipped_remote_entries: list[Any] = []
         self._persist_path = persist_path
         self._load_remote_agents()
 
@@ -112,6 +113,8 @@ class AgentRegistry:
             loaded_count = 0
             for entry in data.get("remote_agents", []):
                 try:
+                    if not isinstance(entry, dict):
+                        raise ValidationError("persisted agent entry must be an object")
                     name = validate_identifier(entry["name"], "agent name")
                     base_url = validate_url(entry["base_url"], "base_url")
                     api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
@@ -131,7 +134,8 @@ class AgentRegistry:
                         capabilities=entry.get("capabilities", []),
                     )
                     loaded_count += 1
-                except (KeyError, ValidationError) as e:
+                except (KeyError, TypeError, AttributeError, ValidationError) as e:
+                    self._skipped_remote_entries.append(entry)
                     logger.warning(
                         f"[AgentRegistry] Skipping invalid persisted agent: {e}"
                     )
@@ -145,11 +149,19 @@ class AgentRegistry:
     def _save_remote_agents(self) -> None:
         """Persist remote agent registrations to disk."""
         remote_entries = []
+        remote_names = set()
         for entry in self._agents.values():
             if entry.agent_type == "remote" and hasattr(entry.agent, "to_dict"):
                 agent_data = entry.agent.to_dict()
                 agent_data["capabilities"] = entry.capabilities
+                remote_names.add(agent_data.get("name"))
                 remote_entries.append(agent_data)
+
+        for entry in self._skipped_remote_entries:
+            entry_name = entry.get("name") if isinstance(entry, dict) else None
+            if isinstance(entry_name, str) and entry_name in remote_names:
+                continue
+            remote_entries.append(entry)
 
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._persist_path, "w") as f:
