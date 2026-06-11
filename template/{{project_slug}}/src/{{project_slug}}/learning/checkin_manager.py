@@ -125,6 +125,7 @@ class CheckInManager:
         checkin_id: str,
         approved: bool,
         response: str = "",
+        project_id: str | None = None,
     ) -> CheckIn | None:
         """Record the user's response to a check-in."""
         status = CheckInStatus.APPROVED if approved else CheckInStatus.REJECTED
@@ -133,10 +134,15 @@ class CheckInManager:
 
         conn = get_connection(self._db_path)
         try:
+            query = """UPDATE checkins SET status = ?, response = ?, resolved_at = ?
+                       WHERE id = ? AND status = ?"""
+            params = [status, response, resolved_at, checkin_id, CheckInStatus.PENDING]
+            if project_id is not None:
+                query += " AND project_id = ?"
+                params.append(project_id)
             conn.execute(
-                """UPDATE checkins SET status = ?, response = ?, resolved_at = ?
-                   WHERE id = ? AND status = ?""",
-                (status, response, resolved_at, checkin_id, CheckInStatus.PENDING),
+                query,
+                params,
             )
             conn.commit()
 
@@ -145,17 +151,22 @@ class CheckInManager:
                 return None
 
             logger.info(f"[CheckIn] {checkin_id} -> {status}")
-            return self._get_by_id(checkin_id, conn)
+            return self._get_by_id(checkin_id, conn, project_id=project_id)
         finally:
             conn.close()
 
-    def skip(self, checkin_id: str) -> bool:
+    def skip(self, checkin_id: str, project_id: str | None = None) -> bool:
         """Skip a check-in (user doesn't want to decide now)."""
         conn = get_connection(self._db_path)
         try:
+            query = "UPDATE checkins SET status = ? WHERE id = ? AND status = ?"
+            params = [CheckInStatus.SKIPPED, checkin_id, CheckInStatus.PENDING]
+            if project_id is not None:
+                query += " AND project_id = ?"
+                params.append(project_id)
             conn.execute(
-                "UPDATE checkins SET status = ? WHERE id = ? AND status = ?",
-                (CheckInStatus.SKIPPED, checkin_id, CheckInStatus.PENDING),
+                query,
+                params,
             )
             conn.commit()
             return conn.total_changes > 0
@@ -233,11 +244,16 @@ class CheckInManager:
         finally:
             conn.close()
 
-    def _get_by_id(self, checkin_id: str, conn) -> CheckIn | None:
+    def _get_by_id(
+        self, checkin_id: str, conn, project_id: str | None = None
+    ) -> CheckIn | None:
         """Get a check-in by ID using an existing connection."""
-        row = conn.execute(
-            "SELECT * FROM checkins WHERE id = ?", (checkin_id,)
-        ).fetchone()
+        query = "SELECT * FROM checkins WHERE id = ?"
+        params = [checkin_id]
+        if project_id is not None:
+            query += " AND project_id = ?"
+            params.append(project_id)
+        row = conn.execute(query, params).fetchone()
         if row is None:
             return None
         return self._row_to_checkin(dict_from_row(row))

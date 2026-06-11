@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ...learning.user_profile import UserProfileManager
 from ...llm import create_client
 from ...orchestration.agent_router import AgentRouter
 from ...orchestration.chat_orchestrator import (
@@ -38,6 +39,11 @@ MAX_MESSAGE_LENGTH = 100_000
 MAX_SESSIONS = 500
 
 _orchestrators: OrderedDict[str, ChatOrchestrator] = OrderedDict()
+
+
+def _auth_scope(auth: AuthContext) -> str:
+    """Scope user-owned learning context to the authenticated tenant and user."""
+    return f"{auth.tenant_id}:{auth.user_id}"
 
 
 # =============================================================================
@@ -83,7 +89,21 @@ class EscalateRequest(BaseModel):
 
 def _session_key(session_id: str, auth: AuthContext) -> str:
     """Bind session to authenticated user and tenant to prevent cross-session access."""
-    return f"{auth.tenant_id}:{auth.user_id}:{session_id}"
+    return f"{_auth_scope(auth)}:{session_id}"
+
+
+def _get_profile_mgr(request: Request, auth: AuthContext) -> UserProfileManager:
+    managers = getattr(request.app.state, "profile_managers", None)
+    if managers is None:
+        managers = {}
+        request.app.state.profile_managers = managers
+
+    scope = _auth_scope(auth)
+    mgr = managers.get(scope)
+    if mgr is None:
+        mgr = UserProfileManager(project_id=scope)
+        managers[scope] = mgr
+    return mgr
 
 
 def _get_or_create_orchestrator(
@@ -143,11 +163,11 @@ async def send_message(
     trust_scores = None
     trust_mgr = getattr(request.app.state, "trust_manager", None)
     if trust_mgr:
-        trust_scores = trust_mgr.get_all_scores()
+        trust_scores = trust_mgr.get_all_scores(_auth_scope(auth))
 
     profile_context = chat_request.context
-    profile_mgr = getattr(request.app.state, "profile_manager", None)
-    if profile_mgr and not profile_context:
+    if not profile_context:
+        profile_mgr = _get_profile_mgr(request, auth)
         profile_context = profile_mgr.get_context_bundle(query=chat_request.message)
 
     chat_response: ChatResponse = await orchestrator.chat(
@@ -205,11 +225,11 @@ async def send_message_stream(
     trust_scores = None
     trust_mgr = getattr(request.app.state, "trust_manager", None)
     if trust_mgr:
-        trust_scores = trust_mgr.get_all_scores()
+        trust_scores = trust_mgr.get_all_scores(_auth_scope(auth))
 
     profile_context = chat_request.context
-    profile_mgr = getattr(request.app.state, "profile_manager", None)
-    if profile_mgr and not profile_context:
+    if not profile_context:
+        profile_mgr = _get_profile_mgr(request, auth)
         profile_context = profile_mgr.get_context_bundle(query=chat_request.message)
 
     async def event_generator():

@@ -60,6 +60,11 @@ def _get_tracker(request: Request) -> FeedbackTracker:
     return tracker
 
 
+def _auth_scope(auth: AuthContext) -> str:
+    """Scope learning feedback to the authenticated tenant and user."""
+    return f"{auth.tenant_id}:{auth.user_id}"
+
+
 @router.post("/feedback", response_model=FeedbackResponse)
 async def record_feedback(
     fb: FeedbackRequest,
@@ -83,7 +88,9 @@ async def record_feedback(
         raise HTTPException(status_code=400, detail=str(e))
 
     tracker = _get_tracker(request)
+    scope = _auth_scope(auth)
     signal = FeedbackSignal(
+        project_id=scope,
         signal_type=fb.signal_type,
         context_type=fb.context_type,
         agent_id=fb.agent_id,
@@ -120,6 +127,7 @@ async def query_feedback(
     """Query feedback signals with optional filters."""
     tracker = _get_tracker(request)
     signals = tracker.get_signals(
+        project_id=_auth_scope(auth),
         agent_id=agent_id,
         signal_type=signal_type,
         context_type=context_type,
@@ -151,7 +159,11 @@ async def feedback_counts(
 ) -> dict:
     """Get signal counts grouped by type."""
     tracker = _get_tracker(request)
-    counts = tracker.get_signal_counts(agent_id=agent_id, since=since)
+    counts = tracker.get_signal_counts(
+        project_id=_auth_scope(auth),
+        agent_id=agent_id,
+        since=since,
+    )
     return {"counts": counts, "total": sum(counts.values())}
 
 
@@ -163,5 +175,5 @@ async def acceptance_rates(
 ) -> dict:
     """Get acceptance rates per agent."""
     tracker = _get_tracker(request)
-    rates = tracker.get_acceptance_rates(since=since)
+    rates = tracker.get_acceptance_rates(project_id=_auth_scope(auth), since=since)
     return {"rates": rates}

@@ -49,11 +49,22 @@ class PreferenceResponse(BaseModel):
     active: bool
 
 
-def _get_profile_mgr(request: Request) -> UserProfileManager:
-    mgr = getattr(request.app.state, "profile_manager", None)
+def _auth_scope(auth: AuthContext) -> str:
+    """Scope learning data to the authenticated tenant and user."""
+    return f"{auth.tenant_id}:{auth.user_id}"
+
+
+def _get_profile_mgr(request: Request, auth: AuthContext) -> UserProfileManager:
+    managers = getattr(request.app.state, "profile_managers", None)
+    if managers is None:
+        managers = {}
+        request.app.state.profile_managers = managers
+
+    scope = _auth_scope(auth)
+    mgr = managers.get(scope)
     if mgr is None:
-        mgr = UserProfileManager()
-        request.app.state.profile_manager = mgr
+        mgr = UserProfileManager(project_id=scope)
+        managers[scope] = mgr
     return mgr
 
 
@@ -71,8 +82,10 @@ async def save_preference(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    mgr = _get_profile_mgr(request)
+    scope = _auth_scope(auth)
+    mgr = _get_profile_mgr(request, auth)
     pref = UserPreference(
+        project_id=scope,
         preference_type=pref_req.preference_type,
         key=pref_req.key,
         value=pref_req.value,
@@ -98,7 +111,7 @@ async def list_preferences(
     auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """List all active preferences."""
-    mgr = _get_profile_mgr(request)
+    mgr = _get_profile_mgr(request, auth)
     profile = mgr.get_profile()
     all_prefs = profile.explicit_preferences + profile.implicit_preferences
     return {
@@ -132,7 +145,7 @@ async def search_preferences(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    mgr = _get_profile_mgr(request)
+    mgr = _get_profile_mgr(request, auth)
     results = mgr._retriever.search(
         query=q,
         limit=min(limit, 50),
@@ -160,7 +173,7 @@ async def get_profile(
     auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """Get the synthesized user profile and context bundle."""
-    mgr = _get_profile_mgr(request)
+    mgr = _get_profile_mgr(request, auth)
     profile = mgr.get_profile()
     bundle = mgr.get_context_bundle(query=query)
     return {

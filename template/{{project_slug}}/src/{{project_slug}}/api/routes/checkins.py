@@ -50,6 +50,11 @@ def _get_checkin_mgr(request: Request) -> CheckInManager:
     return mgr
 
 
+def _auth_scope(auth: AuthContext) -> str:
+    """Scope permission check-ins to the authenticated tenant and user."""
+    return f"{auth.tenant_id}:{auth.user_id}"
+
+
 @router.get("/checkins")
 async def list_pending_checkins(
     request: Request,
@@ -57,7 +62,7 @@ async def list_pending_checkins(
 ) -> dict:
     """List all pending check-ins awaiting user response."""
     mgr = _get_checkin_mgr(request)
-    pending = mgr.get_pending()
+    pending = mgr.get_pending(project_id=_auth_scope(auth))
     return {
         "checkins": [
             CheckInResponse(
@@ -95,6 +100,7 @@ async def respond_to_checkin(
         checkin_id=checkin_id,
         approved=respond_req.approved,
         response=respond_req.response,
+        project_id=_auth_scope(auth),
     )
     if result is None:
         raise HTTPException(
@@ -117,7 +123,7 @@ async def skip_checkin(
 ) -> dict:
     """Skip a check-in (decide later)."""
     mgr = _get_checkin_mgr(request)
-    if not mgr.skip(checkin_id):
+    if not mgr.skip(checkin_id, project_id=_auth_scope(auth)):
         raise HTTPException(
             status_code=404,
             detail=f"Check-in '{checkin_id}' not found or already resolved",

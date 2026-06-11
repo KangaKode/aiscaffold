@@ -8,7 +8,8 @@ from httpx import AsyncClient, ASGITransport
 from {{ project_slug }}.api.gateway import create_app
 from {{ project_slug }}.api.middleware.auth import AuthContext, verify_api_key
 from {{ project_slug }}.api.models.responses import RoundTableResultResponse
-from {{ project_slug }}.api.routes import round_table
+from {{ project_slug }}.api.routes import chat, round_table
+from {{ project_slug }}.orchestration.chat_orchestrator import ChatResponse
 
 
 @pytest.fixture
@@ -167,6 +168,54 @@ class TestChatAPI:
         assert r.status_code == 200
         assert r.json()["status"] == "cleared"
 
+    @pytest.mark.asyncio
+    async def test_chat_profile_context_is_scoped_to_auth_context(self, scoped_client, monkeypatch):
+        captured: dict[str, str] = {}
+        alice_headers = {"X-Test-User": "alice", "X-Test-Tenant": "tenant-a"}
+        bob_headers = {"X-Test-User": "bob", "X-Test-Tenant": "tenant-a"}
+
+        await scoped_client.post(
+            "/api/v1/preferences",
+            json={
+                "preference_type": "style",
+                "key": "alice-only-context",
+                "value": "alice-secret-value",
+                "source": "explicit",
+            },
+            headers=alice_headers,
+        )
+        await scoped_client.post(
+            "/api/v1/preferences",
+            json={
+                "preference_type": "style",
+                "key": "bob-only-context",
+                "value": "bob-private-value",
+                "source": "explicit",
+            },
+            headers=bob_headers,
+        )
+
+        class CaptureOrchestrator:
+            async def chat(self, message, trust_scores=None, context=""):
+                captured["context"] = context or ""
+                return ChatResponse(content="ok")
+
+        monkeypatch.setattr(
+            chat,
+            "_get_or_create_orchestrator",
+            lambda session_id, request, auth: CaptureOrchestrator(),
+        )
+
+        r = await scoped_client.post(
+            "/api/v1/chat",
+            json={"message": "use my preferences"},
+            headers=bob_headers,
+        )
+
+        assert r.status_code == 200
+        assert "bob-private-value" in captured["context"]
+        assert "alice-secret-value" not in captured["context"]
+
 
 # =============================================================================
 # SESSIONS
@@ -279,6 +328,71 @@ class TestFeedbackAPI:
         r = await client.get("/api/v1/feedback/rates")
         assert r.status_code == 200
         assert "rates" in r.json()
+
+    @pytest.mark.asyncio
+    async def test_feedback_and_trust_are_scoped_to_auth_context(self, scoped_client):
+        alice_headers = {"X-Test-User": "alice", "X-Test-Tenant": "tenant-a"}
+        bob_headers = {"X-Test-User": "bob", "X-Test-Tenant": "tenant-a"}
+        agent_id = "alice_private_agent"
+
+        record_r = await scoped_client.post(
+            "/api/v1/feedback",
+            json={
+                "signal_type": "accept",
+                "agent_id": agent_id,
+                "context_type": "chat",
+            },
+            headers=alice_headers,
+        )
+        assert record_r.status_code == 200
+
+        bob_feedback = await scoped_client.get(
+            "/api/v1/feedback",
+            headers=bob_headers,
+        )
+        bob_rates = await scoped_client.get(
+            "/api/v1/feedback/rates",
+            headers=bob_headers,
+        )
+
+        assert bob_feedback.status_code == 200
+        assert agent_id not in [s["agent_id"] for s in bob_feedback.json()["signals"]]
+        assert bob_rates.status_code == 200
+        assert agent_id not in bob_rates.json()["rates"]
+
+
+# =============================================================================
+# PREFERENCES
+# =============================================================================
+
+
+class TestPreferencesAPI:
+    @pytest.mark.asyncio
+    async def test_preferences_and_profile_are_scoped_to_auth_context(self, scoped_client):
+        alice_headers = {"X-Test-User": "alice", "X-Test-Tenant": "tenant-a"}
+        bob_headers = {"X-Test-User": "bob", "X-Test-Tenant": "tenant-a"}
+
+        save_r = await scoped_client.post(
+            "/api/v1/preferences",
+            json={
+                "preference_type": "style",
+                "key": "confidential-codename",
+                "value": "project-nightjar",
+                "source": "explicit",
+            },
+            headers=alice_headers,
+        )
+        assert save_r.status_code == 200
+
+        bob_list = await scoped_client.get("/api/v1/preferences", headers=bob_headers)
+        bob_profile = await scoped_client.get("/api/v1/profile", headers=bob_headers)
+
+        assert bob_list.status_code == 200
+        assert "project-nightjar" not in [
+            pref["value"] for pref in bob_list.json()["preferences"]
+        ]
+        assert bob_profile.status_code == 200
+        assert "project-nightjar" not in bob_profile.json()["context_bundle"]
 
 
 # =============================================================================

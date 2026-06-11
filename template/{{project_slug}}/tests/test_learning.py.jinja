@@ -117,6 +117,18 @@ class TestCheckInManager:
         checkin = mgr.create(checkin_type="threshold", prompt="Test?")
         assert mgr.skip(checkin.id) is True
 
+    def test_respond_and_skip_require_matching_project(self, learning_db):
+        mgr = CheckInManager(db_path=learning_db)
+        checkin = mgr.create(
+            checkin_type="threshold",
+            prompt="Alice-only prompt?",
+            project_id="tenant-a:alice",
+        )
+
+        assert mgr.respond(checkin.id, approved=True, project_id="tenant-a:bob") is None
+        assert mgr.skip(checkin.id, project_id="tenant-a:bob") is False
+        assert mgr.respond(checkin.id, approved=True, project_id="tenant-a:alice") is not None
+
     def test_get_pending(self, learning_db):
         mgr = CheckInManager(db_path=learning_db)
         mgr.create(checkin_type="threshold", prompt="Pending 1")
