@@ -24,7 +24,12 @@ import os
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from ..security import ValidationError, validate_identifier, validate_url
+from ..security import (
+    ValidationError,
+    validate_identifier,
+    validate_in_choices,
+    validate_url,
+)
 from .remote import RemoteAgent
 
 logger = logging.getLogger(__name__)
@@ -116,6 +121,14 @@ class AgentRegistry:
                     base_url = validate_url(entry["base_url"], "base_url")
                     api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
                     api_key = os.environ.get(api_key_env, "")
+                    visibility = validate_in_choices(
+                        entry.get("visibility", "public"),
+                        ["public", "team", "private"],
+                        "visibility",
+                    )
+                    tenant_id = validate_identifier(
+                        entry.get("tenant_id", "default"), "tenant_id"
+                    )
 
                     agent = RemoteAgent(
                         name=name,
@@ -129,9 +142,11 @@ class AgentRegistry:
                         agent=agent,
                         agent_type="remote",
                         capabilities=entry.get("capabilities", []),
+                        visibility=visibility,
+                        tenant_id=tenant_id,
                     )
                     loaded_count += 1
-                except (KeyError, ValidationError) as e:
+                except (KeyError, TypeError, ValidationError) as e:
                     logger.warning(
                         f"[AgentRegistry] Skipping invalid persisted agent: {e}"
                     )
@@ -149,6 +164,8 @@ class AgentRegistry:
             if entry.agent_type == "remote" and hasattr(entry.agent, "to_dict"):
                 agent_data = entry.agent.to_dict()
                 agent_data["capabilities"] = entry.capabilities
+                agent_data["visibility"] = entry.visibility
+                agent_data["tenant_id"] = entry.tenant_id
                 remote_entries.append(agent_data)
 
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
