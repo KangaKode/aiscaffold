@@ -3,6 +3,7 @@
 import json
 import pytest
 from pathlib import Path
+from {{project_slug}}.agents import registry as registry_module
 from {{project_slug}}.agents.registry import AgentRegistry
 from {{project_slug}}.agents.remote import RemoteAgent
 from {{project_slug}}.orchestration.round_table import AgentProtocol
@@ -44,6 +45,55 @@ class TestAgentRegistry:
         assert registry.get("safe_agent") is not None
         assert registry.get("metadata_agent") is None
         assert registry.remote_count == 1
+
+    def test_load_remote_agents_skips_malformed_entries_without_losing_later_valid_agents(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "first_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                },
+                "not an agent entry",
+                {
+                    "name": "second_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.org",
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+
+        assert registry.get("first_agent") is not None
+        assert registry.get("second_agent") is not None
+        assert registry.remote_count == 2
+
+    def test_save_remote_agents_preserves_existing_file_on_write_failure(self, tmp_path, monkeypatch):
+        persist_path = tmp_path / "agents.json"
+        original = json.dumps({
+            "remote_agents": [
+                {
+                    "name": "existing_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                },
+            ],
+        })
+        persist_path.write_text(original)
+        registry = AgentRegistry(persist_path=persist_path)
+
+        def failing_dump(data, file_obj, *args, **kwargs):
+            file_obj.write('{"remote_agents": ')
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(registry_module.json, "dump", failing_dump)
+
+        with pytest.raises(RuntimeError):
+            registry.register_remote("new_agent", "testing", "https://example.org")
+
+        assert persist_path.read_text() == original
 
     def test_unregister_removes(self, mock_agent, tmp_path):
         registry = AgentRegistry(persist_path=tmp_path / "agents.json")

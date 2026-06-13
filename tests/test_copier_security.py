@@ -24,6 +24,11 @@ class CopierSecurityTests(unittest.TestCase):
         self.assertEqual("", self.render_validator("project_slug", "safe_project"))
         self.assertTrue(self.render_validator("project_slug", 'safe_project"; touch /tmp/pwned #'))
 
+    def test_project_name_rejects_python_docstring_breakout(self):
+        self.assertIn("validator", self.config["project_name"])
+        self.assertEqual("", self.render_validator("project_name", "My AI Tool"))
+        self.assertTrue(self.render_validator("project_name", 'safe\n"""\nimport os\n"""'))
+
     def test_layers_reject_shell_metacharacters_and_path_traversal(self):
         self.assertEqual("", self.render_validator("layers", "data,analysis,components"))
         self.assertTrue(self.render_validator("layers", 'data"; touch /tmp/pwned #'))

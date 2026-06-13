@@ -21,6 +21,7 @@ Usage:
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -107,11 +108,22 @@ class AgentRegistry:
         if not self._persist_path.exists():
             return
         try:
-            with open(self._persist_path) as f:
+            with open(self._persist_path, encoding="utf-8") as f:
                 data = json.load(f)
+            if not isinstance(data, dict):
+                logger.warning(
+                    "[AgentRegistry] Persisted agent registry must be a JSON object"
+                )
+                return
+            remote_agents = data.get("remote_agents", [])
+            if not isinstance(remote_agents, list):
+                logger.warning("[AgentRegistry] Persisted remote_agents must be a list")
+                return
             loaded_count = 0
-            for entry in data.get("remote_agents", []):
+            for entry in remote_agents:
                 try:
+                    if not isinstance(entry, dict):
+                        raise ValidationError("persisted agent entry must be an object")
                     name = validate_identifier(entry["name"], "agent name")
                     base_url = validate_url(entry["base_url"], "base_url")
                     api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
@@ -131,7 +143,7 @@ class AgentRegistry:
                         capabilities=entry.get("capabilities", []),
                     )
                     loaded_count += 1
-                except (KeyError, ValidationError) as e:
+                except (KeyError, TypeError, AttributeError, ValidationError) as e:
                     logger.warning(
                         f"[AgentRegistry] Skipping invalid persisted agent: {e}"
                     )
@@ -151,9 +163,27 @@ class AgentRegistry:
                 agent_data["capabilities"] = entry.capabilities
                 remote_entries.append(agent_data)
 
-        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._persist_path, "w") as f:
-            json.dump({"remote_agents": remote_entries}, f, indent=2)
+        persist_dir = self._persist_path.parent
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=persist_dir,
+                prefix=f".{self._persist_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp_path = Path(f.name)
+                json.dump({"remote_agents": remote_entries}, f, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._persist_path)
+        finally:
+            if tmp_path is not None and tmp_path.exists():
+                tmp_path.unlink()
         logger.debug(
             f"[AgentRegistry] Saved {len(remote_entries)} remote agents"
         )

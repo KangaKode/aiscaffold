@@ -8,6 +8,10 @@ _subdirectory: template
 project_name:
   type: str
   help: "Human-readable project name (e.g., 'My AI Tool')"
+  validator: >-
+    {% if not project_name or not project_name.isascii() or not project_name.isprintable() or '"' in project_name or '\\' in project_name %}
+    project_name must be non-empty printable ASCII text without double quotes or backslashes.
+    {% endif %}
 
 project_slug:
   type: str
