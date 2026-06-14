@@ -21,6 +21,8 @@ Usage:
 import json
 import logging
 import os
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -30,6 +32,24 @@ from .remote import RemoteAgent
 logger = logging.getLogger(__name__)
 
 DEFAULT_PERSIST_PATH = Path(".aiscaffold/agents.json")
+
+
+@contextmanager
+def _exclusive_file_lock(lock_path: Path):
+    """Serialize registry writers that share the same filesystem."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lock_file:
+        try:
+            import fcntl
+        except ImportError:
+            yield
+            return
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 @runtime_checkable
@@ -96,45 +116,99 @@ class AgentRegistry:
     def __init__(self, persist_path: Path = DEFAULT_PERSIST_PATH):
         self._agents: dict[str, AgentEntry] = {}
         self._persist_path = persist_path
+        self._persist_mtime_ns: int | None = None
         self._load_remote_agents()
 
-    def _load_remote_agents(self) -> None:
+    def _persist_mtime(self) -> int | None:
+        try:
+            return self._persist_path.stat().st_mtime_ns
+        except FileNotFoundError:
+            return None
+
+    def _read_persisted_remote_agents(self) -> dict[str, dict[str, Any]]:
+        """Read and validate persisted remote agent records from disk."""
+        if not self._persist_path.exists():
+            return {}
+
+        with open(self._persist_path) as f:
+            data = json.load(f)
+
+        remote_agents = data.get("remote_agents", [])
+        if not isinstance(remote_agents, list):
+            raise ValueError("remote_agents must be a list")
+
+        records: dict[str, dict[str, Any]] = {}
+        for entry in remote_agents:
+            try:
+                if not isinstance(entry, dict):
+                    raise ValidationError("persisted agent entry must be an object")
+                name_value = entry.get("name")
+                domain = entry.get("domain")
+                base_url_value = entry.get("base_url")
+                if not isinstance(name_value, str):
+                    raise ValidationError("agent name must be a string")
+                if not isinstance(domain, str):
+                    raise ValidationError("agent domain must be a string")
+                if not isinstance(base_url_value, str):
+                    raise ValidationError("base_url must be a string")
+
+                name = validate_identifier(name_value, "agent name")
+                base_url = validate_url(base_url_value, "base_url")
+                capabilities = entry.get("capabilities", [])
+                if not isinstance(capabilities, list):
+                    capabilities = []
+
+                record = dict(entry)
+                record["name"] = name
+                record["domain"] = domain
+                record["base_url"] = base_url
+                record["capabilities"] = capabilities
+                records[name] = record
+            except ValidationError as e:
+                logger.warning(
+                    f"[AgentRegistry] Skipping invalid persisted agent: {e}"
+                )
+        return records
+
+    def _load_remote_agents(self, replace_existing: bool = False) -> None:
         """Load persisted remote agent registrations from disk.
 
         API keys are loaded from environment variables (AGENT_{NAME}_API_KEY),
         never from the JSON file. Only the env var name is persisted.
         """
         if not self._persist_path.exists():
+            self._persist_mtime_ns = None
             return
         try:
-            with open(self._persist_path) as f:
-                data = json.load(f)
+            records = self._read_persisted_remote_agents()
+            loaded_agents: dict[str, AgentEntry] = {}
             loaded_count = 0
-            for entry in data.get("remote_agents", []):
-                try:
-                    name = validate_identifier(entry["name"], "agent name")
-                    base_url = validate_url(entry["base_url"], "base_url")
-                    api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
-                    api_key = os.environ.get(api_key_env, "")
+            for name, entry in records.items():
+                api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
+                api_key = os.environ.get(api_key_env, "")
 
-                    agent = RemoteAgent(
-                        name=name,
-                        domain=entry["domain"],
-                        base_url=base_url,
-                        api_key=api_key,
-                        timeout=entry.get("timeout", 120),
-                        mode=entry.get("mode", "sync"),
-                    )
-                    self._agents[name] = AgentEntry(
-                        agent=agent,
-                        agent_type="remote",
-                        capabilities=entry.get("capabilities", []),
-                    )
-                    loaded_count += 1
-                except (KeyError, ValidationError) as e:
-                    logger.warning(
-                        f"[AgentRegistry] Skipping invalid persisted agent: {e}"
-                    )
+                agent = RemoteAgent(
+                    name=name,
+                    domain=entry["domain"],
+                    base_url=entry["base_url"],
+                    api_key=api_key,
+                    timeout=entry.get("timeout", 120),
+                    mode=entry.get("mode", "sync"),
+                )
+                loaded_agents[name] = AgentEntry(
+                    agent=agent,
+                    agent_type="remote",
+                    capabilities=entry.get("capabilities", []),
+                )
+                loaded_count += 1
+            if replace_existing:
+                self._agents = {
+                    name: entry
+                    for name, entry in self._agents.items()
+                    if entry.agent_type != "remote"
+                }
+            self._agents.update(loaded_agents)
+            self._persist_mtime_ns = self._persist_mtime()
             logger.info(
                 f"[AgentRegistry] Loaded {loaded_count} "
                 f"remote agents from {self._persist_path}"
@@ -142,20 +216,79 @@ class AgentRegistry:
         except Exception as e:
             logger.warning(f"[AgentRegistry] Failed to load agents: {e}")
 
-    def _save_remote_agents(self) -> None:
-        """Persist remote agent registrations to disk."""
-        remote_entries = []
-        for entry in self._agents.values():
+    def _refresh_remote_agents_from_disk(self) -> None:
+        """Pick up remote agent changes written by another process."""
+        current_mtime = self._persist_mtime()
+        if current_mtime is None or current_mtime == self._persist_mtime_ns:
+            return
+        self._load_remote_agents(replace_existing=True)
+
+    def _remote_agent_records(
+        self, names: set[str] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        records = {}
+        for name, entry in self._agents.items():
+            if names is not None and name not in names:
+                continue
             if entry.agent_type == "remote" and hasattr(entry.agent, "to_dict"):
                 agent_data = entry.agent.to_dict()
                 agent_data["capabilities"] = entry.capabilities
-                remote_entries.append(agent_data)
+                records[name] = agent_data
+        return records
 
+    def _write_remote_agent_records(
+        self, records: dict[str, dict[str, Any]]
+    ) -> None:
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._persist_path, "w") as f:
-            json.dump({"remote_agents": remote_entries}, f, indent=2)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f"{self._persist_path.name}.",
+            suffix=".tmp",
+            dir=self._persist_path.parent,
+            text=True,
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w") as f:
+                ordered = [records[name] for name in sorted(records)]
+                json.dump({"remote_agents": ordered}, f, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._persist_path)
+            self._persist_mtime_ns = self._persist_mtime()
+        except Exception:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+
+    def _save_remote_agents(
+        self,
+        upsert_names: set[str] | None = None,
+        remove_names: set[str] | None = None,
+    ) -> None:
+        """Persist remote agent registrations to disk."""
+        upserts = self._remote_agent_records(upsert_names)
+        removals = remove_names or set()
+
+        lock_path = self._persist_path.with_suffix(self._persist_path.suffix + ".lock")
+        with _exclusive_file_lock(lock_path):
+            try:
+                persisted = self._read_persisted_remote_agents()
+            except Exception as e:
+                logger.warning(
+                    f"[AgentRegistry] Rebuilding persisted agents after read failure: {e}"
+                )
+                persisted = {}
+
+            for name in removals:
+                persisted.pop(name, None)
+            persisted.update(upserts)
+            self._write_remote_agent_records(persisted)
+        self._load_remote_agents(replace_existing=True)
         logger.debug(
-            f"[AgentRegistry] Saved {len(remote_entries)} remote agents"
+            f"[AgentRegistry] Saved {len(upserts)} remote agent updates"
         )
 
     def register_local(
@@ -196,40 +329,46 @@ class AgentRegistry:
         self._agents[name] = AgentEntry(
             agent=agent, agent_type="remote", capabilities=capabilities
         )
-        self._save_remote_agents()
+        self._save_remote_agents(upsert_names={name})
         logger.info(f"[AgentRegistry] Registered remote agent: {name} at {base_url}")
         return agent
 
     def unregister(self, name: str) -> bool:
         """Remove an agent from the registry."""
+        self._refresh_remote_agents_from_disk()
         if name not in self._agents:
             return False
         agent_type = self._agents[name].agent_type
         del self._agents[name]
         if agent_type == "remote":
-            self._save_remote_agents()
+            self._save_remote_agents(remove_names={name})
         logger.info(f"[AgentRegistry] Unregistered agent: {name}")
         return True
 
     def get(self, name: str) -> Any | None:
         """Get an agent by name."""
+        self._refresh_remote_agents_from_disk()
         entry = self._agents.get(name)
         return entry.agent if entry else None
 
     def get_entry(self, name: str) -> AgentEntry | None:
         """Get full registry entry (agent + metadata) by name."""
+        self._refresh_remote_agents_from_disk()
         return self._agents.get(name)
 
     def get_all(self) -> list:
         """Get all registered agents (for passing to RoundTable)."""
+        self._refresh_remote_agents_from_disk()
         return [entry.agent for entry in self._agents.values()]
 
     def get_all_entries(self) -> list[AgentEntry]:
         """Get all registry entries with metadata."""
+        self._refresh_remote_agents_from_disk()
         return list(self._agents.values())
 
     def get_by_capability(self, capability: str) -> list:
         """Get agents that have a specific capability tag."""
+        self._refresh_remote_agents_from_disk()
         return [
             entry.agent
             for entry in self._agents.values()
@@ -238,6 +377,7 @@ class AgentRegistry:
 
     async def health_check_all(self) -> dict[str, bool]:
         """Run health checks on all remote agents. Returns {name: healthy}."""
+        self._refresh_remote_agents_from_disk()
         results = {}
         for name, entry in self._agents.items():
             if entry.agent_type == "remote" and hasattr(entry.agent, "health_check"):
@@ -250,6 +390,7 @@ class AgentRegistry:
 
     def list_info(self) -> list[dict]:
         """Get serializable info for all agents (for API responses)."""
+        self._refresh_remote_agents_from_disk()
         return [entry.to_dict() for entry in self._agents.values()]
 
     def list_for_tenant(self, tenant_id: str = "default") -> list[AgentEntry]:
@@ -260,6 +401,7 @@ class AgentRegistry:
           - "team": visible only to the registering tenant
           - "private": visible only to the registering user (not filtered here)
         """
+        self._refresh_remote_agents_from_disk()
         return [
             entry for entry in self._agents.values()
             if entry.visibility == "public" or entry.tenant_id == tenant_id
@@ -268,14 +410,17 @@ class AgentRegistry:
     @property
     def count(self) -> int:
         """Total number of registered agents."""
+        self._refresh_remote_agents_from_disk()
         return len(self._agents)
 
     @property
     def remote_count(self) -> int:
         """Number of remote agents."""
+        self._refresh_remote_agents_from_disk()
         return sum(1 for e in self._agents.values() if e.agent_type == "remote")
 
     @property
     def local_count(self) -> int:
         """Number of local agents."""
+        self._refresh_remote_agents_from_disk()
         return sum(1 for e in self._agents.values() if e.agent_type == "local")
