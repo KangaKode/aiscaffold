@@ -57,6 +57,51 @@ class TestAgentRegistry:
         assert reloaded.get("remote_a") is None
         assert reloaded.get("remote_b") is not None
 
+    def test_unregister_does_not_resurrect_stale_remote_agents(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        stale_registry = AgentRegistry(persist_path=persist_path)
+        stale_registry.register_remote("remote_a", "testing", "https://example.com")
+        stale_registry.register_remote("remote_b", "testing", "https://example.org")
+
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "remote_a",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                },
+            ],
+        }))
+        stale_registry._persist_mtime_ns = persist_path.stat().st_mtime_ns
+
+        assert stale_registry.unregister("remote_a") is True
+        reloaded = AgentRegistry(persist_path=persist_path)
+        assert reloaded.remote_count == 0
+
+    def test_persist_merge_drops_unsafe_legacy_fields(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "remote_a",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                    "api_key": "raw-secret",
+                    "unexpected": "legacy-field",
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+        registry.register_remote("remote_b", "testing", "https://example.org")
+
+        data = json.loads(persist_path.read_text())
+        saved_a = next(
+            agent for agent in data["remote_agents"] if agent["name"] == "remote_a"
+        )
+        assert "api_key" not in saved_a
+        assert "unexpected" not in saved_a
+
     def test_load_remote_agents_skips_private_urls(self, tmp_path):
         persist_path = tmp_path / "agents.json"
         persist_path.write_text(json.dumps({

@@ -158,11 +158,20 @@ class AgentRegistry:
                 if not isinstance(capabilities, list):
                     capabilities = []
 
-                record = dict(entry)
-                record["name"] = name
-                record["domain"] = domain
-                record["base_url"] = base_url
-                record["capabilities"] = capabilities
+                api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
+                if not isinstance(api_key_env, str):
+                    api_key_env = f"AGENT_{name.upper()}_API_KEY"
+
+                record = {
+                    "name": name,
+                    "domain": domain,
+                    "base_url": base_url,
+                    "api_key_env": api_key_env,
+                    "timeout": entry.get("timeout", 120),
+                    "mode": entry.get("mode", "sync"),
+                    "agent_type": "remote",
+                    "capabilities": capabilities,
+                }
                 records[name] = record
             except ValidationError as e:
                 logger.warning(
@@ -269,8 +278,11 @@ class AgentRegistry:
         remove_names: set[str] | None = None,
     ) -> None:
         """Persist remote agent registrations to disk."""
-        upserts = self._remote_agent_records(upsert_names)
         removals = remove_names or set()
+        upsert_filter = upsert_names
+        if upsert_filter is None and removals:
+            upsert_filter = set()
+        upserts = self._remote_agent_records(upsert_filter)
 
         lock_path = self._persist_path.with_suffix(self._persist_path.suffix + ".lock")
         with _exclusive_file_lock(lock_path):
