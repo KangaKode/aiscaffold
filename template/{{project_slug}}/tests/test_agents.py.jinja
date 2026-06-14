@@ -102,6 +102,48 @@ class TestAgentRegistry:
         assert "api_key" not in saved_a
         assert "unexpected" not in saved_a
 
+    def test_persist_merge_sanitizes_allowed_legacy_fields(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "remote_a",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                    "api_key_env": "GITHUB_TOKEN",
+                    "timeout": {"api_key": "raw-secret"},
+                    "mode": {"unexpected": "value"},
+                    "capabilities": [{"api_key": "raw-secret"}, "safe"],
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+        registry.register_remote("remote_b", "testing", "https://example.org")
+
+        data = json.loads(persist_path.read_text())
+        saved_a = next(
+            agent for agent in data["remote_agents"] if agent["name"] == "remote_a"
+        )
+        assert saved_a["api_key_env"] == "AGENT_REMOTE_A_API_KEY"
+        assert saved_a["timeout"] == 120
+        assert saved_a["mode"] == "sync"
+        assert saved_a["capabilities"] == ["safe"]
+
+    def test_register_remote_validates_direct_url(self, tmp_path):
+        from {{project_slug}}.security import ValidationError
+
+        persist_path = tmp_path / "agents.json"
+        registry = AgentRegistry(persist_path=persist_path)
+
+        with pytest.raises(ValidationError):
+            registry.register_remote(
+                "metadata_agent",
+                "testing",
+                "http://169.254.169.254",
+            )
+        assert not persist_path.exists()
+
     def test_load_remote_agents_skips_private_urls(self, tmp_path):
         persist_path = tmp_path / "agents.json"
         persist_path.write_text(json.dumps({

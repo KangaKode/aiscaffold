@@ -125,6 +125,39 @@ class AgentRegistry:
         except FileNotFoundError:
             return None
 
+    @staticmethod
+    def _default_api_key_env(name: str) -> str:
+        return f"AGENT_{name.upper().replace('-', '_')}_API_KEY"
+
+    def _sanitize_api_key_env(self, value: Any, name: str) -> str:
+        if isinstance(value, str):
+            is_safe = (
+                value.startswith("AGENT_")
+                and value.endswith("_API_KEY")
+                and all(ch == "_" or ch.isdigit() or "A" <= ch <= "Z" for ch in value)
+            )
+            if is_safe:
+                return value
+        return self._default_api_key_env(name)
+
+    @staticmethod
+    def _sanitize_timeout(value: Any) -> float:
+        if isinstance(value, bool):
+            return 120
+        if isinstance(value, (int, float)) and value > 0:
+            return value
+        return 120
+
+    @staticmethod
+    def _sanitize_mode(value: Any) -> str:
+        return value if isinstance(value, str) and value in {"sync", "async"} else "sync"
+
+    @staticmethod
+    def _sanitize_capabilities(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, str)][:50]
+
     def _read_persisted_remote_agents(self) -> dict[str, dict[str, Any]]:
         """Read and validate persisted remote agent records from disk."""
         if not self._persist_path.exists():
@@ -154,23 +187,20 @@ class AgentRegistry:
 
                 name = validate_identifier(name_value, "agent name")
                 base_url = validate_url(base_url_value, "base_url")
-                capabilities = entry.get("capabilities", [])
-                if not isinstance(capabilities, list):
-                    capabilities = []
-
-                api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
-                if not isinstance(api_key_env, str):
-                    api_key_env = f"AGENT_{name.upper()}_API_KEY"
 
                 record = {
                     "name": name,
                     "domain": domain,
                     "base_url": base_url,
-                    "api_key_env": api_key_env,
-                    "timeout": entry.get("timeout", 120),
-                    "mode": entry.get("mode", "sync"),
+                    "api_key_env": self._sanitize_api_key_env(
+                        entry.get("api_key_env"), name
+                    ),
+                    "timeout": self._sanitize_timeout(entry.get("timeout", 120)),
+                    "mode": self._sanitize_mode(entry.get("mode", "sync")),
                     "agent_type": "remote",
-                    "capabilities": capabilities,
+                    "capabilities": self._sanitize_capabilities(
+                        entry.get("capabilities", [])
+                    ),
                 }
                 records[name] = record
             except ValidationError as e:
@@ -242,7 +272,22 @@ class AgentRegistry:
             if entry.agent_type == "remote" and hasattr(entry.agent, "to_dict"):
                 agent_data = entry.agent.to_dict()
                 agent_data["capabilities"] = entry.capabilities
-                records[name] = agent_data
+                persisted_name = validate_identifier(agent_data["name"], "agent name")
+                base_url = validate_url(agent_data["base_url"], "base_url")
+                records[persisted_name] = {
+                    "name": persisted_name,
+                    "domain": agent_data["domain"],
+                    "base_url": base_url,
+                    "api_key_env": self._sanitize_api_key_env(
+                        agent_data.get("api_key_env"), persisted_name
+                    ),
+                    "timeout": self._sanitize_timeout(agent_data.get("timeout", 120)),
+                    "mode": self._sanitize_mode(agent_data.get("mode", "sync")),
+                    "agent_type": "remote",
+                    "capabilities": self._sanitize_capabilities(
+                        agent_data.get("capabilities", [])
+                    ),
+                }
         return records
 
     def _write_remote_agent_records(
@@ -330,6 +375,13 @@ class AgentRegistry:
         timeout: float = 120,
     ) -> RemoteAgent:
         """Register a remote agent and persist the registration."""
+        name = validate_identifier(name, "agent name")
+        if not isinstance(domain, str):
+            raise ValidationError("agent domain must be a string")
+        base_url = validate_url(base_url, "base_url")
+        capabilities = self._sanitize_capabilities(capabilities or [])
+        mode = self._sanitize_mode(mode)
+        timeout = self._sanitize_timeout(timeout)
         agent = RemoteAgent(
             name=name,
             domain=domain,
