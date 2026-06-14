@@ -35,6 +35,15 @@ class TestAgentRegistry:
         assert reloaded.get("remote_b") is not None
         assert reloaded.remote_count == 2
 
+    def test_get_remote_refreshes_agents_saved_by_other_registry(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        registry_a = AgentRegistry(persist_path=persist_path)
+        registry_b = AgentRegistry(persist_path=persist_path)
+
+        registry_a.register_remote("remote_a", "testing", "https://example.com")
+
+        assert registry_b.get("remote_a") is not None
+
     def test_load_remote_agents_skips_private_urls(self, tmp_path):
         persist_path = tmp_path / "agents.json"
         persist_path.write_text(json.dumps({
