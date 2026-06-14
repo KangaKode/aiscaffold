@@ -20,6 +20,7 @@ Usage:
 
 import json
 import logging
+import math
 import os
 import tempfile
 from contextlib import contextmanager
@@ -32,6 +33,7 @@ from .remote import RemoteAgent
 logger = logging.getLogger(__name__)
 
 DEFAULT_PERSIST_PATH = Path(".aiscaffold/agents.json")
+MAX_REMOTE_AGENT_TIMEOUT_SECONDS = 600
 
 
 @contextmanager
@@ -130,21 +132,18 @@ class AgentRegistry:
         return f"AGENT_{name.upper().replace('-', '_')}_API_KEY"
 
     def _sanitize_api_key_env(self, value: Any, name: str) -> str:
-        if isinstance(value, str):
-            is_safe = (
-                value.startswith("AGENT_")
-                and value.endswith("_API_KEY")
-                and all(ch == "_" or ch.isdigit() or "A" <= ch <= "Z" for ch in value)
-            )
-            if is_safe:
-                return value
-        return self._default_api_key_env(name)
+        expected = self._default_api_key_env(name)
+        return value if value == expected else expected
 
     @staticmethod
     def _sanitize_timeout(value: Any) -> float:
         if isinstance(value, bool):
             return 120
-        if isinstance(value, (int, float)) and value > 0:
+        if (
+            isinstance(value, (int, float))
+            and math.isfinite(value)
+            and 0 < value <= MAX_REMOTE_AGENT_TIMEOUT_SECONDS
+        ):
             return value
         return 120
 
