@@ -24,6 +24,7 @@ import hmac
 import logging
 import os
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from fastapi import HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -49,6 +50,13 @@ class AuthContext:
     api_key: str | None = None
     user_id: str = "anon"
     tenant_id: str = "default"
+
+
+def auth_scope_key(auth: AuthContext) -> str:
+    """Return an unambiguous tenant/user scope for cache and index keys."""
+    tenant = quote(str(auth.tenant_id), safe="")
+    user = quote(str(auth.user_id), safe="")
+    return f"{tenant}:{user}"
 
 
 def get_api_key() -> str | None:

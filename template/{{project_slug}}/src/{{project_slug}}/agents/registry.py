@@ -114,7 +114,13 @@ class AgentRegistry:
                 try:
                     name = validate_identifier(entry["name"], "agent name")
                     base_url = validate_url(entry["base_url"], "base_url")
-                    api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
+                    expected_api_key_env = f"AGENT_{name.upper()}_API_KEY"
+                    api_key_env = entry.get("api_key_env", expected_api_key_env)
+                    if api_key_env != expected_api_key_env:
+                        raise ValidationError(
+                            "api_key_env must match the agent-specific "
+                            f"environment variable {expected_api_key_env}"
+                        )
                     api_key = os.environ.get(api_key_env, "")
 
                     agent = RemoteAgent(

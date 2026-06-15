@@ -45,6 +45,31 @@ class TestAgentRegistry:
         assert registry.get("metadata_agent") is None
         assert registry.remote_count == 1
 
+    def test_load_remote_agents_rejects_tampered_api_key_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("API_KEY", "server-secret")
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "safe_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                },
+                {
+                    "name": "probe",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                    "api_key_env": "API_KEY",
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+
+        assert registry.get("safe_agent") is not None
+        assert registry.get("probe") is None
+        assert registry.remote_count == 1
+
     def test_unregister_removes(self, mock_agent, tmp_path):
         registry = AgentRegistry(persist_path=tmp_path / "agents.json")
         registry.register_local(mock_agent)

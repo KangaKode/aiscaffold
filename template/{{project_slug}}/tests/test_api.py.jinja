@@ -8,7 +8,7 @@ from httpx import AsyncClient, ASGITransport
 from {{ project_slug }}.api.gateway import create_app
 from {{ project_slug }}.api.middleware.auth import AuthContext, verify_api_key
 from {{ project_slug }}.api.models.responses import RoundTableResultResponse
-from {{ project_slug }}.api.routes import round_table
+from {{ project_slug }}.api.routes import chat, round_table
 
 
 @pytest.fixture
@@ -229,6 +229,31 @@ class TestSessionsAPI:
         assert bob_list.json()["total"] == 0
 
     @pytest.mark.asyncio
+    async def test_sessions_do_not_alias_delimited_auth_scopes(self, scoped_client):
+        owner_headers = {"X-Test-User": "team:user1", "X-Test-Tenant": "corp"}
+        alias_headers = {"X-Test-User": "user1", "X-Test-Tenant": "corp:team"}
+
+        create_r = await scoped_client.post(
+            "/api/v1/sessions",
+            json={"metadata": {"case": "delimiter collision"}},
+            headers=owner_headers,
+        )
+        assert create_r.status_code == 200
+        sid = create_r.json()["session_id"]
+
+        alias_get = await scoped_client.get(
+            f"/api/v1/sessions/{sid}",
+            headers=alias_headers,
+        )
+        assert alias_get.status_code == 404
+
+        owner_get = await scoped_client.get(
+            f"/api/v1/sessions/{sid}",
+            headers=owner_headers,
+        )
+        assert owner_get.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_round_table_results_are_scoped_to_auth_context(self, scoped_client):
         round_table._results_cache.clear()
         task_id = "task_private"
@@ -249,6 +274,40 @@ class TestSessionsAPI:
 
         assert alice_r.status_code == 200
         assert bob_r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_round_table_results_do_not_alias_delimited_auth_scopes(self, scoped_client):
+        round_table._results_cache.clear()
+        task_id = "task_delimiter_collision"
+        owner_auth = AuthContext(user_id="team:user1", tenant_id="corp")
+        round_table._cache_result(
+            round_table._result_key(task_id, owner_auth),
+            RoundTableResultResponse(task_id=task_id, status="completed"),
+        )
+
+        alias_r = await scoped_client.get(
+            f"/api/v1/round-table/tasks/{task_id}",
+            headers={"X-Test-User": "user1", "X-Test-Tenant": "corp:team"},
+        )
+        owner_r = await scoped_client.get(
+            f"/api/v1/round-table/tasks/{task_id}",
+            headers={"X-Test-User": "team:user1", "X-Test-Tenant": "corp"},
+        )
+
+        assert alias_r.status_code == 404
+        assert owner_r.status_code == 200
+
+    def test_chat_session_keys_do_not_alias_delimited_auth_scopes(self):
+        owner_key = chat._session_key(
+            "user1:shared",
+            AuthContext(user_id="team", tenant_id="corp"),
+        )
+        alias_key = chat._session_key(
+            "shared",
+            AuthContext(user_id="user1", tenant_id="corp:team"),
+        )
+
+        assert owner_key != alias_key
 
 
 # =============================================================================
