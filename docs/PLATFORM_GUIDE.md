@@ -235,7 +235,8 @@ For a team like Team C that handles sensitive data (security incidents, legal, H
 ### Data isolation
 
 Chat sessions, harness sessions, round table results, and transcript search are
-keyed or filtered by `{tenant_id}:{user_id}`. To complete isolation, map
+keyed or filtered by a delimiter-safe auth scope derived from `tenant_id` and
+`user_id`. To complete isolation, map
 `auth.tenant_id` to `project_id` when creating feedback, trust, preference, and
 check-in trackers.
 
@@ -243,10 +244,10 @@ check-in trackers.
 
 | Data Store | Current Isolation | What You Add |
 |------------|------------------|--------------|
-| Chat sessions (`_orchestrators`) | Keyed by `tenant_id:user_id:session_id` | **Already isolated** |
-| Harness sessions (`_sessions`) | Keyed by `tenant_id:user_id:session_id` | **Already isolated** |
-| Round table result cache | Keyed by `tenant_id:user_id:task_id` | **Already isolated** |
-| Transcript search index | Stores and filters by `tenant_id:user_id` owner key | **Already isolated** |
+| Chat sessions (`_orchestrators`) | Keyed by `auth_scope_key:session_id` | **Already isolated** |
+| Harness sessions (`_sessions`) | Keyed by `auth_scope_key:session_id` | **Already isolated** |
+| Round table result cache | Keyed by `auth_scope_key:task_id` | **Already isolated** |
+| Transcript search index | Stores and filters by delimiter-safe auth scope owner key | **Already isolated** |
 | Feedback signals (SQLite) | Has `project_id` column | Map `auth.tenant_id` to `project_id` |
 | Agent trust scores (SQLite) | Has `project_id` column | Map `auth.tenant_id` to `project_id` |
 | User preferences (SQLite) | Has `project_id` column | Map `auth.tenant_id` to `project_id` |
@@ -374,7 +375,7 @@ Define retention policies for each data store and document them for your legal/c
 |------------|--------|-------|
 | AuthContext with tenant_id | **Built** | Propagates across API routes |
 | Agent visibility (public/team/private) | **Built** | `list_for_tenant()` filters by rules |
-| Session isolation | **Built** | `{tenant_id}:{user_id}:{session_id}` |
+| Session isolation | **Built** | Delimiter-safe auth scope plus `session_id` |
 | Core safety agents | **Built** | Auto-included in every round table |
 | Evidence enforcement | **Built** | Runs on Phase 1 round-table analyses; extend validators for chat, challenge, and vote paths as needed |
 | JWT/OIDC auth | **You add** | Replace `verify_api_key` (~20 lines) |

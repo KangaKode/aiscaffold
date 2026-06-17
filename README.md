@@ -348,13 +348,13 @@ flowchart LR
     Request[HTTP Request] --> Auth[verify_api_key]
     Auth --> AC["AuthContext\n(api_key, user_id, tenant_id)"]
     AC --> Routes[API Routes]
-    AC --> Sessions["Sessions\n(tenant:user:session)"]
+    AC --> Sessions["Sessions\n(auth scope + session)"]
     AC --> Registry["Agent Registry\n(visibility: public/team/private)"]
 ```
 
 - `AuthContext` propagates `tenant_id` and `user_id` to all routes
 - Agent visibility controls: `public` (all tenants), `team` (same tenant), `private`
-- Session isolation: `{tenant_id}:{user_id}:{session_id}`
+- Session isolation: delimiter-safe auth scope plus `session_id`
 - Data layer already has `project_id` in all tables (maps to tenant isolation)
 - Single-tenant deployments use defaults transparently
 

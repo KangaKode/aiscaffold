@@ -202,7 +202,7 @@ The learning system (feedback, trust, preferences) uses `project_id` in every ta
 
 ### Session Isolation
 
-Chat sessions are keyed by `{tenant_id}:{user_id}:{session_id}`, preventing cross-tenant session access.
+Chat sessions are keyed by a delimiter-safe auth scope plus `session_id`, preventing cross-tenant session access even when tenant or user IDs contain punctuation.
 
 ### Platform Extension Points
 
