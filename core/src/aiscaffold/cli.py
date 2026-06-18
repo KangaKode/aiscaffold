@@ -42,6 +42,22 @@ def _is_trusted_template_source(source: str) -> bool:
         return False
 
 
+def _get_copier_answers_source(answers_path: Path = Path(".copier-answers.yml")) -> str | None:
+    """Read the persisted Copier template source from the answers file."""
+    try:
+        for line in answers_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("_src_path:"):
+                continue
+            value = stripped.split(":", 1)[1].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            return value or None
+    except OSError:
+        return None
+    return None
+
+
 # =============================================================================
 # INIT
 # =============================================================================
@@ -238,15 +254,25 @@ def _add_layer(root: Path, name: str):
 @app.command()
 def update():
     """Pull template updates into the current project."""
-    if not Path(".copier-answers.yml").exists():
+    answers_path = Path(".copier-answers.yml")
+    if not answers_path.exists():
         console.print("[red]Not a scaffolded project (no .copier-answers.yml)[/red]")
         raise typer.Exit(1)
 
     console.print("[bold blue]aiscaffold update[/bold blue]")
     console.print("Pulling template updates...\n")
 
+    source = _get_copier_answers_source(answers_path)
+    if not source or not _is_trusted_template_source(source):
+        console.print(
+            "[bold red]Error:[/bold red] Refusing to run trusted Copier update "
+            "for an unrecognized template source."
+        )
+        raise typer.Exit(1)
+
+    cmd = ["copier", "update", "--skip-tasks", "--trust"]
     try:
-        subprocess.run(["copier", "update", "--skip-tasks"], check=True)
+        subprocess.run(cmd, check=True)
         console.print("\n[bold green]Update complete![/bold green]")
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")

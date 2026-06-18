@@ -36,8 +36,9 @@ class CopierSecurityTests(unittest.TestCase):
     def test_cli_limits_trusted_template_tasks(self):
         cli_source = (REPO_ROOT / "core" / "src" / "aiscaffold" / "cli.py").read_text(encoding="utf-8")
         self.assertIn("def _is_trusted_template_source", cli_source)
+        self.assertIn("def _get_copier_answers_source", cli_source)
         self.assertIn('cmd.append("--trust")', cli_source)
-        self.assertIn('["copier", "update", "--skip-tasks"]', cli_source)
+        self.assertIn('"--skip-tasks"', cli_source)
 
 
 if __name__ == "__main__":
