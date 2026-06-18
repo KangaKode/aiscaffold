@@ -83,9 +83,9 @@ def _get_copier_answers_source(
     if not isinstance(data, dict):
         return None
     source = data.get("_src_path")
-    if not isinstance(source, str) or not source.strip():
+    if not isinstance(source, str) or not source or source != source.strip():
         return None
-    return source.strip()
+    return source
 
 
 # =============================================================================

@@ -160,6 +160,50 @@ def test_update_rejects_spaced_duplicate_source(monkeypatch, tmp_path):
     assert calls == []
 
 
+def test_update_rejects_source_with_leading_whitespace(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        f"_src_path: ' {cli.TEMPLATE_REPO}'\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to exit for whitespace-padded source")
+
+    assert calls == []
+
+
+def test_update_rejects_source_with_trailing_whitespace(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        f"_src_path: '{cli.TEMPLATE_REPO} '\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to exit for whitespace-padded source")
+
+    assert calls == []
+
+
 def test_init_surfaces_copier_failures(monkeypatch):
     def fake_run(cmd, check):
         raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
