@@ -42,24 +42,50 @@ def _is_trusted_template_source(source: str) -> bool:
         return False
 
 
-def _get_copier_answers_source(answers_path: Path = Path(".copier-answers.yml")) -> str | None:
+def _get_copier_answers_source(
+    answers_path: Path = Path(".copier-answers.yml"),
+) -> str | None:
     """Read the persisted Copier template source from the answers file."""
-    sources: list[str] = []
     try:
-        for line in answers_path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("_src_path:"):
-                continue
-            value = stripped.split(":", 1)[1].strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                value = value[1:-1]
-            if value:
-                sources.append(value)
-    except OSError:
+        import yaml
+    except ImportError:
         return None
-    if len(sources) != 1:
+
+    class UniqueKeyLoader(yaml.SafeLoader):
+        pass
+
+    def construct_unique_mapping(
+        loader: yaml.SafeLoader,
+        node: yaml.nodes.MappingNode,
+        deep: bool = False,
+    ) -> dict:
+        mapping = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in mapping:
+                raise ValueError(f"duplicate key in Copier answers: {key}")
+            mapping[key] = loader.construct_object(value_node, deep=deep)
+        return mapping
+
+    UniqueKeyLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        construct_unique_mapping,
+    )
+
+    try:
+        data = yaml.load(
+            answers_path.read_text(encoding="utf-8"),
+            Loader=UniqueKeyLoader,
+        )
+    except (OSError, ValueError, yaml.YAMLError):
         return None
-    return sources[0]
+
+    if not isinstance(data, dict):
+        return None
+    source = data.get("_src_path")
+    if not isinstance(source, str) or not source.strip():
+        return None
+    return source.strip()
 
 
 # =============================================================================
