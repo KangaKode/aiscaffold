@@ -44,6 +44,7 @@ def _is_trusted_template_source(source: str) -> bool:
 
 def _get_copier_answers_source(answers_path: Path = Path(".copier-answers.yml")) -> str | None:
     """Read the persisted Copier template source from the answers file."""
+    sources: list[str] = []
     try:
         for line in answers_path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
@@ -52,10 +53,13 @@ def _get_copier_answers_source(answers_path: Path = Path(".copier-answers.yml"))
             value = stripped.split(":", 1)[1].strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
                 value = value[1:-1]
-            return value or None
+            if value:
+                sources.append(value)
     except OSError:
         return None
-    return None
+    if len(sources) != 1:
+        return None
+    return sources[0]
 
 
 # =============================================================================

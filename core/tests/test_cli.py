@@ -94,6 +94,28 @@ def test_update_rejects_untrusted_source(monkeypatch, tmp_path):
     assert calls == []
 
 
+def test_update_rejects_duplicate_sources(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        f"_src_path: {cli.TEMPLATE_REPO}\n_src_path: /tmp/template\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to exit for duplicate template sources")
+
+    assert calls == []
+
+
 def test_init_surfaces_copier_failures(monkeypatch):
     def fake_run(cmd, check):
         raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
