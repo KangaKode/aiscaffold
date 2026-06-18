@@ -32,6 +32,16 @@ def _get_template_source() -> str:
     return TEMPLATE_REPO
 
 
+def _is_trusted_template_source(source: str) -> bool:
+    """Return True only for the bundled local template or official repo."""
+    if source == TEMPLATE_REPO:
+        return True
+    try:
+        return Path(source).expanduser().resolve() == Path(LOCAL_TEMPLATE).resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
 # =============================================================================
 # INIT
 # =============================================================================
@@ -48,7 +58,9 @@ def init(
     console.print(f"\n[bold blue]aiscaffold init[/bold blue]")
     console.print(f"Template: {source}\n")
 
-    cmd = ["copier", "copy", source, ".", "--trust"]
+    cmd = ["copier", "copy", source, "."]
+    if _is_trusted_template_source(source):
+        cmd.append("--trust")
     if name:
         cmd.extend(["--data", f"project_name={name}"])
 
@@ -234,7 +246,7 @@ def update():
     console.print("Pulling template updates...\n")
 
     try:
-        subprocess.run(["copier", "update", "--trust"], check=True)
+        subprocess.run(["copier", "update", "--skip-tasks"], check=True)
         console.print("\n[bold green]Update complete![/bold green]")
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")

@@ -5,7 +5,34 @@ import typer
 from aiscaffold import cli
 
 
-def test_init_trusts_copier_tasks(monkeypatch):
+def test_init_trusts_default_copier_tasks(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli, "_get_template_source", lambda: cli.TEMPLATE_REPO)
+
+    cli.init(name="my-project", template=None)
+
+    assert calls == [
+        (
+            [
+                "copier",
+                "copy",
+                cli.TEMPLATE_REPO,
+                ".",
+                "--trust",
+                "--data",
+                "project_name=my-project",
+            ],
+            True,
+        )
+    ]
+
+
+def test_init_does_not_trust_custom_template(monkeypatch):
     calls = []
 
     def fake_run(cmd, check):
@@ -22,7 +49,6 @@ def test_init_trusts_copier_tasks(monkeypatch):
                 "copy",
                 "/tmp/template",
                 ".",
-                "--trust",
                 "--data",
                 "project_name=my-project",
             ],
@@ -31,7 +57,7 @@ def test_init_trusts_copier_tasks(monkeypatch):
     ]
 
 
-def test_update_trusts_copier_tasks(monkeypatch, tmp_path):
+def test_update_skips_copier_tasks(monkeypatch, tmp_path):
     calls = []
 
     def fake_run(cmd, check):
@@ -43,7 +69,7 @@ def test_update_trusts_copier_tasks(monkeypatch, tmp_path):
 
     cli.update()
 
-    assert calls == [(["copier", "update", "--trust"], True)]
+    assert calls == [(["copier", "update", "--skip-tasks"], True)]
 
 
 def test_init_surfaces_copier_failures(monkeypatch):
