@@ -23,6 +23,7 @@ console = Console()
 
 TEMPLATE_REPO = "gh:KangaKode/roundtable"
 LOCAL_TEMPLATE = str(Path(__file__).parent.parent.parent.parent / "aiscaffold-template")
+COPIER_ANSWERS = ".copier-answers.yml"
 
 
 def _get_template_source() -> str:
@@ -30,6 +31,76 @@ def _get_template_source() -> str:
     if Path(LOCAL_TEMPLATE).exists():
         return LOCAL_TEMPLATE
     return TEMPLATE_REPO
+
+
+def _is_same_existing_path(source: str, expected: str) -> bool:
+    try:
+        source_path = Path(source).expanduser()
+        expected_path = Path(expected).expanduser()
+        return (
+            expected_path.exists()
+            and source_path.exists()
+            and source_path.resolve() == expected_path.resolve()
+        )
+    except (OSError, RuntimeError):
+        return False
+
+
+def _is_trusted_template_source(source: str | None) -> bool:
+    """Return whether Copier tasks may be trusted for this template source."""
+    if not source:
+        return False
+    return source == TEMPLATE_REPO or _is_same_existing_path(source, LOCAL_TEMPLATE)
+
+
+def _read_simple_src_path(answers_path: Path) -> str | None:
+    """Fallback parser for Copier's top-level _src_path setting."""
+    for line in answers_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or not stripped.startswith("_src_path:"):
+            continue
+        value = stripped.split(":", 1)[1].strip()
+        if not value:
+            return None
+        if value[:1] in {"'", '"'}:
+            try:
+                parsed = ast.literal_eval(value)
+                return parsed if isinstance(parsed, str) else None
+            except (SyntaxError, ValueError):
+                return value.strip("'\"")
+        return value.split(" #", 1)[0].strip()
+    return None
+
+
+def _read_copier_src_path(answers_path: Path = Path(COPIER_ANSWERS)) -> str | None:
+    """Read the source template recorded by Copier without executing anything."""
+    try:
+        import yaml
+
+        data = yaml.safe_load(answers_path.read_text(encoding="utf-8")) or {}
+        if isinstance(data, dict) and isinstance(data.get("_src_path"), str):
+            return data["_src_path"]
+    except ImportError:
+        return _read_simple_src_path(answers_path)
+    except Exception:
+        return None
+    return None
+
+
+def _copier_copy_command(source: str, name: str | None = None) -> list[str]:
+    cmd = ["copier", "copy", source, "."]
+    if _is_trusted_template_source(source):
+        cmd.append("--trust")
+    if name:
+        cmd.extend(["--data", f"project_name={name}"])
+    return cmd
+
+
+def _copier_update_command(answers_path: Path = Path(COPIER_ANSWERS)) -> list[str]:
+    cmd = ["copier", "update"]
+    if _is_trusted_template_source(_read_copier_src_path(answers_path)):
+        cmd.append("--trust")
+    return cmd
 
 
 # =============================================================================
@@ -48,9 +119,7 @@ def init(
     console.print(f"\n[bold blue]aiscaffold init[/bold blue]")
     console.print(f"Template: {source}\n")
 
-    cmd = ["copier", "copy", source, ".", "--trust"]
-    if name:
-        cmd.extend(["--data", f"project_name={name}"])
+    cmd = _copier_copy_command(source, name)
 
     try:
         subprocess.run(cmd, check=True)
@@ -226,15 +295,16 @@ def _add_layer(root: Path, name: str):
 @app.command()
 def update():
     """Pull template updates into the current project."""
-    if not Path(".copier-answers.yml").exists():
-        console.print("[red]Not a scaffolded project (no .copier-answers.yml)[/red]")
+    answers_path = Path(COPIER_ANSWERS)
+    if not answers_path.exists():
+        console.print(f"[red]Not a scaffolded project (no {COPIER_ANSWERS})[/red]")
         raise typer.Exit(1)
 
     console.print("[bold blue]aiscaffold update[/bold blue]")
     console.print("Pulling template updates...\n")
 
     try:
-        subprocess.run(["copier", "update", "--trust"], check=True)
+        subprocess.run(_copier_update_command(answers_path), check=True)
         console.print("\n[bold green]Update complete![/bold green]")
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")
