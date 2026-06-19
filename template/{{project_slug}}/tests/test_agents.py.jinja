@@ -45,6 +45,27 @@ class TestAgentRegistry:
         assert registry.get("metadata_agent") is None
         assert registry.remote_count == 1
 
+    def test_load_remote_agents_ignores_persisted_api_key_env_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("API_KEY", "server-secret")
+        monkeypatch.delenv("AGENT_SAFE_AGENT_API_KEY", raising=False)
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "safe_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                    "api_key_env": "API_KEY",
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+        agent = registry.get("safe_agent")
+
+        assert agent is not None
+        assert agent._headers() == {"Content-Type": "application/json"}
+
     def test_unregister_removes(self, mock_agent, tmp_path):
         registry = AgentRegistry(persist_path=tmp_path / "agents.json")
         registry.register_local(mock_agent)
