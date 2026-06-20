@@ -33,6 +33,7 @@ from ..orchestration.round_table import (
     SynthesisResult,
 )
 from ..security.prompt_guard import detect_injection_attempt, sanitize_for_prompt
+from .env_keys import agent_env_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -243,11 +244,11 @@ class RemoteAgent:
     def to_dict(self) -> dict[str, Any]:
         """Serialize agent info for registry persistence.
 
-        SECURITY: API keys are NEVER persisted to disk. They are stored as
-        environment variable references (AGENT_{NAME}_API_KEY) and loaded
-        at runtime. Only the env var name is persisted.
+        SECURITY: API keys are NEVER persisted to disk. Persisted registries
+        may reference AGENT_{NAME}_API_KEY, but the loader only hydrates it
+        when AGENT_{NAME}_BASE_URL matches the validated destination URL.
         """
-        api_key_env = f"AGENT_{self._name.upper()}_API_KEY"
+        api_key_env = f"{agent_env_prefix(self._name)}_API_KEY"
         return {
             "name": self._name,
             "domain": self._domain,

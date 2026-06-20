@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from ..security import ValidationError, validate_identifier, validate_url
+from .env_keys import agent_env_prefix
 from .remote import RemoteAgent
 
 logger = logging.getLogger(__name__)
@@ -101,8 +102,9 @@ class AgentRegistry:
     def _load_remote_agents(self) -> None:
         """Load persisted remote agent registrations from disk.
 
-        API keys are loaded from environment variables (AGENT_{NAME}_API_KEY),
-        never from the JSON file. Only the env var name is persisted.
+        API keys are loaded only when environment configuration binds the
+        expected AGENT_{NAME}_API_KEY to the same AGENT_{NAME}_BASE_URL.
+        The mutable JSON file is not trusted to choose secret destinations.
         """
         if not self._persist_path.exists():
             return
@@ -114,12 +116,21 @@ class AgentRegistry:
                 try:
                     name = validate_identifier(entry["name"], "agent name")
                     base_url = validate_url(entry["base_url"], "base_url")
-                    api_key_env = f"AGENT_{name.upper()}_API_KEY"
+                    env_prefix = agent_env_prefix(name)
+                    api_key_env = f"{env_prefix}_API_KEY"
+                    base_url_env = f"{env_prefix}_BASE_URL"
                     if entry.get("api_key_env", api_key_env) != api_key_env:
                         logger.warning(
                             f"[AgentRegistry] Ignoring unexpected api_key_env for {name}"
                         )
-                    api_key = os.environ.get(api_key_env, "")
+                    api_key = ""
+                    if os.environ.get(base_url_env) == base_url:
+                        api_key = os.environ.get(api_key_env, "")
+                    elif os.environ.get(api_key_env):
+                        logger.warning(
+                            f"[AgentRegistry] Not loading {api_key_env} for {name}; "
+                            f"set {base_url_env} to the validated base_url first"
+                        )
 
                     agent = RemoteAgent(
                         name=name,
