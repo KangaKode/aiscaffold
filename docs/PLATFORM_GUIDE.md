@@ -202,6 +202,21 @@ curl -X POST https://platform.example.com/api/v1/agents \
   }'
 ```
 
+If the remote agent requires an API key after process restart, bind the key to
+the expected destination in environment configuration:
+
+```bash
+AGENT_INCIDENT_RESPONDER_BASE_URL=https://team-c-internal.example.com
+AGENT_INCIDENT_RESPONDER_API_KEY=...
+```
+
+The registry only hydrates a persisted remote-agent API key when the matching
+`*_BASE_URL` exactly equals the validated `base_url` from registration. This
+prevents a tampered `.aiscaffold/agents.json` file from redirecting an existing
+agent key to a different endpoint. For hyphenated agent names, use the
+`api_key_env` value persisted in `.aiscaffold/agents.json` as the generated,
+portable environment variable name.
+
 To make the registration respect tenant isolation, update the `register_agent` route to set tenant_id and visibility from the auth context:
 
 ```python
