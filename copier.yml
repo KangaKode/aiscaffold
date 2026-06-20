@@ -8,6 +8,16 @@ _subdirectory: template
 project_name:
   type: str
   help: "Human-readable project name (e.g., 'My AI Tool')"
+  validator: >-
+    {% set invalid = namespace(value=false) %}
+    {% for char in project_name %}
+    {% if not char.isascii() or not (char.isalnum() or char in [' ', '_', '-']) %}
+    {% set invalid.value = true %}
+    {% endif %}
+    {% endfor %}
+    {% if not project_name.strip() or invalid.value %}
+    project_name must contain only ASCII letters, numbers, spaces, hyphens, and underscores.
+    {% endif %}
 
 project_slug:
   type: str

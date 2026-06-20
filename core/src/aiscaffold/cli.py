@@ -32,6 +32,22 @@ def _get_template_source() -> str:
     return TEMPLATE_REPO
 
 
+def _slug_from_project_name(name: str) -> str:
+    """Mirror copier.yml's slug default so CLI input is validated before tasks run."""
+    return name.lower().replace(" ", "_").replace("-", "_")
+
+
+def _safe_project_slug(name: str) -> str:
+    slug = _slug_from_project_name(name)
+    if not slug.isascii() or not slug.isidentifier():
+        console.print(
+            "[bold red]Error:[/bold red] project name must produce an ASCII Python "
+            "identifier after lowercasing and replacing spaces/hyphens with underscores."
+        )
+        raise typer.Exit(1)
+    return slug
+
+
 # =============================================================================
 # INIT
 # =============================================================================
@@ -50,7 +66,13 @@ def init(
 
     cmd = ["copier", "copy", source, ".", "--trust"]
     if name:
-        cmd.extend(["--data", f"project_name={name}"])
+        project_slug = _safe_project_slug(name)
+        cmd.extend([
+            "--data",
+            f"project_name={name}",
+            "--data",
+            f"project_slug={project_slug}",
+        ])
 
     try:
         subprocess.run(cmd, check=True)

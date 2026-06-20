@@ -131,7 +131,7 @@ serve: ## Start the API gateway (development mode with auto-reload)
 	uvicorn {{ project_slug }}.api.gateway:app --reload --host 0.0.0.0 --port 8000
 
 serve-prod: ## Start the API gateway (production mode)
-	uvicorn {{ project_slug }}.api.gateway:app --host 0.0.0.0 --port 8000 --workers 4
+	ENV=production uvicorn {{ project_slug }}.api.gateway:app --host 0.0.0.0 --port 8000 --workers 4
 {% endif %}
 
 {% if include_deployment -%}

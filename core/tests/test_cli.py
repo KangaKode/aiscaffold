@@ -25,10 +25,30 @@ def test_init_trusts_copier_tasks(monkeypatch):
                 "--trust",
                 "--data",
                 "project_name=my-project",
+                "--data",
+                "project_slug=my_project",
             ],
             True,
         )
     ]
+
+
+def test_init_rejects_names_that_cannot_form_safe_slug(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.init(name='demo"; touch /tmp/pwned #', template="/tmp/template")
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected init to reject unsafe project names")
+
+    assert calls == []
 
 
 def test_update_trusts_copier_tasks(monkeypatch, tmp_path):

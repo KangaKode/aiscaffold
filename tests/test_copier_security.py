@@ -20,6 +20,10 @@ class CopierSecurityTests(unittest.TestCase):
         validator = self.config[question]["validator"]
         return self.jinja.from_string(validator).render({question: value}).strip()
 
+    def test_project_name_rejects_shell_metacharacters(self):
+        self.assertEqual("", self.render_validator("project_name", "Safe Project"))
+        self.assertTrue(self.render_validator("project_name", 'demo"; touch /tmp/pwned #'))
+
     def test_project_slug_rejects_shell_metacharacters(self):
         self.assertEqual("", self.render_validator("project_slug", "safe_project"))
         self.assertTrue(self.render_validator("project_slug", 'safe_project"; touch /tmp/pwned #'))
@@ -37,6 +41,12 @@ class CopierSecurityTests(unittest.TestCase):
         cli_source = (REPO_ROOT / "core" / "src" / "aiscaffold" / "cli.py").read_text(encoding="utf-8")
         self.assertIn('["copier", "copy", source, ".", "--trust"]', cli_source)
         self.assertIn('["copier", "update", "--trust"]', cli_source)
+
+    def test_serve_prod_enables_production_auth_guard(self):
+        makefile = (
+            REPO_ROOT / "template" / "{{project_slug}}" / "Makefile.jinja"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ENV=production uvicorn", makefile)
 
 
 if __name__ == "__main__":
