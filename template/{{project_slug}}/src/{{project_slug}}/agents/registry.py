@@ -101,8 +101,8 @@ class AgentRegistry:
     def _load_remote_agents(self) -> None:
         """Load persisted remote agent registrations from disk.
 
-        API keys are loaded from environment variables (AGENT_{NAME}_API_KEY),
-        never from the JSON file. Only the env var name is persisted.
+        API keys are loaded from canonical environment variables
+        (AGENT_{NAME}_API_KEY), never from JSON-controlled env var names.
         """
         if not self._persist_path.exists():
             return
@@ -114,7 +114,7 @@ class AgentRegistry:
                 try:
                     name = validate_identifier(entry["name"], "agent name")
                     base_url = validate_url(entry["base_url"], "base_url")
-                    api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
+                    api_key_env = f"AGENT_{name.upper()}_API_KEY"
                     api_key = os.environ.get(api_key_env, "")
 
                     agent = RemoteAgent(
