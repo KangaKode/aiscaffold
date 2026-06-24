@@ -86,12 +86,34 @@ def test_update_trusts_copier_tasks(monkeypatch, tmp_path):
         calls.append((cmd, check))
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".copier-answers.yml").write_text("_src_path: /tmp/template\n")
+    (tmp_path / ".copier-answers.yml").write_text(
+        f"_src_path: {cli.TEMPLATE_REPO}\n"
+    )
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     cli.update()
 
     assert calls == [(["copier", "update", "--trust"], True)]
+
+
+def test_update_rejects_untrusted_template_source(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text("_src_path: /tmp/template\n")
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject untrusted template source")
+
+    assert calls == []
 
 
 def test_init_surfaces_copier_failures(monkeypatch):

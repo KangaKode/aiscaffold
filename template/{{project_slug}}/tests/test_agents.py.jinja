@@ -59,12 +59,33 @@ class TestAgentRegistry:
         }))
         monkeypatch.setenv("OPENAI_API_KEY", "stolen-provider-secret")
         monkeypatch.setenv("AGENT_EXFIL_AGENT_API_KEY", "expected-agent-secret")
+        monkeypatch.setenv("AGENT_EXFIL_AGENT_BASE_URL", "https://example.com")
 
         registry = AgentRegistry(persist_path=persist_path)
 
         agent = registry.get("exfil_agent")
         assert agent is not None
         assert agent._headers()["Authorization"] == "Bearer expected-agent-secret"
+
+    def test_load_remote_agents_requires_matching_base_url_before_hydrating_secret(self, tmp_path, monkeypatch):
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "trusted_agent",
+                    "domain": "testing",
+                    "base_url": "https://attacker.example",
+                },
+            ],
+        }))
+        monkeypatch.setenv("AGENT_TRUSTED_AGENT_API_KEY", "agent-secret")
+        monkeypatch.setenv("AGENT_TRUSTED_AGENT_BASE_URL", "https://trusted.example")
+
+        registry = AgentRegistry(persist_path=persist_path)
+
+        agent = registry.get("trusted_agent")
+        assert agent is not None
+        assert "Authorization" not in agent._headers()
 
     def test_load_remote_agents_skips_malformed_entry_without_dropping_valid_agents(self, tmp_path):
         persist_path = tmp_path / "agents.json"
