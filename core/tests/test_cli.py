@@ -11,9 +11,38 @@ def test_init_trusts_copier_tasks(monkeypatch):
     def fake_run(cmd, check):
         calls.append((cmd, check))
 
+    monkeypatch.setattr(cli, "_get_template_source", lambda: cli.TEMPLATE_REPO)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
-    cli.init(name="my-project", template="/tmp/template")
+    cli.init(name="my_project")
+
+    assert calls == [
+        (
+            [
+                "copier",
+                "copy",
+                cli.TEMPLATE_REPO,
+                ".",
+                "--trust",
+                "--data",
+                "project_name=my_project",
+                "--data",
+                "project_slug=my_project",
+            ],
+            True,
+        )
+    ]
+
+
+def test_init_does_not_trust_custom_template(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.init(name="my_project", template="/tmp/template")
 
     assert calls == [
         (
@@ -22,13 +51,32 @@ def test_init_trusts_copier_tasks(monkeypatch):
                 "copy",
                 "/tmp/template",
                 ".",
-                "--trust",
                 "--data",
-                "project_name=my-project",
+                "project_name=my_project",
+                "--data",
+                "project_slug=my_project",
             ],
             True,
         )
     ]
+
+
+def test_init_rejects_unsafe_project_name_before_copier(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.init(name="foo;id")
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected init to reject unsafe project names")
+
+    assert calls == []
 
 
 def test_update_trusts_copier_tasks(monkeypatch, tmp_path):
