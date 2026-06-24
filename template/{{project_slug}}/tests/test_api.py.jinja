@@ -283,6 +283,15 @@ class TestSessionsAPI:
         assert alice_r.status_code == 200
         assert bob_r.status_code == 404
 
+    def test_round_table_result_keys_are_unambiguous_for_auth_context(self):
+        victim = AuthContext(user_id="alice", tenant_id="tenant-a")
+        attacker = AuthContext(user_id="alice:confidential", tenant_id="tenant-a")
+
+        victim_key = round_table._result_key("confidential:task", victim)
+        attacker_key = round_table._result_key("task", attacker)
+
+        assert victim_key != attacker_key
+
 
 # =============================================================================
 # FEEDBACK

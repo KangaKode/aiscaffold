@@ -19,6 +19,7 @@ Multi-tenancy:
     deployments use the defaults ("default" tenant, "anon" user) transparently.
 """
 
+import base64
 import hashlib
 import hmac
 import logging
@@ -49,6 +50,16 @@ class AuthContext:
     api_key: str | None = None
     user_id: str = "anon"
     tenant_id: str = "default"
+
+
+def _encode_scope_component(value: str) -> str:
+    """Encode auth scope components without delimiter ambiguity."""
+    return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def auth_scope_key(auth: AuthContext) -> str:
+    """Return a stable, delimiter-safe key for tenant/user-owned artifacts."""
+    return f"{_encode_scope_component(auth.tenant_id)}.{_encode_scope_component(auth.user_id)}"
 
 
 def get_api_key() -> str | None:

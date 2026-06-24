@@ -8,6 +8,11 @@ _subdirectory: template
 project_name:
   type: str
   help: "Human-readable project name (e.g., 'My AI Tool')"
+  validator: >-
+    {% set slug = project_name | lower | replace(' ', '_') | replace('-', '_') %}
+    {% if not slug.isascii() or not slug.isidentifier() %}
+    project_name must derive to an ASCII Python identifier (letters, numbers, spaces, hyphens, and underscores; cannot start with a number).
+    {% endif %}
 
 project_slug:
   type: str
@@ -130,11 +135,11 @@ include_learning:
 
 _tasks:
   # Create architecture layer directories
-  - "cd {{ project_slug }} && python3 -c \"import os; [os.makedirs(l.strip(), exist_ok=True) or open(os.path.join(l.strip(), '__init__.py'), 'w').close() for l in '{{ layers }}'.split(',')]\""
+  - "cd \"{{ project_slug }}\" && python3 -c \"import os; [os.makedirs(l.strip(), exist_ok=True) or open(os.path.join(l.strip(), '__init__.py'), 'w').close() for l in '{{ layers }}'.split(',')]\""
   # Create evals directory if requested
-  - "{% if include_evals %}cd {{ project_slug }} && mkdir -p evals/capability evals/regression evals/graders evals/results && touch evals/__init__.py evals/graders/__init__.py{% else %}echo 'Evals skipped'{% endif %}"
+  - "{% if include_evals %}cd \"{{ project_slug }}\" && mkdir -p evals/capability evals/regression evals/graders evals/results && touch evals/__init__.py evals/graders/__init__.py{% else %}echo 'Evals skipped'{% endif %}"
   # Init git
-  - "cd {{ project_slug }} && git init"
+  - "cd \"{{ project_slug }}\" && git init"
   # Summary
   - "echo ''"
   - "echo 'Project created!'"
@@ -151,7 +156,7 @@ _tasks:
   - "{% if include_learning %}echo '  Learning system (feedback, trust, preferences, RAG)'{% else %}echo ''{% endif %}"
   - "echo ''"
   - "echo 'Next steps:'"
-  - "echo '  cd {{ project_slug }}'"
+  - "echo '  cd \"{{ project_slug }}\"'"
   - "echo '  python3 -m venv venv && source venv/bin/activate'"
   - "echo '  pip install -r requirements.txt'"
   - "echo '  pip install -e .       # Install the src-layout package'"

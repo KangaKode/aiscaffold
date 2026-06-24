@@ -25,11 +25,37 @@ TEMPLATE_REPO = "gh:KangaKode/roundtable"
 LOCAL_TEMPLATE = str(Path(__file__).parent.parent.parent.parent / "aiscaffold-template")
 
 
+def _normalize_typer_default(value: str | None) -> str | None:
+    """Treat Typer metadata defaults as missing when commands are called directly."""
+    if isinstance(value, (typer.models.ArgumentInfo, typer.models.OptionInfo)):
+        return None
+    return value
+
+
 def _get_template_source() -> str:
     """Use local template if available, otherwise GitHub."""
     if Path(LOCAL_TEMPLATE).exists():
         return LOCAL_TEMPLATE
     return TEMPLATE_REPO
+
+
+def _derive_project_slug(project_name: str) -> str:
+    """Match Copier's default slug derivation so CLI validation covers prompts."""
+    return project_name.lower().replace(" ", "_").replace("-", "_")
+
+
+def _validate_project_slug(project_slug: str) -> bool:
+    return project_slug.isascii() and project_slug.isidentifier()
+
+
+def _is_trusted_template_source(source: str) -> bool:
+    """Only trusted bundled/official templates may execute Copier tasks."""
+    if source == TEMPLATE_REPO:
+        return True
+    try:
+        return Path(source).resolve() == Path(LOCAL_TEMPLATE).resolve()
+    except OSError:
+        return False
 
 
 # =============================================================================
@@ -43,14 +69,29 @@ def init(
     template: str = typer.Option(None, help="Template source (default: auto-detect)"),
 ):
     """Create a new AI tool project with 2026 best practices."""
+    name = _normalize_typer_default(name)
+    template = _normalize_typer_default(template)
     source = template or _get_template_source()
 
     console.print(f"\n[bold blue]aiscaffold init[/bold blue]")
     console.print(f"Template: {source}\n")
 
-    cmd = ["copier", "copy", source, ".", "--trust"]
+    cmd = ["copier", "copy", source, "."]
+    if _is_trusted_template_source(source):
+        cmd.append("--trust")
     if name:
-        cmd.extend(["--data", f"project_name={name}"])
+        project_slug = _derive_project_slug(name)
+        if not _validate_project_slug(project_slug):
+            console.print(
+                "[bold red]Error:[/bold red] project name derives to an unsafe "
+                "Python package name. Use letters, numbers, spaces, hyphens, "
+                "or underscores, and start with a letter."
+            )
+            raise typer.Exit(1)
+        cmd.extend([
+            "--data", f"project_name={name}",
+            "--data", f"project_slug={project_slug}",
+        ])
 
     try:
         subprocess.run(cmd, check=True)

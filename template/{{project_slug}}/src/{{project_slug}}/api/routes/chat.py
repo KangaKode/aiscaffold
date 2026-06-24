@@ -28,7 +28,7 @@ from ...orchestration.chat_orchestrator import (
     ChatResponse,
 )
 from ...security import ValidationError, validate_length
-from ..middleware.auth import AuthContext, verify_api_key
+from ..middleware.auth import AuthContext, auth_scope_key, verify_api_key
 from ..middleware.rate_limit import check_rate_limit
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ class EscalateRequest(BaseModel):
 
 def _session_key(session_id: str, auth: AuthContext) -> str:
     """Bind session to authenticated user and tenant to prevent cross-session access."""
-    return f"{auth.tenant_id}:{auth.user_id}:{session_id}"
+    return f"{auth_scope_key(auth)}:{session_id}"
 
 
 def _get_or_create_orchestrator(
