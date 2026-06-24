@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -56,6 +57,17 @@ def _is_trusted_template_source(source: str) -> bool:
         return Path(source).resolve() == Path(LOCAL_TEMPLATE).resolve()
     except OSError:
         return False
+
+
+def _load_copier_source(answers_path: Path) -> str | None:
+    """Read the Copier source recorded for a scaffolded project."""
+    try:
+        answers = yaml.safe_load(answers_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as e:
+        console.print(f"[red]Invalid .copier-answers.yml:[/red] {e}")
+        raise typer.Exit(1)
+    source = answers.get("_src_path")
+    return str(source) if source else None
 
 
 # =============================================================================
@@ -267,12 +279,21 @@ def _add_layer(root: Path, name: str):
 @app.command()
 def update():
     """Pull template updates into the current project."""
-    if not Path(".copier-answers.yml").exists():
+    answers_path = Path(".copier-answers.yml")
+    if not answers_path.exists():
         console.print("[red]Not a scaffolded project (no .copier-answers.yml)[/red]")
         raise typer.Exit(1)
 
     console.print("[bold blue]aiscaffold update[/bold blue]")
     console.print("Pulling template updates...\n")
+
+    source = _load_copier_source(answers_path)
+    if not source or not _is_trusted_template_source(source):
+        console.print(
+            "[bold red]Error:[/bold red] refusing to run trusted Copier tasks "
+            "for an untrusted template source."
+        )
+        raise typer.Exit(1)
 
     try:
         subprocess.run(["copier", "update", "--trust"], check=True)

@@ -115,7 +115,16 @@ class AgentRegistry:
                     name = validate_identifier(entry["name"], "agent name")
                     base_url = validate_url(entry["base_url"], "base_url")
                     api_key_env = f"AGENT_{name.upper()}_API_KEY"
-                    api_key = os.environ.get(api_key_env, "")
+                    base_url_env = f"AGENT_{name.upper()}_BASE_URL"
+                    configured_base_url = os.environ.get(base_url_env, "").rstrip("/")
+                    api_key = ""
+                    if configured_base_url == base_url.rstrip("/"):
+                        api_key = os.environ.get(api_key_env, "")
+                    elif os.environ.get(api_key_env):
+                        logger.warning(
+                            f"[AgentRegistry] Not loading API key for {name}: "
+                            f"{base_url_env} does not match persisted base_url"
+                        )
 
                     agent = RemoteAgent(
                         name=name,
