@@ -71,10 +71,9 @@ class TestAgentRegistry:
         persist_path.write_text(json.dumps({
             "remote_agents": [
                 {
-                    "name": "broken_agent",
+                    "name": 123,
                     "domain": "testing",
                     "base_url": "https://example.com",
-                    "api_key_env": None,
                 },
                 {
                     "name": "safe_agent",
@@ -86,7 +85,6 @@ class TestAgentRegistry:
 
         registry = AgentRegistry(persist_path=persist_path)
 
-        assert registry.get("broken_agent") is None
         assert registry.get("safe_agent") is not None
         assert registry.remote_count == 1
 
