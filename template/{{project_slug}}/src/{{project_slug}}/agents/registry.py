@@ -32,6 +32,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_PERSIST_PATH = Path(".aiscaffold/agents.json")
 
 
+def _api_key_env_for_agent(name: str) -> str:
+    return f"AGENT_{name.upper()}_API_KEY"
+
+
+def _base_url_env_for_agent(name: str) -> str:
+    return f"AGENT_{name.upper()}_BASE_URL"
+
+
 @runtime_checkable
 class AgentLike(Protocol):
     """Minimal interface for agent identity."""
@@ -114,8 +122,7 @@ class AgentRegistry:
                 try:
                     name = validate_identifier(entry["name"], "agent name")
                     base_url = validate_url(entry["base_url"], "base_url")
-                    api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
-                    api_key = os.environ.get(api_key_env, "")
+                    api_key = self._load_pinned_api_key(name, base_url)
 
                     agent = RemoteAgent(
                         name=name,
@@ -141,6 +148,25 @@ class AgentRegistry:
             )
         except Exception as e:
             logger.warning(f"[AgentRegistry] Failed to load agents: {e}")
+
+    @staticmethod
+    def _load_pinned_api_key(name: str, base_url: str) -> str:
+        """Load a persisted agent's key only when env pins it to this URL."""
+        api_key_env = _api_key_env_for_agent(name)
+        base_url_env = _base_url_env_for_agent(name)
+        api_key = os.environ.get(api_key_env, "")
+        if not api_key:
+            return ""
+
+        pinned_base_url = os.environ.get(base_url_env, "")
+        if pinned_base_url.rstrip("/") != base_url.rstrip("/"):
+            logger.warning(
+                f"[AgentRegistry] Ignoring {api_key_env}: set {base_url_env} "
+                f"to {base_url} to bind this secret to the persisted agent URL."
+            )
+            return ""
+
+        return api_key
 
     def _save_remote_agents(self) -> None:
         """Persist remote agent registrations to disk."""

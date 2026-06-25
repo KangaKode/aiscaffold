@@ -8,10 +8,7 @@ Commands:
     aiscaffold update          Pull template updates
 """
 
-import ast
-import os
 import subprocess
-import sys
 from pathlib import Path
 
 import typer
@@ -23,6 +20,11 @@ console = Console()
 
 TEMPLATE_REPO = "gh:KangaKode/roundtable"
 LOCAL_TEMPLATE = str(Path(__file__).parent.parent.parent.parent / "aiscaffold-template")
+TRUSTED_TEMPLATE_SOURCES = {
+    TEMPLATE_REPO,
+    "https://github.com/KangaKode/roundtable",
+    "https://github.com/KangaKode/roundtable.git",
+}
 
 
 def _get_template_source() -> str:
@@ -30,6 +32,37 @@ def _get_template_source() -> str:
     if Path(LOCAL_TEMPLATE).exists():
         return LOCAL_TEMPLATE
     return TEMPLATE_REPO
+
+
+def _is_trusted_template_source(source: str) -> bool:
+    """Return whether Copier tasks may be trusted for this template source."""
+    if source in TRUSTED_TEMPLATE_SOURCES:
+        return True
+
+    local_template = Path(LOCAL_TEMPLATE)
+    if not local_template.exists():
+        return False
+
+    try:
+        return Path(source).expanduser().resolve() == local_template.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _copier_answers_src_path(path: Path = Path(".copier-answers.yml")) -> str:
+    """Read the template source recorded by Copier without adding a YAML dependency."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("_src_path:"):
+                continue
+            value = stripped.split(":", 1)[1].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            return value
+    except OSError:
+        return ""
+    return ""
 
 
 # =============================================================================
@@ -48,7 +81,9 @@ def init(
     console.print(f"\n[bold blue]aiscaffold init[/bold blue]")
     console.print(f"Template: {source}\n")
 
-    cmd = ["copier", "copy", source, ".", "--trust"]
+    cmd = ["copier", "copy", source, "."]
+    if _is_trusted_template_source(source):
+        cmd.append("--trust")
     if name:
         cmd.extend(["--data", f"project_name={name}"])
 
@@ -234,7 +269,10 @@ def update():
     console.print("Pulling template updates...\n")
 
     try:
-        subprocess.run(["copier", "update", "--trust"], check=True)
+        cmd = ["copier", "update"]
+        if _is_trusted_template_source(_copier_answers_src_path()):
+            cmd.append("--trust")
+        subprocess.run(cmd, check=True)
         console.print("\n[bold green]Update complete![/bold green]")
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")

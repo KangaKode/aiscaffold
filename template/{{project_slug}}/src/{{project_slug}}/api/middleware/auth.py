@@ -21,6 +21,7 @@ Multi-tenancy:
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -49,6 +50,16 @@ class AuthContext:
     api_key: str | None = None
     user_id: str = "anon"
     tenant_id: str = "default"
+
+
+def auth_scope_key(auth: AuthContext) -> str:
+    """Stable opaque key for tenant/user scoped caches and persisted metadata."""
+    payload = {
+        "tenant_id": auth.tenant_id,
+        "user_id": auth.user_id,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()[:32]
 
 
 def get_api_key() -> str | None:
