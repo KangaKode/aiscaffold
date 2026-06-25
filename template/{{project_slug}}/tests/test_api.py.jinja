@@ -8,7 +8,7 @@ from httpx import AsyncClient, ASGITransport
 from {{ project_slug }}.api.gateway import create_app
 from {{ project_slug }}.api.middleware.auth import AuthContext, verify_api_key
 from {{ project_slug }}.api.models.responses import RoundTableResultResponse
-from {{ project_slug }}.api.routes import round_table
+from {{ project_slug }}.api.routes import chat, round_table
 
 
 @pytest.fixture
@@ -166,6 +166,16 @@ class TestChatAPI:
         r = await client.post("/api/v1/chat/clear", params={"session_id": "test"})
         assert r.status_code == 200
         assert r.json()["status"] == "cleared"
+
+    def test_chat_session_keys_do_not_alias_delimited_ids(self):
+        session_id = "shared"
+        victim_auth = AuthContext(user_id="alice:admin", tenant_id="tenant-a")
+        attacker_auth = AuthContext(user_id="admin", tenant_id="tenant-a:alice")
+
+        assert (
+            chat._session_key(session_id, victim_auth)
+            != chat._session_key(session_id, attacker_auth)
+        )
 
 
 # =============================================================================
