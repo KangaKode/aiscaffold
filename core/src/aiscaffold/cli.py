@@ -51,6 +51,7 @@ def _is_trusted_template_source(source: str) -> bool:
 
 def _copier_answers_src_path(path: Path = Path(".copier-answers.yml")) -> str:
     """Read the template source recorded by Copier without adding a YAML dependency."""
+    values = []
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
@@ -59,10 +60,12 @@ def _copier_answers_src_path(path: Path = Path(".copier-answers.yml")) -> str:
             value = stripped.split(":", 1)[1].strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
                 value = value[1:-1]
-            return value
+            values.append(value)
     except OSError:
         return ""
-    return ""
+    if len(values) != 1:
+        return ""
+    return values[0]
 
 
 # =============================================================================
