@@ -143,14 +143,23 @@ class TestSessionKey:
         from {{project_slug}}.api.middleware.auth import AuthContext
         auth = AuthContext(user_id="a1b2c3d4e5f6g7h8", tenant_id="acme")
         key = _session_key("my_session", auth)
-        assert key == "acme:a1b2c3d4e5f6g7h8:my_session"
+        assert key == '["acme","a1b2c3d4e5f6g7h8"]:my_session'
 
     def test_session_key_default_tenant(self):
         from {{project_slug}}.api.routes.chat import _session_key
         from {{project_slug}}.api.middleware.auth import AuthContext
         auth = AuthContext()
         key = _session_key("my_session", auth)
-        assert key == "default:anon:my_session"
+        assert key == '["default","anon"]:my_session'
+
+    def test_session_key_delimiter_values_do_not_collide(self):
+        from {{project_slug}}.api.routes.chat import _session_key
+        from {{project_slug}}.api.middleware.auth import AuthContext
+
+        owner = AuthContext(user_id="ops:alice", tenant_id="acme")
+        colliding = AuthContext(user_id="alice", tenant_id="acme:ops")
+
+        assert _session_key("my_session", owner) != _session_key("my_session", colliding)
 
 
 # =============================================================================
