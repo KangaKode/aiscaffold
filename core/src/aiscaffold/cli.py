@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -30,6 +31,33 @@ def _get_template_source() -> str:
     if Path(LOCAL_TEMPLATE).exists():
         return LOCAL_TEMPLATE
     return TEMPLATE_REPO
+
+
+def _is_trusted_template_source(source: str | None) -> bool:
+    """Return whether Copier tasks may be trusted for this template source."""
+    if not source or source != source.strip():
+        return False
+    if source == TEMPLATE_REPO:
+        return True
+    try:
+        return (
+            Path(source).expanduser().resolve()
+            == Path(LOCAL_TEMPLATE).expanduser().resolve()
+        )
+    except (OSError, RuntimeError):
+        return False
+
+
+def _copier_answers_source(path: Path = Path(".copier-answers.yml")) -> str | None:
+    """Read Copier's persisted source path for trust decisions."""
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    source = data.get("_src_path")
+    return source if isinstance(source, str) else None
 
 
 # =============================================================================
@@ -48,7 +76,9 @@ def init(
     console.print(f"\n[bold blue]aiscaffold init[/bold blue]")
     console.print(f"Template: {source}\n")
 
-    cmd = ["copier", "copy", source, ".", "--trust"]
+    cmd = ["copier", "copy", source, "."]
+    if _is_trusted_template_source(source):
+        cmd.append("--trust")
     if name:
         cmd.extend(["--data", f"project_name={name}"])
 
@@ -226,15 +256,20 @@ def _add_layer(root: Path, name: str):
 @app.command()
 def update():
     """Pull template updates into the current project."""
-    if not Path(".copier-answers.yml").exists():
+    answers_path = Path(".copier-answers.yml")
+    if not answers_path.exists():
         console.print("[red]Not a scaffolded project (no .copier-answers.yml)[/red]")
         raise typer.Exit(1)
 
     console.print("[bold blue]aiscaffold update[/bold blue]")
     console.print("Pulling template updates...\n")
 
+    cmd = ["copier", "update"]
+    if _is_trusted_template_source(_copier_answers_source(answers_path)):
+        cmd.append("--trust")
+
     try:
-        subprocess.run(["copier", "update", "--trust"], check=True)
+        subprocess.run(cmd, check=True)
         console.print("\n[bold green]Update complete![/bold green]")
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")
