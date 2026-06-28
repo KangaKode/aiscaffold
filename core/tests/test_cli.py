@@ -5,7 +5,7 @@ import typer
 from aiscaffold import cli
 
 
-def test_init_trusts_copier_tasks(monkeypatch):
+def test_init_trusts_known_template_tasks(monkeypatch):
     calls = []
 
     def fake_run(cmd, check):
@@ -13,14 +13,14 @@ def test_init_trusts_copier_tasks(monkeypatch):
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
-    cli.init(name="my-project", template="/tmp/template")
+    cli.init(name="my-project", template=cli.TEMPLATE_REPO)
 
     assert calls == [
         (
             [
                 "copier",
                 "copy",
-                "/tmp/template",
+                cli.TEMPLATE_REPO,
                 ".",
                 "--trust",
                 "--data",
@@ -31,19 +31,61 @@ def test_init_trusts_copier_tasks(monkeypatch):
     ]
 
 
-def test_update_trusts_copier_tasks(monkeypatch, tmp_path):
+def test_init_does_not_trust_untrusted_template(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.init(name="my-project", template="/tmp/untrusted-template")
+
+    assert calls == [
+        (
+            [
+                "copier",
+                "copy",
+                "/tmp/untrusted-template",
+                ".",
+                "--data",
+                "project_name=my-project",
+            ],
+            True,
+        )
+    ]
+
+
+def test_update_trusts_known_template_tasks(monkeypatch, tmp_path):
     calls = []
 
     def fake_run(cmd, check):
         calls.append((cmd, check))
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".copier-answers.yml").write_text("_src_path: /tmp/template\n")
+    (tmp_path / ".copier-answers.yml").write_text(
+        f"_src_path: {cli.TEMPLATE_REPO}\n"
+    )
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     cli.update()
 
     assert calls == [(["copier", "update", "--trust"], True)]
+
+
+def test_update_does_not_trust_untrusted_template(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text("_src_path: /tmp/untrusted-template\n")
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.update()
+
+    assert calls == [(["copier", "update"], True)]
 
 
 def test_init_surfaces_copier_failures(monkeypatch):

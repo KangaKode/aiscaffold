@@ -33,10 +33,11 @@ class CopierSecurityTests(unittest.TestCase):
         tasks = "\n".join(self.config["_tasks"])
         self.assertNotIn("{{ project_name }}", tasks)
 
-    def test_cli_uses_trust_for_template_tasks(self):
+    def test_cli_gates_trust_for_template_tasks(self):
         cli_source = (REPO_ROOT / "core" / "src" / "aiscaffold" / "cli.py").read_text(encoding="utf-8")
-        self.assertIn('["copier", "copy", source, ".", "--trust"]', cli_source)
-        self.assertIn('["copier", "update", "--trust"]', cli_source)
+        self.assertIn("def _is_trusted_template_source", cli_source)
+        self.assertIn('cmd = ["copier", "copy", source, "."]', cli_source)
+        self.assertIn('cmd = ["copier", "update"]', cli_source)
 
 
 if __name__ == "__main__":
