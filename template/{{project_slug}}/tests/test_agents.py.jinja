@@ -66,6 +66,46 @@ class TestAgentRegistry:
         assert agent is not None
         assert "Authorization" not in agent._headers()
 
+    def test_load_remote_agents_requires_base_url_pin_for_api_key(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGENT_REMOTE_A_API_KEY", "agent-secret")
+        monkeypatch.setenv("AGENT_REMOTE_A_BASE_URL", "https://trusted.example")
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "remote_a",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+        agent = registry.get("remote_a")
+
+        assert agent is not None
+        assert "Authorization" not in agent._headers()
+
+    def test_load_remote_agents_uses_api_key_for_matching_base_url_pin(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGENT_REMOTE_A_API_KEY", "agent-secret")
+        monkeypatch.setenv("AGENT_REMOTE_A_BASE_URL", "https://example.com")
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "remote_a",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+        agent = registry.get("remote_a")
+
+        assert agent is not None
+        assert agent._headers()["Authorization"] == "Bearer agent-secret"
+
     def test_unregister_removes(self, mock_agent, tmp_path):
         registry = AgentRegistry(persist_path=tmp_path / "agents.json")
         registry.register_local(mock_agent)
