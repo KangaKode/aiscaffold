@@ -39,6 +39,8 @@ def _is_trusted_template_source(source: str | None) -> bool:
         return False
     if source == TEMPLATE_REPO:
         return True
+    if not _is_explicit_local_path(source):
+        return False
     try:
         return (
             Path(source).expanduser().resolve()
@@ -46,6 +48,14 @@ def _is_trusted_template_source(source: str | None) -> bool:
         )
     except (OSError, RuntimeError):
         return False
+
+
+def _is_explicit_local_path(source: str) -> bool:
+    """Return whether a template source is explicitly a filesystem path."""
+    if "://" in source or source.startswith(("gh:", "git@", "http:", "https:")):
+        return False
+    path = Path(source).expanduser()
+    return path.is_absolute() or source.startswith(("./", "../", "~"))
 
 
 def _copier_answers_source(path: Path = Path(".copier-answers.yml")) -> str | None:

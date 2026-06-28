@@ -101,8 +101,9 @@ class AgentRegistry:
     def _load_remote_agents(self) -> None:
         """Load persisted remote agent registrations from disk.
 
-        API keys are loaded from environment variables (AGENT_{NAME}_API_KEY),
-        never from the JSON file. Only the env var name is persisted.
+        API keys are loaded from AGENT_{NAME}_API_KEY only when
+        AGENT_{NAME}_BASE_URL matches the persisted base_url. Secret names
+        are never trusted from the JSON file.
         """
         if not self._persist_path.exists():
             return
@@ -121,7 +122,17 @@ class AgentRegistry:
                             "[AgentRegistry] Ignoring untrusted persisted "
                             f"api_key_env for agent '{name}'"
                         )
-                    api_key = os.environ.get(api_key_env, "")
+                    base_url_env = f"AGENT_{name.upper()}_BASE_URL"
+                    pinned_base_url = os.environ.get(base_url_env, "").strip()
+                    api_key = ""
+                    if pinned_base_url.rstrip("/") == base_url.rstrip("/"):
+                        api_key = os.environ.get(api_key_env, "")
+                    elif os.environ.get(api_key_env):
+                        logger.warning(
+                            "[AgentRegistry] Ignoring API key for persisted "
+                            f"agent '{name}' because {base_url_env} does not "
+                            "match base_url"
+                        )
 
                     agent = RemoteAgent(
                         name=name,
