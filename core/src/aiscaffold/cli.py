@@ -68,6 +68,15 @@ def _construct_mapping_without_duplicates(loader, node, deep=False):
     mapping = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
+        try:
+            hash(key)
+        except TypeError as e:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found unhashable key ({key})",
+                key_node.start_mark,
+            ) from e
         if key in mapping:
             raise ConstructorError(
                 "while constructing a mapping",

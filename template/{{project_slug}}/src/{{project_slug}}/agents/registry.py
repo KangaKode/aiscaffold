@@ -115,7 +115,19 @@ class AgentRegistry:
                     name = validate_identifier(entry["name"], "agent name")
                     base_url = validate_url(entry["base_url"], "base_url")
                     api_key_env = f"AGENT_{name.upper()}_API_KEY"
-                    api_key = os.environ.get(api_key_env, "")
+                    base_url_env = f"AGENT_{name.upper()}_BASE_URL"
+                    api_key = ""
+                    configured_base_url = os.environ.get(base_url_env, "")
+                    if configured_base_url:
+                        try:
+                            key_base_url = validate_url(configured_base_url, base_url_env)
+                        except ValidationError as e:
+                            logger.warning(
+                                f"[AgentRegistry] Ignoring invalid {base_url_env}: {e}"
+                            )
+                        else:
+                            if key_base_url.rstrip("/") == base_url.rstrip("/"):
+                                api_key = os.environ.get(api_key_env, "")
 
                     agent = RemoteAgent(
                         name=name,

@@ -109,6 +109,25 @@ def test_update_does_not_trust_duplicate_src_path(monkeypatch, tmp_path):
     assert calls == [(["copier", "update"], True)]
 
 
+def test_update_does_not_trust_malformed_answers(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        "? [unhashable]\n"
+        ": value\n"
+        f"_src_path: {cli.TEMPLATE_REPO}\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.update()
+
+    assert calls == [(["copier", "update"], True)]
+
+
 def test_update_trusts_roundtable_template(monkeypatch, tmp_path):
     calls = []
 
