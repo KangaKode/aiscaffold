@@ -32,6 +32,33 @@ def _get_template_source() -> str:
     return TEMPLATE_REPO
 
 
+def _is_trusted_template_source(source: str) -> bool:
+    """Only trust Copier tasks from the built-in roundtable template."""
+    if source == TEMPLATE_REPO:
+        return True
+    if "://" in source or source.startswith(("gh:", "git@", "git+")):
+        return False
+    try:
+        source_path = Path(source).expanduser().resolve()
+        local_template_path = Path(LOCAL_TEMPLATE).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return source_path == local_template_path and local_template_path.exists()
+
+
+def _read_copier_src_path(path: Path = Path(".copier-answers.yml")) -> str | None:
+    """Read the top-level _src_path value from Copier answers, failing closed."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("_src_path:"):
+                value = stripped.split(":", 1)[1].strip()
+                return value.strip("'\"") or None
+    except OSError:
+        return None
+    return None
+
+
 # =============================================================================
 # INIT
 # =============================================================================
@@ -48,7 +75,9 @@ def init(
     console.print(f"\n[bold blue]aiscaffold init[/bold blue]")
     console.print(f"Template: {source}\n")
 
-    cmd = ["copier", "copy", source, ".", "--trust"]
+    cmd = ["copier", "copy", source, "."]
+    if _is_trusted_template_source(source):
+        cmd.append("--trust")
     if name:
         cmd.extend(["--data", f"project_name={name}"])
 
@@ -234,7 +263,11 @@ def update():
     console.print("Pulling template updates...\n")
 
     try:
-        subprocess.run(["copier", "update", "--trust"], check=True)
+        cmd = ["copier", "update"]
+        source = _read_copier_src_path()
+        if source and _is_trusted_template_source(source):
+            cmd.append("--trust")
+        subprocess.run(cmd, check=True)
         console.print("\n[bold green]Update complete![/bold green]")
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")

@@ -114,7 +114,7 @@ class AgentRegistry:
                 try:
                     name = validate_identifier(entry["name"], "agent name")
                     base_url = validate_url(entry["base_url"], "base_url")
-                    api_key_env = entry.get("api_key_env", f"AGENT_{name.upper()}_API_KEY")
+                    api_key_env = f"AGENT_{name.upper()}_API_KEY"
                     api_key = os.environ.get(api_key_env, "")
 
                     agent = RemoteAgent(
