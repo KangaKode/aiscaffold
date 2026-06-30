@@ -72,6 +72,43 @@ def test_update_does_not_trust_custom_template(monkeypatch, tmp_path):
     assert calls == [(["copier", "update"], True)]
 
 
+def test_update_ignores_nested_trusted_src_path(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        "metadata:\n"
+        f"  _src_path: {cli.TEMPLATE_REPO}\n"
+        "_src_path: /tmp/template\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.update()
+
+    assert calls == [(["copier", "update"], True)]
+
+
+def test_update_does_not_trust_duplicate_src_path(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        "_src_path: /tmp/template\n"
+        f"_src_path: {cli.TEMPLATE_REPO}\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.update()
+
+    assert calls == [(["copier", "update"], True)]
+
+
 def test_update_trusts_roundtable_template(monkeypatch, tmp_path):
     calls = []
 

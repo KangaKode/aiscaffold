@@ -5,6 +5,7 @@ description = "AI project scaffold with 2026 best practices - CLI and core utili
 requires-python = ">=3.12"
 dependencies = [
     "copier>=9.0",
+    "PyYAML>=6.0.3",
     "typer>=0.12",
     "rich>=13.0",
 ]

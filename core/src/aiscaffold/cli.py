@@ -15,8 +15,10 @@ import sys
 from pathlib import Path
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
+from yaml.constructor import ConstructorError
 
 app = typer.Typer(help="AI project scaffold with 2026 best practices")
 console = Console()
@@ -49,14 +51,38 @@ def _is_trusted_template_source(source: str) -> bool:
 def _read_copier_src_path(path: Path = Path(".copier-answers.yml")) -> str | None:
     """Read the top-level _src_path value from Copier answers, failing closed."""
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("_src_path:"):
-                value = stripped.split(":", 1)[1].strip()
-                return value.strip("'\"") or None
-    except OSError:
+        answers = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+    except (OSError, ConstructorError, yaml.YAMLError):
         return None
-    return None
+    if not isinstance(answers, dict):
+        return None
+    src_path = answers.get("_src_path")
+    return src_path if isinstance(src_path, str) and src_path else None
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """YAML loader that rejects ambiguous duplicate keys."""
+
+
+def _construct_mapping_without_duplicates(loader, node, deep=False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key ({key})",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_mapping_without_duplicates,
+)
 
 
 # =============================================================================
