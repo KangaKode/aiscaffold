@@ -13,22 +13,69 @@ def test_init_trusts_copier_tasks(monkeypatch):
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
-    cli.init(name="my-project", template="/tmp/template")
+    cli.init(name="my-project", template=cli.TEMPLATE_REPO)
 
     assert calls == [
         (
             [
                 "copier",
                 "copy",
-                "/tmp/template",
+                cli.TEMPLATE_REPO,
                 ".",
                 "--trust",
                 "--data",
                 "project_name=my-project",
+                "--data",
+                "project_slug=my_project",
             ],
             True,
         )
     ]
+
+
+def test_init_does_not_trust_unrecognized_template(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.init(name="my-project", template="gh:attacker/evil-template")
+
+    assert calls == [
+        (
+            [
+                "copier",
+                "copy",
+                "gh:attacker/evil-template",
+                ".",
+                "--data",
+                "project_name=my-project",
+                "--data",
+                "project_slug=my_project",
+            ],
+            True,
+        )
+    ]
+
+
+def test_init_rejects_names_that_cannot_form_safe_slug(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.init(name='bad"; touch /tmp/pwned #', template=cli.TEMPLATE_REPO)
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected init to reject unsafe project name")
+
+    assert calls == []
 
 
 def test_update_trusts_copier_tasks(monkeypatch, tmp_path):
@@ -38,12 +85,54 @@ def test_update_trusts_copier_tasks(monkeypatch, tmp_path):
         calls.append((cmd, check))
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".copier-answers.yml").write_text("_src_path: /tmp/template\n")
+    (tmp_path / ".copier-answers.yml").write_text(f"_src_path: {cli.TEMPLATE_REPO}\n")
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     cli.update()
 
     assert calls == [(["copier", "update", "--trust"], True)]
+
+
+def test_update_rejects_untrusted_answer_source(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text("_src_path: gh:attacker/evil-template\n")
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject untrusted template source")
+
+    assert calls == []
+
+
+def test_update_rejects_duplicate_answer_sources(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        f"_src_path: {cli.TEMPLATE_REPO}\n_src_path: gh:attacker/evil-template\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject ambiguous template source")
+
+    assert calls == []
 
 
 def test_init_surfaces_copier_failures(monkeypatch):
@@ -53,7 +142,7 @@ def test_init_surfaces_copier_failures(monkeypatch):
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     try:
-        cli.init(name="my-project", template="/tmp/template")
+        cli.init(name="my-project", template=cli.TEMPLATE_REPO)
     except typer.Exit as exc:
         assert exc.exit_code == 1
     else:
