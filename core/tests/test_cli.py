@@ -95,6 +95,48 @@ def test_init_does_not_trust_vcs_like_source_that_resolves_locally(monkeypatch, 
     ]
 
 
+def test_init_does_not_trust_gitlab_shortcut_that_resolves_locally(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    local_template = tmp_path / "local-template"
+    local_template.mkdir()
+    vcs_parent = tmp_path / "gl:attacker"
+    vcs_parent.mkdir()
+    (vcs_parent / "evil-template").symlink_to(local_template, target_is_directory=True)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "LOCAL_TEMPLATE", str(local_template))
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.init(name="my-project", template="gl:attacker/evil-template")
+
+    assert "--trust" not in calls[0][0]
+
+
+def test_init_does_not_trust_git_plus_url_that_resolves_locally(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    local_template = tmp_path / "local-template"
+    local_template.mkdir()
+    vcs_parent = tmp_path / "git+https:"
+    vcs_parent.mkdir()
+    (vcs_parent / "evil.example").symlink_to(local_template, target_is_directory=True)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "LOCAL_TEMPLATE", str(local_template))
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.init(name="my-project", template="git+https://evil.example")
+
+    assert "--trust" not in calls[0][0]
+
+
 def test_init_rejects_names_that_cannot_form_safe_slug(monkeypatch):
     calls = []
 
@@ -233,6 +275,48 @@ def test_update_rejects_complex_answer_source_key(monkeypatch, tmp_path):
         assert exc.exit_code == 1
     else:
         raise AssertionError("expected update to reject complex YAML source key")
+
+    assert calls == []
+
+
+def test_update_rejects_tagged_answer_source_key(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        f"!custom _src_path: {cli.TEMPLATE_REPO}\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject tagged YAML source key")
+
+    assert calls == []
+
+
+def test_update_rejects_indented_explicit_answer_source_key(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(" ? _src_path\n : gh:attacker/evil-template\n")
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject indented complex YAML source key")
 
     assert calls == []
 
