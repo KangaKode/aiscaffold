@@ -60,6 +60,41 @@ def test_init_does_not_trust_unrecognized_template(monkeypatch):
     ]
 
 
+def test_init_does_not_trust_vcs_like_source_that_resolves_locally(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    local_template = tmp_path / "local-template"
+    local_template.mkdir()
+    vcs_parent = tmp_path / "gh:attacker"
+    vcs_parent.mkdir()
+    (vcs_parent / "evil-template").symlink_to(local_template, target_is_directory=True)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "LOCAL_TEMPLATE", str(local_template))
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.init(name="my-project", template="gh:attacker/evil-template")
+
+    assert calls == [
+        (
+            [
+                "copier",
+                "copy",
+                "gh:attacker/evil-template",
+                ".",
+                "--data",
+                "project_name=my-project",
+                "--data",
+                "project_slug=my_project",
+            ],
+            True,
+        )
+    ]
+
+
 def test_init_rejects_names_that_cannot_form_safe_slug(monkeypatch):
     calls = []
 
@@ -131,6 +166,73 @@ def test_update_rejects_duplicate_answer_sources(monkeypatch, tmp_path):
         assert exc.exit_code == 1
     else:
         raise AssertionError("expected update to reject ambiguous template source")
+
+    assert calls == []
+
+
+def test_update_rejects_tagged_duplicate_answer_sources(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        f"_src_path: {cli.TEMPLATE_REPO}\n!!str _src_path: gh:attacker/evil-template\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject YAML-tagged duplicate source")
+
+    assert calls == []
+
+
+def test_update_rejects_merge_answer_sources(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        "defaults: &defaults\n"
+        "  _src_path: gh:attacker/evil-template\n"
+        f"_src_path: {cli.TEMPLATE_REPO}\n"
+        "<<: *defaults\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject YAML merge source")
+
+    assert calls == []
+
+
+def test_update_rejects_complex_answer_source_key(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text("? _src_path\n: gh:attacker/evil-template\n")
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject complex YAML source key")
 
     assert calls == []
 
