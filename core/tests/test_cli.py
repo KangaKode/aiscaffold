@@ -234,6 +234,50 @@ def test_update_rejects_tagged_duplicate_answer_sources(monkeypatch, tmp_path):
     assert calls == []
 
 
+def test_update_rejects_explicit_string_tag_source_key(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        f"!!str _src_path: {cli.TEMPLATE_REPO}\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject explicitly tagged source key")
+
+    assert calls == []
+
+
+def test_update_rejects_explicit_string_tag_source_value(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        f"_src_path: !!str {cli.TEMPLATE_REPO}\n"
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject explicitly tagged source value")
+
+    assert calls == []
+
+
 def test_update_rejects_merge_answer_sources(monkeypatch, tmp_path):
     calls = []
 
@@ -317,6 +361,28 @@ def test_update_rejects_indented_explicit_answer_source_key(monkeypatch, tmp_pat
         assert exc.exit_code == 1
     else:
         raise AssertionError("expected update to reject indented complex YAML source key")
+
+    assert calls == []
+
+
+def test_update_rejects_source_with_surrounding_whitespace(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append((cmd, check))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".copier-answers.yml").write_text(
+        f'_src_path: " {cli.TEMPLATE_REPO} "\n'
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    try:
+        cli.update()
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:
+        raise AssertionError("expected update to reject whitespace-padded template source")
 
     assert calls == []
 
