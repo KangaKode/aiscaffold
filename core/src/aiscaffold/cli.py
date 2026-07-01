@@ -19,6 +19,7 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 from yaml.nodes import MappingNode, ScalarNode
+from yaml.tokens import TagToken
 
 app = typer.Typer(help="AI project scaffold with 2026 best practices")
 console = Console()
@@ -79,6 +80,9 @@ def _read_copier_source(answers_path: Path) -> str:
             raise ValueError("complex YAML keys are not supported in .copier-answers.yml")
 
     try:
+        for token in yaml.scan(answers):
+            if isinstance(token, TagToken):
+                raise ValueError("YAML tags are not supported in .copier-answers.yml")
         root = yaml.compose(answers)
     except yaml.YAMLError as e:
         raise ValueError(f"invalid .copier-answers.yml: {e}") from e
@@ -98,7 +102,9 @@ def _read_copier_source(answers_path: Path) -> str:
             continue
         if not isinstance(value_node, ScalarNode) or value_node.tag != "tag:yaml.org,2002:str":
             raise ValueError("_src_path must be a string scalar")
-        value = value_node.value.strip()
+        value = value_node.value
+        if value != value.strip():
+            raise ValueError("_src_path must not contain leading or trailing whitespace")
         if not value:
             raise ValueError("_src_path must not be empty")
         values.append(value)
