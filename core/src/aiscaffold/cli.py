@@ -8,15 +8,16 @@ Commands:
     aiscaffold update          Pull template updates
 """
 
-import ast
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
+from yaml.nodes import MappingNode, ScalarNode
 
 app = typer.Typer(help="AI project scaffold with 2026 best practices")
 console = Console()
@@ -28,6 +29,15 @@ TRUSTED_TEMPLATE_SOURCES = {
     "https://github.com/KangaKode/roundtable.git",
     "git@github.com:KangaKode/roundtable.git",
 }
+VCS_SOURCE_PREFIXES = (
+    "gh:",
+    "git@",
+    "git://",
+    "http://",
+    "https://",
+    "ssh://",
+    "file://",
+)
 LOCAL_TEMPLATE = str(Path(__file__).parent.parent.parent.parent / "aiscaffold-template")
 
 
@@ -57,6 +67,8 @@ def _is_trusted_template_source(source: str) -> bool:
     """Only trusted Roundtable templates may run Copier tasks."""
     if source in TRUSTED_TEMPLATE_SOURCES:
         return True
+    if source.lower().startswith(VCS_SOURCE_PREFIXES):
+        return False
 
     try:
         source_path = Path(source).expanduser().resolve()
@@ -66,34 +78,35 @@ def _is_trusted_template_source(source: str) -> bool:
     return local_path.exists() and source_path == local_path
 
 
-def _decode_simple_yaml_scalar(value: str) -> str:
-    value = value.strip()
-    if not value or value in {"|", ">"}:
-        raise ValueError("_src_path must be a scalar value")
-    if value[0] in {"'", '"'}:
-        try:
-            decoded = ast.literal_eval(value)
-        except (SyntaxError, ValueError) as e:
-            raise ValueError("_src_path must be a valid quoted string") from e
-        if not isinstance(decoded, str):
-            raise ValueError("_src_path must be a string")
-        return decoded.strip()
-    return value.split(" #", 1)[0].strip()
-
-
 def _read_copier_source(answers_path: Path) -> str:
-    """Read a simple, unambiguous top-level _src_path from Copier answers."""
+    """Read an unambiguous top-level _src_path using YAML semantics."""
+    answers = answers_path.read_text(encoding="utf-8")
+    for line in answers.splitlines():
+        if line.startswith("?"):
+            raise ValueError("complex YAML keys are not supported in .copier-answers.yml")
+
+    try:
+        root = yaml.compose(answers)
+    except yaml.YAMLError as e:
+        raise ValueError(f"invalid .copier-answers.yml: {e}") from e
+
+    if root is None or not isinstance(root, MappingNode):
+        raise ValueError(".copier-answers.yml must be a YAML mapping")
+
     values: list[str] = []
-    for line in answers_path.read_text(encoding="utf-8").splitlines():
-        if not line or line[0].isspace():
+    for key_node, value_node in root.value:
+        if not isinstance(key_node, ScalarNode):
+            raise ValueError("complex YAML keys are not supported in .copier-answers.yml")
+        if key_node.value == "<<":
+            raise ValueError("YAML merge keys are not supported in .copier-answers.yml")
+        if key_node.value != "_src_path":
             continue
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        for key in ("_src_path:", "'_src_path':", '"_src_path":'):
-            if stripped.startswith(key):
-                values.append(_decode_simple_yaml_scalar(stripped[len(key):]))
-                break
+        if not isinstance(value_node, ScalarNode) or value_node.tag != "tag:yaml.org,2002:str":
+            raise ValueError("_src_path must be a string scalar")
+        value = value_node.value.strip()
+        if not value:
+            raise ValueError("_src_path must not be empty")
+        values.append(value)
 
     if len(values) != 1:
         raise ValueError(".copier-answers.yml must contain exactly one _src_path")
