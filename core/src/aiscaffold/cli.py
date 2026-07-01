@@ -9,6 +9,7 @@ Commands:
 """
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -29,15 +30,7 @@ TRUSTED_TEMPLATE_SOURCES = {
     "https://github.com/KangaKode/roundtable.git",
     "git@github.com:KangaKode/roundtable.git",
 }
-VCS_SOURCE_PREFIXES = (
-    "gh:",
-    "git@",
-    "git://",
-    "http://",
-    "https://",
-    "ssh://",
-    "file://",
-)
+SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 LOCAL_TEMPLATE = str(Path(__file__).parent.parent.parent.parent / "aiscaffold-template")
 
 
@@ -67,7 +60,7 @@ def _is_trusted_template_source(source: str) -> bool:
     """Only trusted Roundtable templates may run Copier tasks."""
     if source in TRUSTED_TEMPLATE_SOURCES:
         return True
-    if source.lower().startswith(VCS_SOURCE_PREFIXES):
+    if source.startswith("git@") or SOURCE_SCHEME_RE.match(source):
         return False
 
     try:
@@ -82,7 +75,7 @@ def _read_copier_source(answers_path: Path) -> str:
     """Read an unambiguous top-level _src_path using YAML semantics."""
     answers = answers_path.read_text(encoding="utf-8")
     for line in answers.splitlines():
-        if line.startswith("?"):
+        if line.lstrip().startswith("?"):
             raise ValueError("complex YAML keys are not supported in .copier-answers.yml")
 
     try:
@@ -97,6 +90,8 @@ def _read_copier_source(answers_path: Path) -> str:
     for key_node, value_node in root.value:
         if not isinstance(key_node, ScalarNode):
             raise ValueError("complex YAML keys are not supported in .copier-answers.yml")
+        if key_node.tag != "tag:yaml.org,2002:str":
+            raise ValueError("YAML key tags are not supported in .copier-answers.yml")
         if key_node.value == "<<":
             raise ValueError("YAML merge keys are not supported in .copier-answers.yml")
         if key_node.value != "_src_path":
