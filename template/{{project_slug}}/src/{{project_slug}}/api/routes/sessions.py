@@ -30,16 +30,16 @@ router = APIRouter()
 
 MAX_SESSIONS = 500
 
-_sessions: OrderedDict[str, Thread] = OrderedDict()
+_sessions: OrderedDict[tuple[str, str, str], Thread] = OrderedDict()
 
 
-def _auth_scope(auth: AuthContext) -> str:
+def _auth_scope(auth: AuthContext) -> tuple[str, str]:
     """Scope in-memory sessions to the authenticated tenant and user."""
-    return f"{auth.tenant_id}:{auth.user_id}"
+    return (auth.tenant_id, auth.user_id)
 
 
-def _session_key(session_id: str, auth: AuthContext) -> str:
-    return f"{_auth_scope(auth)}:{session_id}"
+def _session_key(session_id: str, auth: AuthContext) -> tuple[str, str, str]:
+    return (*_auth_scope(auth), session_id)
 
 
 @router.post("/sessions", response_model=SessionResponse)
@@ -131,10 +131,10 @@ async def list_sessions(
     auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
     """List active sessions for the authenticated tenant and user."""
-    prefix = f"{_auth_scope(auth)}:"
+    scope = _auth_scope(auth)
     scoped_sessions = [
         t for key, t in _sessions.items()
-        if key.startswith(prefix)
+        if key[:2] == scope
     ]
     return {
         "sessions": [

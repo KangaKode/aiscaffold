@@ -21,6 +21,7 @@ Multi-tenancy:
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -49,6 +50,15 @@ class AuthContext:
     api_key: str | None = None
     user_id: str = "anon"
     tenant_id: str = "default"
+
+
+def auth_scope_key(auth: AuthContext) -> str:
+    """Return a stable delimiter-safe key for user-owned persisted artifacts."""
+    return json.dumps(
+        [auth.tenant_id, auth.user_id],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
 
 
 def get_api_key() -> str | None:

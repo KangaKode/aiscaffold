@@ -37,7 +37,7 @@ router = APIRouter()
 MAX_MESSAGE_LENGTH = 100_000
 MAX_SESSIONS = 500
 
-_orchestrators: OrderedDict[str, ChatOrchestrator] = OrderedDict()
+_orchestrators: OrderedDict[tuple[str, str, str], ChatOrchestrator] = OrderedDict()
 
 
 # =============================================================================
@@ -81,9 +81,9 @@ class EscalateRequest(BaseModel):
 # =============================================================================
 
 
-def _session_key(session_id: str, auth: AuthContext) -> str:
+def _session_key(session_id: str, auth: AuthContext) -> tuple[str, str, str]:
     """Bind session to authenticated user and tenant to prevent cross-session access."""
-    return f"{auth.tenant_id}:{auth.user_id}:{session_id}"
+    return (auth.tenant_id, auth.user_id, session_id)
 
 
 def _get_or_create_orchestrator(

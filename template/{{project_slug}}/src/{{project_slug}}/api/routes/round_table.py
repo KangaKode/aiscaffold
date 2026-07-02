@@ -23,7 +23,7 @@ from ...orchestration.round_table import (
     RoundTableTask,
 )
 from ...security import ValidationError, validate_length
-from ..middleware.auth import AuthContext, verify_api_key
+from ..middleware.auth import AuthContext, auth_scope_key, verify_api_key
 from ..middleware.rate_limit import check_rate_limit
 from ..models.requests import RoundTableTaskRequest
 from ..models.responses import (
@@ -40,19 +40,22 @@ router = APIRouter()
 MAX_CONTENT_SIZE = 500_000
 MAX_CACHED_RESULTS = 1000
 
-_results_cache: OrderedDict[str, RoundTableResultResponse] = OrderedDict()
+_results_cache: OrderedDict[tuple[str, str, str], RoundTableResultResponse] = OrderedDict()
 
 
 def _auth_scope(auth: AuthContext) -> str:
     """Scope user-owned round-table artifacts to the auth context."""
-    return f"{auth.tenant_id}:{auth.user_id}"
+    return auth_scope_key(auth)
 
 
-def _result_key(task_id: str, auth: AuthContext) -> str:
-    return f"{_auth_scope(auth)}:{task_id}"
+def _result_key(task_id: str, auth: AuthContext) -> tuple[str, str, str]:
+    return (auth.tenant_id, auth.user_id, task_id)
 
 
-def _cache_result(cache_key: str, result: RoundTableResultResponse) -> None:
+def _cache_result(
+    cache_key: tuple[str, str, str],
+    result: RoundTableResultResponse,
+) -> None:
     """Store result with LRU eviction."""
     _results_cache[cache_key] = result
     while len(_results_cache) > MAX_CACHED_RESULTS:
