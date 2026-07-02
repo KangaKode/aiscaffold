@@ -45,6 +45,48 @@ class TestAgentRegistry:
         assert registry.get("metadata_agent") is None
         assert registry.remote_count == 1
 
+    def test_load_remote_agents_ignores_persisted_api_key_env(self, tmp_path, monkeypatch):
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "safe_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                    "api_key_env": "OPENAI_API_KEY",
+                },
+            ],
+        }))
+        monkeypatch.setenv("OPENAI_API_KEY", "server-secret")
+        monkeypatch.setenv("AGENT_SAFE_AGENT_API_KEY", "agent-secret")
+        monkeypatch.setenv("AGENT_SAFE_AGENT_BASE_URL", "https://example.com")
+
+        registry = AgentRegistry(persist_path=persist_path)
+        agent = registry.get("safe_agent")
+
+        assert agent is not None
+        assert agent._headers()["Authorization"] == "Bearer agent-secret"
+
+    def test_load_remote_agents_requires_base_url_match_for_api_key(self, tmp_path, monkeypatch):
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "safe_agent",
+                    "domain": "testing",
+                    "base_url": "https://attacker.example",
+                },
+            ],
+        }))
+        monkeypatch.setenv("AGENT_SAFE_AGENT_API_KEY", "agent-secret")
+        monkeypatch.setenv("AGENT_SAFE_AGENT_BASE_URL", "https://example.com")
+
+        registry = AgentRegistry(persist_path=persist_path)
+        agent = registry.get("safe_agent")
+
+        assert agent is not None
+        assert "Authorization" not in agent._headers()
+
     def test_unregister_removes(self, mock_agent, tmp_path):
         registry = AgentRegistry(persist_path=tmp_path / "agents.json")
         registry.register_local(mock_agent)
