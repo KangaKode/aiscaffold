@@ -354,7 +354,7 @@ flowchart LR
 
 - `AuthContext` propagates `tenant_id` and `user_id` to all routes
 - Agent visibility controls: `public` (all tenants), `team` (same tenant), `private`
-- Session isolation: `{tenant_id}:{user_id}:{session_id}`
+- Session isolation: structured `(tenant_id, user_id, session_id)` cache keys
 - Data layer already has `project_id` in all tables (maps to tenant isolation)
 - Single-tenant deployments use defaults transparently
 
