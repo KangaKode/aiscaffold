@@ -1,6 +1,7 @@
 """Unit tests for the learning module -- feedback, trust, check-ins, profile."""
 
 import pytest
+from {{project_slug}}.api.middleware.auth import AuthContext, auth_scope_key
 from {{project_slug}}.learning.models import FeedbackSignal, UserPreference, SignalType, CheckInStatus
 from {{project_slug}}.learning.feedback_tracker import FeedbackTracker
 from {{project_slug}}.learning.agent_trust import AgentTrustManager, DEFAULT_TRUST, TRUST_FLOOR, TRUST_CEILING
@@ -511,6 +512,30 @@ class TestTranscriptIndexer:
 
         assert indexer.indexed_count == 2
         assert [r.metadata["owner_key"] for r in results.results] == ["tenant-a:bob"]
+
+    def test_search_owner_keys_reject_delimiter_collisions(self, indexer):
+        owner_key = auth_scope_key(AuthContext(user_id="alice:bob", tenant_id="tenant-a"))
+        colliding_key = auth_scope_key(AuthContext(user_id="bob", tenant_id="tenant-a:alice"))
+        assert owner_key != colliding_key
+
+        indexer.index_result(
+            MockRoundTableResult(task_id="shared_task"),
+            task_content="Investigate private billing workflow",
+            owner_key=owner_key,
+        )
+        indexer.index_result(
+            MockRoundTableResult(task_id="shared_task"),
+            task_content="Investigate private billing workflow",
+            owner_key=colliding_key,
+        )
+
+        results = indexer.search(
+            "Task ID: shared_task\nTask: Investigate private billing workflow",
+            owner_key=colliding_key,
+        )
+
+        assert indexer.indexed_count == 2
+        assert [r.metadata["owner_key"] for r in results.results] == [colliding_key]
 
     def test_get_by_task_id(self, indexer):
         indexer.index_result(
