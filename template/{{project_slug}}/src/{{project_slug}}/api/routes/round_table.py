@@ -17,6 +17,7 @@ from collections import OrderedDict
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ...llm import create_client
+from ...orchestration.deliberation_audit import audited_round_table
 from ...orchestration.round_table import (
     RoundTable,
     RoundTableConfig,
@@ -134,7 +135,17 @@ async def submit_task(
     try:
         llm = getattr(request.app.state, "llm_client", None) or create_client()
         rt = RoundTable(agents=agents, config=config, llm_client=llm, registry=registry)
-        result = await rt.run(task)
+        auditor = getattr(request.app.state, "deliberation_auditor", None)
+        if auditor is not None:
+            result = await audited_round_table(
+                rt,
+                task,
+                auditor,
+                tenant_id=auth.tenant_id,
+                correlation_id=task_id,
+            )
+        else:
+            result = await rt.run(task)
 
         try:
             indexer = getattr(request.app.state, "transcript_indexer", None)

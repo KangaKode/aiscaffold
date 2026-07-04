@@ -14,7 +14,8 @@ Table names and columns are defined ONCE here (TABLE_COLUMNS). Every SQL
 identifier is validated against that allowlist before interpolation;
 values only ever travel through parameterized placeholders.
 
-Tables: corrections, activity_events, agent_dispatch_stats, integrity_flags.
+Tables: corrections, activity_events, agent_dispatch_stats, integrity_flags,
+audit_events, budget_spend.
 Schema changes go through MIGRATIONS (forward-only, tracked in the
 schema_version table).
 
@@ -86,6 +87,25 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
         "created_at": "TEXT NOT NULL",
         "resolved": "INTEGER DEFAULT 0",
     },
+    "audit_events": {
+        "id": "TEXT PRIMARY KEY",
+        "correlation_id": "TEXT NOT NULL",
+        "event_type": "TEXT NOT NULL",
+        "tenant_id": "TEXT NOT NULL DEFAULT 'default'",
+        "phase": "TEXT DEFAULT ''",
+        "agent_count": "INTEGER DEFAULT 0",
+        "duration_seconds": "REAL DEFAULT 0",
+        "outcome": "TEXT DEFAULT ''",
+        "detail_json": "TEXT DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL",
+    },
+    "budget_spend": {
+        "id": "TEXT PRIMARY KEY",
+        "tenant_id": "TEXT NOT NULL DEFAULT 'default'",
+        "amount_usd": "REAL DEFAULT 0",
+        "model": "TEXT DEFAULT ''",
+        "created_at": "TEXT NOT NULL",
+    },
 }
 
 INDEX_STATEMENTS = [
@@ -97,6 +117,10 @@ INDEX_STATEMENTS = [
     " ON agent_dispatch_stats(agent_id, dispatched_at)",
     "CREATE INDEX IF NOT EXISTS idx_integrity_tenant"
     " ON integrity_flags(tenant_id, resolved, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_correlation"
+    " ON audit_events(correlation_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_budget_spend_tenant"
+    " ON budget_spend(tenant_id, created_at)",
 ]
 
 SCHEMA_VERSION_DDL = (
@@ -115,11 +139,31 @@ def _baseline_statements() -> list[str]:
     return statements
 
 
+def _table_statements(table: str) -> list[str]:
+    """Idempotent CREATE TABLE for one table (for post-baseline migrations)."""
+    cols = ", ".join(f"{name} {ddl}" for name, ddl in TABLE_COLUMNS[table].items())
+    return [f"CREATE TABLE IF NOT EXISTS {table} ({cols})"]
+
+
 # Forward-only migrations. MIGRATIONS[i] is version i+1. Every statement
 # must be idempotent (IF NOT EXISTS / ADD COLUMN guarded by a new version)
 # and valid on both SQLite and Postgres.
 MIGRATIONS: list[list[str]] = [
     _baseline_statements(),
+    # audit_events: deliberation audit trail (metadata-only). Baseline
+    # already creates it on fresh installs; this upgrades existing DBs.
+    _table_statements("audit_events")
+    + [
+        "CREATE INDEX IF NOT EXISTS idx_audit_correlation"
+        " ON audit_events(correlation_id, created_at)",
+    ],
+    # budget_spend: per-tenant LLM cost ledger. Baseline already creates
+    # it on fresh installs; this upgrades existing DBs.
+    _table_statements("budget_spend")
+    + [
+        "CREATE INDEX IF NOT EXISTS idx_budget_spend_tenant"
+        " ON budget_spend(tenant_id, created_at)",
+    ],
 ]
 
 

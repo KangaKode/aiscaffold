@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..security.prompt_guard import sanitize_for_prompt
+from .budget_manager import enforce_budget, record_response_spend
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,10 @@ DEFAULT_MAX_RETRIES = 2
 DEFAULT_MAX_PROMPT_LENGTH = 200_000
 RETRY_BASE_DELAY = 1.0
 RETRY_MAX_DELAY = 30.0
+RETRYABLE_ERRORS = {
+    "RateLimitError", "APITimeoutError", "InternalServerError",
+    "ServiceUnavailableError", "APIConnectionError", "Timeout", "ConnectError",
+}
 
 # Cost per 1K tokens (approximate, varies by model -- override via config)
 COST_RATES = {
@@ -121,6 +126,7 @@ class LLMClient:
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_prompt_length: int = DEFAULT_MAX_PROMPT_LENGTH,
         max_cost_usd: float | None = None,
+        budget_manager: Any = None,
     ):
         self._provider = provider.lower()
         self._model = model or self._default_model()
@@ -129,6 +135,8 @@ class LLMClient:
         self._max_retries = max_retries
         self._max_prompt_length = max_prompt_length
         self._max_cost_usd = max_cost_usd
+        # Optional BudgetManager; None = no checks (zero-config unchanged)
+        self.budget_manager = budget_manager
         self._client: Any = None
         self._total_usage = TokenUsage()
 
@@ -210,6 +218,8 @@ class LLMClient:
                 provider=self._provider,
                 model=self._model,
             )
+
+        enforce_budget(self.budget_manager)  # raises when tenant is exhausted
 
         if self._client is None:
             return LLMResponse(
@@ -424,25 +434,18 @@ class LLMClient:
 
     def _is_retryable(self, error: Exception) -> bool:
         """Check if an error is transient and worth retrying."""
-        error_type = type(error).__name__
-        retryable_types = {
-            "RateLimitError",
-            "APITimeoutError",
-            "InternalServerError",
-            "ServiceUnavailableError",
-            "APIConnectionError",
-            "Timeout",
-            "ConnectError",
-        }
-        return error_type in retryable_types
+        return type(error).__name__ in RETRYABLE_ERRORS
 
     def _track_usage(self, usage: TokenUsage) -> None:
-        """Accumulate usage stats across calls."""
+        """Accumulate usage stats and record tenant spend when budgets are on."""
         self._total_usage.input_tokens += usage.input_tokens
         self._total_usage.output_tokens += usage.output_tokens
         self._total_usage.cached_input_tokens += usage.cached_input_tokens
         self._total_usage.total_tokens += usage.total_tokens
         self._total_usage.estimated_cost_usd += usage.estimated_cost_usd
+        record_response_spend(
+            self.budget_manager, usage.estimated_cost_usd, self._model
+        )
 
     @property
     def total_usage(self) -> TokenUsage:

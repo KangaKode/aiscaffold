@@ -12,9 +12,11 @@ Four-eyes rule: by default the approver must be a different person than the
 proposer (require_four_eyes=True). Single-operator deployments can pass
 require_four_eyes=False to allow self-approval.
 
-Security: rendered correction text passes through sanitize_for_prompt so
-stored content cannot inject into prompts. Rendering respects a character
-budget (CORRECTION_CONTEXT_BUDGET env override).
+Security: PII is redacted from correction text before it is persisted
+(security.pii), and rendered correction text passes through
+sanitize_for_prompt so stored content cannot inject into prompts.
+Rendering respects a character budget (CORRECTION_CONTEXT_BUDGET env
+override). An optional ContentPolicy can gate propose().
 
 Keep this file under 400 lines.
 """
@@ -28,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from ..security.pii import redact_pii
 from ..security.prompt_guard import sanitize_for_prompt
 from .store import LearningStore
 
@@ -97,6 +100,10 @@ class CorrectionsManager:
     AgentTrustManager by building a FeedbackSignal(signal_type=
     SignalType.MODIFY, agent_id=correction.agent_id) and calling
     update_from_signal.
+
+    content_policy: optional ContentPolicy instance. When set, propose()
+    screens the correction text: "rejected" raises ValueError, "flagged"
+    is recorded in metadata but still routes to the normal check-in flow.
     """
 
     def __init__(
@@ -105,11 +112,13 @@ class CorrectionsManager:
         checkin_manager=None,
         require_four_eyes: bool = True,
         on_approve: Callable[[Correction], None] | None = None,
+        content_policy=None,
     ):
         self._store = store
         self._checkin_manager = checkin_manager
         self._require_four_eyes = require_four_eyes
         self._on_approve = on_approve
+        self._content_policy = content_policy
 
     def propose(
         self,
@@ -122,7 +131,43 @@ class CorrectionsManager:
         session_id: str = "",
         created_by: str = "",
     ) -> Correction:
-        """Persist a PROPOSED correction and (if configured) open a check-in."""
+        """
+        Persist a PROPOSED correction and (if configured) open a check-in.
+
+        PII in original_claim / corrected_claim / reason is redacted
+        before anything is persisted (counts land in metadata). When a
+        content policy is configured, "rejected" text raises ValueError;
+        "flagged" text is recorded in metadata and still proposed.
+        """
+        metadata: dict[str, Any] = {}
+
+        pii_counts: dict[str, int] = {}
+        redacted_fields = []
+        for text in (original_claim, corrected_claim, reason):
+            redacted, counts = redact_pii(text)
+            redacted_fields.append(redacted)
+            for category, n in counts.items():
+                pii_counts[category] = pii_counts.get(category, 0) + n
+        original_claim, corrected_claim, reason = redacted_fields
+        if pii_counts:
+            metadata["pii_redacted"] = pii_counts
+            logger.info(f"[Corrections] Redacted PII in proposal: {pii_counts}")
+
+        if self._content_policy is not None:
+            outcome, reasons = self._content_policy.screen_knowledge_write(
+                f"{original_claim}\n{corrected_claim}\n{reason}",
+                tenant_id=tenant_id,
+            )
+            if outcome == "rejected":
+                raise ValueError(
+                    f"Correction rejected by content policy: {reasons}"
+                )
+            if outcome == "flagged":
+                metadata["content_policy"] = {
+                    "outcome": outcome,
+                    "reasons": reasons,
+                }
+
         correction = Correction(
             agent_id=agent_id,
             original_claim=original_claim,
@@ -132,6 +177,7 @@ class CorrectionsManager:
             tenant_id=tenant_id,
             session_id=session_id,
             created_by=created_by,
+            metadata=metadata,
         )
         self._store.insert("corrections", self._to_row(correction))
         logger.info(f"[Corrections] Proposed {correction.id} for agent '{agent_id}'")

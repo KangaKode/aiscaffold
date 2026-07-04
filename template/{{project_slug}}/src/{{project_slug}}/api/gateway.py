@@ -16,7 +16,7 @@ Security:
   - Rate limiting via middleware
   - All external input validated at boundary
 
-Keep this file under 200 lines. Route logic lives in routes/.
+Keep this file under 250 lines. Route logic lives in routes/.
 """
 
 import logging
@@ -35,7 +35,20 @@ from ..learning.user_profile import UserProfileManager
 from ..llm import create_client as create_llm_client
 from ..orchestration.round_table import RoundTableConfig
 from .middleware.auth import check_production_auth
-from .routes import activity, agents, chat, checkins, feedback, health, preferences, round_table, sessions, webhooks
+from .routes import (
+    activity,
+    agents,
+    audit,
+    budgets,
+    chat,
+    checkins,
+    feedback,
+    health,
+    preferences,
+    round_table,
+    sessions,
+    webhooks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +155,23 @@ def create_app(
         except Exception as e:
             logger.warning(f"[Gateway] Activity tracking init failed (non-fatal): {e}")
 
+    # Governance: budget manager (attached to the LLM client when both exist)
+    # and the deliberation audit trail. Both reuse the learning store and
+    # degrade to no-ops when it is unavailable.
+    try:
+        from ..llm.budget_manager import BudgetManager
+        from ..orchestration.deliberation_audit import DeliberationAuditor
+
+        gov_store = getattr(application.state, "learning_store", None)
+        budget_manager = BudgetManager(store=gov_store)
+        application.state.budget_manager = budget_manager
+        if llm_client is not None:
+            llm_client.budget_manager = budget_manager
+        application.state.deliberation_auditor = DeliberationAuditor(store=gov_store)
+        logger.info("[Gateway] Governance (budgets + audit trail) initialized")
+    except Exception as e:
+        logger.warning(f"[Gateway] Governance init failed (non-fatal): {e}")
+
     try:
         from ..learning.rag.transcript_indexer import TranscriptIndexer
 
@@ -188,6 +218,12 @@ def create_app(
     )
     application.include_router(
         activity.router, prefix="/api/v1", tags=["Activity"]
+    )
+    application.include_router(
+        budgets.router, prefix="/api/v1", tags=["Governance - Budgets"]
+    )
+    application.include_router(
+        audit.router, prefix="/api/v1", tags=["Governance - Audit"]
     )
 
     logger.info("[Gateway] API gateway initialized")

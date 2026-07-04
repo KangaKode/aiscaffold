@@ -30,8 +30,10 @@ from datetime import datetime
 from typing import Any
 
 from ..llm import CacheablePrompt, LLMClient
+from ..llm.budget_manager import set_tenant_context
 from ..security.prompt_guard import sanitize_for_prompt, wrap_user_content
 from .agent_router import AgentRouter, RoutingDecision
+from .autonomy import resolve_policy
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +165,7 @@ class ChatOrchestrator:
         trust_scores: dict[str, float] | None = None,
         context: str = "",
         tenant_id: str = "default",
+        autonomy_level: int | None = None,
     ) -> ChatResponse:
         """
         Process a chat message with selective specialist consultation.
@@ -172,11 +175,20 @@ class ChatOrchestrator:
             trust_scores: Optional agent trust scores from the learning system.
             context: Optional additional context (e.g., user preferences).
             tenant_id: Tenant scope -- only tenant-visible agents are consulted.
+            autonomy_level: Optional autonomy level (1-6). The resolved
+                policy caps specialist count and may force escalation on
+                specialist conflict.
 
         Returns:
             ChatResponse with content, consultations, and cross-check results.
         """
         start = datetime.now()
+        set_tenant_context(tenant_id)
+
+        policy = resolve_policy(autonomy_level) if autonomy_level is not None else None
+        effective_max_agents = self._config.max_agents
+        if policy is not None:
+            effective_max_agents = min(effective_max_agents, policy.max_specialists)
 
         routing = self._router.route(
             message, trust_scores=trust_scores, tenant_id=tenant_id
@@ -194,7 +206,7 @@ class ChatOrchestrator:
             )
 
         consultation_agents = list(routing.selected_agents)
-        consultation_agents = consultation_agents[: self._config.max_agents]
+        consultation_agents = consultation_agents[:effective_max_agents]
         for sa in self._get_safety_agents():
             if sa.name not in [a.name for a in consultation_agents]:
                 consultation_agents.append(sa)
@@ -242,6 +254,14 @@ class ChatOrchestrator:
         if routing.should_escalate:
             escalation_suggested = True
             escalation_reason = escalation_reason or routing.escalation_reason
+
+        conflicts_found = cross_check is not None and bool(cross_check.conflicts)
+        if policy is not None and policy.auto_escalate_on_conflict and conflicts_found:
+            escalation_suggested = True
+            escalation_reason = escalation_reason or (
+                f"Autonomy level {policy.level} escalates on specialist "
+                f"conflict ({len(cross_check.conflicts)} conflict(s) found)"
+            )
 
         duration = (datetime.now() - start).total_seconds()
 
