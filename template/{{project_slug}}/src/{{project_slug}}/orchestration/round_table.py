@@ -348,7 +348,7 @@ class RoundTable:
         """Run evidence enforcement pipeline on each analysis."""
         try:
             from ..enforcement import EvidenceEnforcementPipeline
-
+            from ..llm.json_parser import extract_json
             pipeline = EvidenceEnforcementPipeline(llm_client=self.llm)
             enforced = []
             for analysis in analyses:
@@ -363,23 +363,25 @@ class RoundTable:
                 if result.outcome == "rejected":
                     logger.warning(f"[RoundTable] Dropping rejected analysis from {analysis.agent_name}")
                     continue
-                if result.corrected_content and result.outcome != "accepted":
+                if result.corrected_content:
                     try:
-                        from ..llm.json_parser import extract_json
                         corrected_data = extract_json(result.corrected_content)
                     except Exception:
                         corrected_data = None
-                    if not isinstance(corrected_data, list):
+                    if isinstance(corrected_data, list):
+                        analysis = AgentAnalysis(
+                            agent_name=analysis.agent_name,
+                            domain=analysis.domain,
+                            observations=corrected_data,
+                            recommendations=analysis.recommendations,
+                            confidence=analysis.confidence,
+                            raw_response=analysis.raw_response,
+                        )
+                    elif result.outcome != "accepted":
                         logger.warning(
                             f"[RoundTable] Dropping {analysis.agent_name}: corrected analysis was not parseable"
                         )
                         continue
-                    analysis = AgentAnalysis(
-                        agent_name=analysis.agent_name,
-                        domain=analysis.domain,
-                        observations=corrected_data,
-                        recommendations=analysis.recommendations,
-                    )
                 enforced.append(analysis)
             return enforced
         except Exception as e:
