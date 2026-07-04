@@ -17,8 +17,10 @@ Security:
   - All specialist responses sanitized before synthesis
   - Input validated and size-limited
   - Same prompt injection defense as round table
+  - Safety agents (evidence, skeptic, sentinel) join every consultation
+  - Synthesis output checked by FactChecker before returning to the user
 
-Keep this file under 400 lines.
+Keep this file under 500 lines (helpers live in chat_helpers.py).
 """
 
 import asyncio
@@ -29,7 +31,7 @@ from datetime import datetime
 from typing import Any
 
 from ..llm import CacheablePrompt, LLMClient
-from ..security.prompt_guard import sanitize_for_prompt
+from ..security.prompt_guard import sanitize_for_prompt, wrap_user_content
 from .agent_router import AgentRouter, RoutingDecision
 
 logger = logging.getLogger(__name__)
@@ -77,6 +79,8 @@ class ChatResponse:
     routing_decision: RoutingDecision | None = None
     duration_seconds: float = 0.0
     agents_consulted: list[str] = field(default_factory=list)
+    enforcement_result: str = ""
+    enforcement_violations: list[str] = field(default_factory=list)
 
 
 # =============================================================================
@@ -93,6 +97,7 @@ class ChatConfig:
     auto_escalate_on_conflict: bool = False
     escalation_threshold: float = ESCALATION_CONFLICT_THRESHOLD
     max_message_length: int = 100_000
+    include_safety_agents: bool = True
 
 
 # =============================================================================
@@ -129,11 +134,11 @@ class ChatOrchestrator:
         self._config = config or ChatConfig()
         self._conversation_history: list[dict] = []
 
-    def _system_prompt(self) -> str:
+    def _system_prompt(self, tenant_id: str = "default") -> str:
         """Stable orchestrator system prompt (cached for token savings)."""
         agent_info = ""
         if self._registry and self._registry.count > 0:
-            agents = self._registry.get_all_entries()
+            agents = self._registry.list_for_tenant(tenant_id)
             agent_info = "Available specialists:\n" + "\n".join(
                 f"  - {e.agent.name}: {e.agent.domain}"
                 for e in agents
@@ -158,6 +163,7 @@ class ChatOrchestrator:
         message: str,
         trust_scores: dict[str, float] | None = None,
         context: str = "",
+        tenant_id: str = "default",
     ) -> ChatResponse:
         """
         Process a chat message with selective specialist consultation.
@@ -166,13 +172,16 @@ class ChatOrchestrator:
             message: The user's message.
             trust_scores: Optional agent trust scores from the learning system.
             context: Optional additional context (e.g., user preferences).
+            tenant_id: Tenant scope -- only tenant-visible agents are consulted.
 
         Returns:
             ChatResponse with content, consultations, and cross-check results.
         """
         start = datetime.now()
 
-        routing = self._router.route(message, trust_scores=trust_scores)
+        routing = self._router.route(
+            message, trust_scores=trust_scores, tenant_id=tenant_id
+        )
 
         if routing.should_escalate and not routing.selected_agents:
             return ChatResponse(
@@ -185,10 +194,16 @@ class ChatOrchestrator:
                 routing_decision=routing,
             )
 
+        consultation_agents = list(routing.selected_agents)
+        consultation_agents = consultation_agents[: self._config.max_agents]
+        for sa in self._get_safety_agents():
+            if sa.name not in [a.name for a in consultation_agents]:
+                consultation_agents.append(sa)
+
         consultations = []
-        if routing.selected_agents:
+        if consultation_agents:
             consultations = await self._consult_specialists(
-                message, routing.selected_agents
+                message, consultation_agents
             )
 
         cross_check = None
@@ -196,15 +211,34 @@ class ChatOrchestrator:
             cross_check = await self._cross_check(consultations)
 
         response_content = await self._synthesize(
-            message, consultations, cross_check, context
+            message, consultations, cross_check, context, tenant_id
         )
+
+        enforcement_result = "accepted"
+        enforcement_violations: list[str] = []
+        if consultations:
+            (
+                response_content,
+                enforcement_result,
+                enforcement_violations,
+            ) = await self._enforce_synthesis(
+                response_content, message, consultations,
+                cross_check, context, tenant_id,
+            )
 
         escalation_suggested = False
         escalation_reason = ""
 
+        if enforcement_result == "rejected":
+            escalation_suggested = True
+            escalation_reason = (
+                "Enforcement rejected synthesis; "
+                "consider the round table for deeper analysis"
+            )
+
         if cross_check and cross_check.should_escalate:
             escalation_suggested = True
-            escalation_reason = cross_check.escalation_reason
+            escalation_reason = escalation_reason or cross_check.escalation_reason
 
         if routing.should_escalate:
             escalation_suggested = True
@@ -231,7 +265,25 @@ class ChatOrchestrator:
             routing_decision=routing,
             duration_seconds=duration,
             agents_consulted=[c.agent_name for c in consultations],
+            enforcement_result=enforcement_result,
+            enforcement_violations=enforcement_violations,
         )
+
+    def _get_safety_agents(self) -> list:
+        """Return evidence + skeptic + sentinel agents for mandatory chat oversight."""
+        if not self._config.include_safety_agents:
+            return []
+        try:
+            from ..agents.core import get_core_agents
+
+            core = get_core_agents(llm_client=self._llm)
+            return [
+                a for a in core
+                if a.name in ("evidence", "skeptic", "sentinel")
+            ]
+        except Exception:
+            logger.warning("[ChatOrchestrator] Could not load safety agents")
+            return []
 
     async def _consult_specialists(
         self,
@@ -306,7 +358,9 @@ class ChatOrchestrator:
                 "Return JSON: {\"agreement_level\": float, \"consensus_points\": [...], "
                 "\"conflicts\": [{\"point\": str, \"views\": [...]}]}"
             ),
-            user_message=f"Specialist responses:\n{consultation_summary}",
+            user_message=wrap_user_content(
+                consultation_summary, label="SPECIALIST_RESPONSES"
+            ),
         )
 
         response = await self._llm.call(
@@ -336,12 +390,34 @@ class ChatOrchestrator:
         except (json.JSONDecodeError, ValueError):
             return CrossCheckResult(agreement_level=0.5)
 
+    async def _enforce_synthesis(
+        self,
+        content: str,
+        message: str,
+        consultations: list[ConsultationResult],
+        cross_check: CrossCheckResult | None,
+        context: str,
+        tenant_id: str,
+    ) -> tuple[str, str, list[str]]:
+        """Run FactChecker on synthesis. Delegates to chat_helpers."""
+        from .chat_helpers import enforce_chat_synthesis
+
+        async def _re_synthesize(correction: str = "") -> str:
+            return await self._synthesize(
+                message, consultations, cross_check,
+                context, tenant_id, correction=correction,
+            )
+
+        return await enforce_chat_synthesis(content, _re_synthesize)
+
     async def _synthesize(
         self,
         message: str,
         consultations: list[ConsultationResult],
         cross_check: CrossCheckResult | None,
         context: str,
+        tenant_id: str = "default",
+        correction: str = "",
     ) -> str:
         """Synthesize specialist consultations into a user-facing response."""
         consultation_text = ""
@@ -353,6 +429,8 @@ class ChatOrchestrator:
                     f"{c.response[:3000]}"
                 )
             consultation_text = "\n\n".join(parts)
+
+        correction_note = f"\nCORRECTION: {correction}\n" if correction else ""
 
         conflict_note = ""
         if cross_check and cross_check.conflicts:
@@ -370,12 +448,13 @@ class ChatOrchestrator:
             )
 
         prompt = CacheablePrompt(
-            system=self._system_prompt(),
+            system=self._system_prompt(tenant_id=tenant_id),
             context=(
                 f"{f'User context: {context}' if context else ''}\n\n"
                 f"{f'Conversation history:{chr(10)}{history_text}' if history_text else ''}\n\n"
                 f"{f'Specialist consultations:{chr(10)}{consultation_text}' if consultation_text else ''}"
                 f"{conflict_note}"
+                f"{correction_note}"
             ),
             user_message=message,
         )

@@ -60,6 +60,7 @@ class AgentRouter:
         self,
         query: str,
         trust_scores: dict[str, float] | None = None,
+        tenant_id: str = "default",
     ) -> RoutingDecision:
         """
         Select agents for a query based on domain matching and trust.
@@ -67,6 +68,7 @@ class AgentRouter:
         Args:
             query: The user's message.
             trust_scores: Optional {agent_name: score} from learning system.
+            tenant_id: Tenant scope -- only tenant-visible agents are candidates.
 
         Returns:
             RoutingDecision with selected agents and reasoning.
@@ -77,7 +79,7 @@ class AgentRouter:
                 escalation_reason="No agents registered",
             )
 
-        all_entries = self._registry.get_all_entries()
+        all_entries = self._registry.list_for_tenant(tenant_id)
         scored: list[tuple[float, Any, str]] = []
 
         query_lower = query.lower()
@@ -150,6 +152,7 @@ class AgentRouter:
         query: str,
         llm_suggested_agents: list[str],
         trust_scores: dict[str, float] | None = None,
+        tenant_id: str = "default",
     ) -> RoutingDecision:
         """
         Route using LLM-suggested agent names, validated against registry.
@@ -159,19 +162,25 @@ class AgentRouter:
         and falls back to domain matching for any that don't exist.
         """
         if self._registry is None:
-            return self.route(query, trust_scores)
+            return self.route(query, trust_scores, tenant_id=tenant_id)
 
         validated = []
         reasons = {}
 
+        # Validate suggestions against the tenant-visible set only, so an
+        # LLM suggestion can never pull in another tenant's private agents.
+        visible = {
+            entry.agent.name: entry.agent
+            for entry in self._registry.list_for_tenant(tenant_id)
+        }
         for name in llm_suggested_agents[: self._max_agents]:
-            agent = self._registry.get(name)
+            agent = visible.get(name)
             if agent is not None:
                 validated.append(agent)
                 reasons[name] = "LLM-selected"
 
         if len(validated) < self._min_agents:
-            fallback = self.route(query, trust_scores)
+            fallback = self.route(query, trust_scores, tenant_id=tenant_id)
             for agent in fallback.selected_agents:
                 if agent.name not in reasons:
                     validated.append(agent)

@@ -167,6 +167,18 @@ class TestChatAPI:
         assert r.status_code == 200
         assert r.json()["status"] == "cleared"
 
+    @pytest.mark.asyncio
+    async def test_chat_response_includes_enforcement_fields(self, client):
+        r = await client.post("/api/v1/chat", json={
+            "message": "Hello, what can you do?",
+            "session_id": "enforcement_fields_test",
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert "enforcement_result" in data
+        assert "enforcement_violations" in data
+        assert isinstance(data["enforcement_violations"], list)
+
 
 # =============================================================================
 # SESSIONS

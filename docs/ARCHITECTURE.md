@@ -57,7 +57,7 @@ flowchart TD
     Synthesis --> Response[Auditable Response]
 ```
 
-The chat orchestrator handles normal real-time requests. It routes to the most relevant specialists and escalates to the full round table when confidence is low or agents disagree.
+The chat orchestrator handles normal real-time requests. It routes to the most relevant specialists and escalates to the full round table when confidence is low or agents disagree. Routing is tenant-scoped (only agents visible to the caller's tenant are candidates, including LLM-suggested ones), and the evidence, skeptic, and sentinel safety agents join every consultation. Each synthesis is checked by the FactChecker; a rejected synthesis is re-generated once with a correction note, and a repeat rejection triggers an escalation suggestion.
 
 The round table engine handles complex decisions through four phases:
 

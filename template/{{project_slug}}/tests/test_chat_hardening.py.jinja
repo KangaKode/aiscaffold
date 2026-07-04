@@ -1,0 +1,169 @@
+"""Chat hardening tests -- tenant-scoped routing, safety overlay, synthesis enforcement."""
+
+import pytest
+from unittest.mock import AsyncMock
+
+from {{project_slug}}.agents.registry import AgentRegistry
+from {{project_slug}}.orchestration.agent_router import AgentRouter
+from {{project_slug}}.orchestration.chat_orchestrator import (
+    ChatConfig, ChatOrchestrator, ChatResponse,
+)
+from {{project_slug}}.orchestration.chat_helpers import enforce_chat_synthesis
+
+SAFETY_AGENT_NAMES = ("evidence", "skeptic", "sentinel")
+
+CLEAN_SYNTHESIS = (
+    "The logs show a traffic spike at 14:02 [VERIFIED: access_log:row_512]. "
+    "Two independent monitors recorded the same window "
+    "[CORROBORATED: metrics + alerting]."
+)
+
+# Four critical FactChecker violations ("I think", "probably", "I believe",
+# "this suggests") -- above the rejection threshold of 3.
+REJECTED_SYNTHESIS = (
+    "I think the outage probably came from the cache layer. "
+    "I believe this suggests a memory leak in the worker pool."
+)
+
+
+class SimpleAgent:
+    """Minimal agent with just name/domain for router tests."""
+
+    def __init__(self, name, domain):
+        self._name = name
+        self._domain = domain
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def domain(self) -> str:
+        return self._domain
+
+
+@pytest.fixture
+def tenant_registry(tmp_path):
+    """Registry with one public agent and one team agent owned by tenant-b."""
+    registry = AgentRegistry(persist_path=tmp_path / "tenant_agents.json")
+    registry.register_local(
+        SimpleAgent("public_helper", "general analysis"),
+        capabilities=["testing"],
+    )
+    registry.register_local(
+        SimpleAgent("team_b_specialist", "security analysis"),
+        capabilities=["testing"],
+    )
+    team_entry = registry.get_entry("team_b_specialist")
+    team_entry.visibility = "team"
+    team_entry.tenant_id = "tenant-b"
+    return registry
+
+
+class TestTenantRouting:
+    def test_route_excludes_other_tenants_team_agents(self, tenant_registry):
+        router = AgentRouter(registry=tenant_registry)
+        decision = router.route("analyze the security incident", tenant_id="tenant-a")
+        names = [a.name for a in decision.selected_agents]
+        assert "team_b_specialist" not in names
+        assert "public_helper" in names
+
+    def test_route_includes_own_team_agents(self, tenant_registry):
+        router = AgentRouter(registry=tenant_registry)
+        decision = router.route("analyze the security incident", tenant_id="tenant-b")
+        names = [a.name for a in decision.selected_agents]
+        assert "team_b_specialist" in names
+
+    def test_llm_hint_cannot_pull_other_tenants_agents(self, tenant_registry):
+        router = AgentRouter(registry=tenant_registry)
+        decision = router.route_with_llm_hint(
+            "analyze the security incident",
+            llm_suggested_agents=["team_b_specialist"],
+            tenant_id="tenant-a",
+        )
+        names = [a.name for a in decision.selected_agents]
+        assert "team_b_specialist" not in names
+
+    def test_llm_hint_allows_own_team_agents(self, tenant_registry):
+        router = AgentRouter(registry=tenant_registry)
+        decision = router.route_with_llm_hint(
+            "analyze the security incident",
+            llm_suggested_agents=["team_b_specialist"],
+            tenant_id="tenant-b",
+        )
+        names = [a.name for a in decision.selected_agents]
+        assert "team_b_specialist" in names
+
+
+class TestSafetyAgentOverlay:
+    @pytest.mark.asyncio
+    async def test_safety_agents_join_consultations(self, mock_llm, mock_registry):
+        orchestrator = ChatOrchestrator(llm=mock_llm, registry=mock_registry)
+        response = await orchestrator.chat("analyze the code for issues")
+        assert len(response.consultations) > 0
+        for name in SAFETY_AGENT_NAMES:
+            assert name in response.agents_consulted
+
+    @pytest.mark.asyncio
+    async def test_safety_agents_absent_when_disabled(self, mock_llm, mock_registry):
+        orchestrator = ChatOrchestrator(
+            llm=mock_llm,
+            registry=mock_registry,
+            config=ChatConfig(include_safety_agents=False),
+        )
+        response = await orchestrator.chat("analyze the code for issues")
+        assert len(response.agents_consulted) > 0
+        for name in SAFETY_AGENT_NAMES:
+            assert name not in response.agents_consulted
+
+
+class TestEnforceChatSynthesis:
+    @pytest.mark.asyncio
+    async def test_clean_content_accepted_without_retry(self):
+        re_synthesize = AsyncMock()
+        content, result, violations = await enforce_chat_synthesis(
+            CLEAN_SYNTHESIS, re_synthesize
+        )
+        assert result == "accepted"
+        assert violations == []
+        assert content == CLEAN_SYNTHESIS
+        re_synthesize.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejected_content_retried_once_with_correction(self):
+        re_synthesize = AsyncMock(return_value=CLEAN_SYNTHESIS)
+        content, result, violations = await enforce_chat_synthesis(
+            REJECTED_SYNTHESIS, re_synthesize
+        )
+        re_synthesize.assert_awaited_once()
+        assert re_synthesize.await_args.kwargs.get("correction")
+        assert result != "rejected"
+        assert result == "accepted"
+        assert content == CLEAN_SYNTHESIS
+        assert violations == []
+
+    @pytest.mark.asyncio
+    async def test_still_rejected_after_retry(self):
+        re_synthesize = AsyncMock(return_value=REJECTED_SYNTHESIS)
+        content, result, violations = await enforce_chat_synthesis(
+            REJECTED_SYNTHESIS, re_synthesize
+        )
+        re_synthesize.assert_awaited_once()
+        assert result == "rejected"
+        assert len(violations) > 0
+
+
+class TestChatResponseDefaults:
+    def test_enforcement_defaults(self):
+        response = ChatResponse(content="hello")
+        assert response.enforcement_result == ""
+        assert response.enforcement_violations == []
+
+    @pytest.mark.asyncio
+    async def test_no_consultation_path_keeps_defaults(self, mock_llm, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "empty_agents.json")
+        orchestrator = ChatOrchestrator(llm=mock_llm, registry=registry)
+        response = await orchestrator.chat("hello")
+        assert response.consultations == []
+        assert response.enforcement_result == ""
+        assert response.enforcement_violations == []
