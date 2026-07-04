@@ -122,6 +122,7 @@ Apply `require_role` to every route. Here's the recommended minimum:
 
 | Route | Method | Minimum Role | Rationale |
 |-------|--------|-------------|-----------|
+| `/resolve` | POST | viewer | Cheapest tier: one enforced call, escalates to chat |
 | `/chat` | POST | viewer | Low-risk, read-oriented |
 | `/chat/stream` | POST | viewer | Same as chat |
 | `/chat/clear` | POST | member | Modifies state |

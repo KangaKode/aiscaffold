@@ -69,8 +69,16 @@ If `{{ layer_list[0] }}/foo.py` needs something defined in `{{ layer_list[-1] }}
 Provider-agnostic wrapper supporting Anthropic, OpenAI, and Google. Auto-detects provider from environment variables. Uses `CacheablePrompt(system, context, user_message)` to separate stable prompt prefix from dynamic content -- the stable parts are cached by the provider for significant token savings.
 
 - `llm/budget_manager.py` -- Per-tenant LLM spend governance: warn/exhaust thresholds, tenant context propagation via contextvars, and a pre-call gate that raises `BudgetExceededError` for exhausted tenants
+- `llm/mock.py` -- `MockLLMClient`: deterministic, offline, zero-cost LLM client (role-keyed canned responses or a scripted list) for tests and demos with no API key
+- `llm/model_config.py` + `llm/model_router.py` -- Optional model routing across four cost tiers (nano/budget/standard/frontier). The tier map and role->tier assignments are env/JSON-configurable (no hardcoded price table); the router does heuristic tier selection, one-tier cascade on failure, a per-tier circuit breaker, and budget-aware downgrades via `BudgetManager.remaining_pct`. Off unless `MODEL_ROUTING_ENABLED` is set
 
-**Key files:** `llm/client.py`, `llm/budget_manager.py`
+**Key files:** `llm/client.py`, `llm/budget_manager.py`, `llm/model_router.py`
+
+### Three-Tier Resolution
+Requests can be resolved at three escalating cost/rigor tiers:
+1. **Single-shot** (`orchestration/single_shot.py`, `POST /api/v1/resolve`) -- one cheap LLM call grounded in approved corrections, with mandatory FactChecker enforcement and a confidence gate. Answers routine, already-learned queries fast; escalates to chat when the cheap answer is not trustworthy (enforcement rejected, no citations, or self-declared insufficient). A routing optimization, not a quality bypass.
+2. **Chat** (`orchestration/chat_orchestrator.py`, `POST /api/v1/chat`) -- interactive multi-agent consultation.
+3. **Round table** (`orchestration/round_table.py`, `POST /api/v1/round-table`) -- full adversarial deliberation.
 
 ### Round Table (`orchestration/round_table.py`)
 Full 4-phase multi-agent deliberation protocol:

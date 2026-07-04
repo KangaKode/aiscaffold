@@ -191,6 +191,22 @@ class BudgetManager:
                 )
         return total
 
+    def remaining_pct(self, tenant_id: str) -> float | None:
+        """Fraction of budget remaining in [0, 1], or None when unlimited.
+
+        Used by the model router for budget-aware tier downgrades. Unlimited
+        budgets (max 0) return None so the router leaves routing untouched.
+        Any error returns None (fail-open: do not perturb routing).
+        """
+        try:
+            max_budget = self.get_budget(tenant_id)["max_budget_usd"]
+            if max_budget <= 0:
+                return None
+            remaining = max_budget - self.current_spend(tenant_id)
+            return max(0.0, min(1.0, remaining / max_budget))
+        except Exception:
+            return None
+
     def check(self, tenant_id: str) -> str:
         """Budget status for a tenant: ALLOWED, WARNED, or EXHAUSTED.
 
