@@ -78,6 +78,7 @@ async def resolve(
         query=resolve_request.query,
         llm=llm,
         corrections_manager=corrections_manager,
+        learning_store=getattr(request.app.state, "learning_store", None),
         tenant_id=auth.tenant_id,
         agent_id=resolve_request.agent_id,
     )

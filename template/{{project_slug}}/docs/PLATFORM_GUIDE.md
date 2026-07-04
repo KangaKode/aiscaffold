@@ -435,6 +435,7 @@ The gateway wires a learning-store-backed `BudgetManager` and `DeliberationAudit
 | `/api/v1/corrections/{id}/reject` | POST | Reject a proposed correction (terminal) |
 | `/api/v1/corrections/{id}/retire` | POST | Retire an approved correction |
 | `/api/v1/corrections/{id}` | DELETE | GDPR Art. 17 hard-delete (daily-capped, audited) |
+| `/api/v1/reflections` | GET | Process lessons from past deliberations (filter by `reflection_type`) |
 
 The corrections routes make the platform API-first for the learning loop: a non-Python client (or a reviewer UI) can drive the whole propose -> approve -> retire lifecycle over HTTP. `created_by`/`approved_by` always come from the authenticated caller, so the four-eyes rule cannot be spoofed by naming someone else in a request body.
 
@@ -444,7 +445,7 @@ See [GOVERNANCE.md](GOVERNANCE.md) for the full capability matrix, the honest "k
 
 ## Scaling the Learning Layer
 
-The extended learning tables (corrections, activity events, agent dispatch stats, integrity flags) sit behind a deliberately tiny `LearningStore` protocol in `learning/store.py` -- six methods (`ensure_schema` / `insert` / `query` / `update` / `count` / `delete`) with allowlist-validated identifiers and parameterized values. Two reference backends ship with the scaffold:
+The extended learning tables (corrections, activity events, agent dispatch stats, integrity flags, reflections, error schemas) sit behind a deliberately tiny `LearningStore` protocol in `learning/store.py` (table definitions live in `learning/tables.py`) -- six methods (`ensure_schema` / `insert` / `query` / `update` / `count` / `delete`) with allowlist-validated identifiers and parameterized values. Two reference backends ship with the scaffold:
 
 - **SQLite (default)** -- stdlib `sqlite3`, zero configuration, right for single-node deployments.
 - **Postgres (opt-in)** -- answer `learning_backend=postgres` at generation time, or set `LEARNING_BACKEND=postgres` plus `LEARNING_POSTGRES_DSN` at runtime, and install the extra: `pip install '.[postgres]'`.
@@ -469,6 +470,14 @@ The learning layer reshapes agent behavior, so it gets its own integrity control
 - **User activity anomalies**: per-user request bursts, repeated auth failures, and agent-registration sprees trip configurable thresholds (`ACTIVITY_TRACKING_ENABLED` to opt out).
 - **Agent behavioral baselines**: each agent's refusal rate, confidence, latency, and scope discipline are compared against its own history -- an agent with valid credentials that stops behaving like itself still gets flagged.
 - **Extraction sequences**: `harness/sequence_detector.py` backward-chains over recent activity to catch multi-step playbooks (query -> pull backing corrections -> export) that individually stay under the volume thresholds above. Patterns are expressed against your own routes; matches persist as integrity flags.
+- **Contradiction detection**: `learning/contradiction.py` scans a tenant's approved corrections pairwise (pure-Python TF-IDF cosine + a negation/reversal marker list) and flags pairs that likely disagree -- two approved corrections saying "use X" and "stop using X" would otherwise silently fight over agent context. Findings are integrity flags for human review; nothing is auto-retired.
+
+### Learning maturity
+
+Beyond individual corrections, the learning layer compounds knowledge in two deterministic, LLM-free ways:
+
+- **Reflections** (`learning/reflector.py`): after every round table run, up to 3 structured observations about HOW the deliberation worked are extracted from result fields (which agent's findings dominated the synthesis, whether one evidence source dominated, whether the challenge phase moved positions, whether dissenting voters were still incorporated). Capped per session and per tenant per day; read them back at `GET /api/v1/reflections`.
+- **Error schemata** (`learning/error_schemata.py`): when an agent accumulates >= 3 approved corrections on the same theme (grouped by agent and evidence level) from >= 2 distinct proposers, `extract_error_schemas()` generalizes them into one reusable schema -- title, description, deduplicated mitigation steps -- stored in the `error_schemas` table. Active schemas render into single-shot resolution context alongside raw corrections, so one schema can replace many near-duplicate entries. Re-running extraction updates schemas in place; the distinct-proposer floor means one user cannot single-handedly shape an agent's standing guidance.
 
 ### Adversarial verification
 

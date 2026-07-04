@@ -46,6 +46,7 @@ from .routes import (
     feedback,
     health,
     preferences,
+    reflections,
     resolve,
     round_table,
     sessions,
@@ -268,6 +269,9 @@ def create_app(
     )
     application.include_router(
         corrections.router, prefix="/api/v1", tags=["Learning - Corrections"]
+    )
+    application.include_router(
+        reflections.router, prefix="/api/v1", tags=["Learning - Reflections"]
     )
 
     logger.info("[Gateway] API gateway initialized")

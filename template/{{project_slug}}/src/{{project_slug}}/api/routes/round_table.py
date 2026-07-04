@@ -158,6 +158,17 @@ async def submit_task(
         except Exception as e:
             logger.warning(f"[RoundTableAPI] Transcript indexing failed: {e}")
 
+        # Process reflections (best-effort): deterministic lessons about HOW
+        # the deliberation worked, readable via GET /api/v1/reflections.
+        try:
+            store = getattr(request.app.state, "learning_store", None)
+            if store is not None:
+                from ...learning.reflector import reflect
+
+                reflect(result, tenant_id=auth.tenant_id, store=store)
+        except Exception as e:
+            logger.warning(f"[RoundTableAPI] Reflection extraction failed: {e}")
+
         metrics["tasks_completed"] += 1
         metrics["total_duration"] += result.duration_seconds
         metrics["total_agent_calls"] += len(agents) * 3
