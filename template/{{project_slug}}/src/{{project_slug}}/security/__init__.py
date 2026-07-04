@@ -18,6 +18,11 @@ from .pii import (  # noqa: F401
     redact_pii,
     contains_pii,
 )
+from .reasoning_chain_hash import (  # noqa: F401
+    ChainHashResult,
+    ReasoningChainHasher,
+    compute_chain_hash,
+)
 from .validators import (  # noqa: F401
     ValidationError,
     validate_length,
@@ -44,6 +49,9 @@ __all__ = [
     "detect_multi_turn_poisoning",
     "redact_pii",
     "contains_pii",
+    "ChainHashResult",
+    "ReasoningChainHasher",
+    "compute_chain_hash",
     "ValidationError",
     "validate_length",
     "validate_not_empty",

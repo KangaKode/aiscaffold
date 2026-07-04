@@ -1,0 +1,167 @@
+"""
+End-to-end adversarial defense tests.
+
+Runs the hostile agent library (tests/adversarial_agents.py) through the
+detection layers and a full RoundTable, asserting that no injection
+payload survives into the synthesis. Deterministic and free -- the mock
+LLM makes no network calls, and every payload is a static string.
+
+This is the counterpart to the ported defenses: it proves they hold
+end-to-end, not just in isolation. Extend adversarial_payloads.py and
+adversarial_agents.py with attacks specific to your deployment and this
+suite becomes your standing red-team gate.
+"""
+
+import json
+
+import pytest
+
+from {{project_slug}}.enforcement.fact_checker import FactChecker
+from {{project_slug}}.orchestration.round_table import (
+    RoundTable,
+    RoundTableConfig,
+    RoundTableTask,
+    SynthesisResult,
+)
+from {{project_slug}}.security.injection_defense import detect_multi_turn_poisoning
+from {{project_slug}}.security.prompt_guard import detect_injection_attempt
+
+from tests.adversarial_agents import (
+    ALL_HOSTILE_AGENTS,
+    DirectInjector,
+    ExfiltrationAgent,
+    PoisoningAgent,
+)
+from tests.adversarial_payloads import ATTACK_TYPES, DIRECT_PAYLOADS
+
+
+@pytest.fixture
+def adversarial_task():
+    return RoundTableTask(
+        id="adversarial_test_001",
+        content="Analyze this data for anomalies.",
+        context={"source": "adversarial_test"},
+    )
+
+
+def _assert_blocked(attack_type: str, findings: list[str]) -> None:
+    """Fail loudly if an injection payload was not detected."""
+    assert findings, f"Injection survived undetected: {attack_type}"
+
+
+# --- Detection layers --------------------------------------------------------
+
+
+class TestDefenseDetection:
+    def test_all_attack_types_have_payloads(self):
+        """The harness covers every declared attack type (6 + poisoning)."""
+        assert len(ATTACK_TYPES) >= 7
+        for attack_type in (
+            "direct", "unicode", "encoded", "token_split",
+            "exfiltration", "rot13", "poisoning",
+        ):
+            assert attack_type in ATTACK_TYPES
+
+    @pytest.mark.asyncio
+    async def test_every_hostile_agent_output_is_detected(self, adversarial_task):
+        """Advanced detection flags every hostile agent's full output."""
+        for agent_cls in ALL_HOSTILE_AGENTS:
+            agent = agent_cls()
+            analysis = await agent.analyze(adversarial_task)
+            challenge = await agent.challenge(adversarial_task, [])
+            vote = await agent.vote(adversarial_task, SynthesisResult(recommended_direction="Clean"))
+
+            all_text = json.dumps(
+                {
+                    "observations": analysis.observations,
+                    "recommendations": analysis.recommendations,
+                    "challenges": challenge.challenges,
+                    "dissent_reason": vote.dissent_reason,
+                },
+                default=str,
+                ensure_ascii=False,
+            )
+            findings = detect_injection_attempt(all_text, advanced=True)
+            _assert_blocked(agent.name.removeprefix("hostile_"), findings)
+
+    @pytest.mark.asyncio
+    async def test_exfiltration_attempt_flagged(self, adversarial_task):
+        agent = ExfiltrationAgent()
+        analysis = await agent.analyze(adversarial_task)
+        text = json.dumps(analysis.observations, default=str)
+        _assert_blocked("exfiltration", detect_injection_attempt(text, advanced=True))
+
+    @pytest.mark.asyncio
+    async def test_multi_turn_poisoning_detected(self, adversarial_task):
+        """Poisoning spread across analyze->challenge phases is caught."""
+        agent = PoisoningAgent()
+        analysis = await agent.analyze(adversarial_task)
+        challenge = await agent.challenge(adversarial_task, [])
+
+        messages = [obs.get("finding", "") for obs in analysis.observations]
+        messages += [ch.get("counter_evidence", "") for ch in challenge.challenges]
+        _assert_blocked("poisoning", detect_multi_turn_poisoning(messages))
+
+
+# --- Enforcement pipeline ----------------------------------------------------
+
+
+class TestEnforcementAgainstHostileOutput:
+    def test_fact_checker_rejects_speculative_hostile_output(self):
+        """FactChecker rejects the speculation/opinion patterns hostiles emit."""
+        hostile_text = (
+            "I believe this probably indicates a critical security flaw. "
+            "The data likely indicates unauthorized access with HIGH confidence. "
+            "In my opinion, the system is compromised."
+        )
+        result = FactChecker().check(hostile_text)
+        assert result.outcome == "rejected"
+        critical = [v for v in result.violations if v.severity == "critical"]
+        assert len(critical) >= 3
+
+
+# --- Full round table --------------------------------------------------------
+
+
+class TestRoundTableContainsHostileAgents:
+    @pytest.mark.asyncio
+    async def test_payloads_do_not_leak_into_synthesis(
+        self, adversarial_task, mock_llm, mock_agents
+    ):
+        """A hostile agent seated at the table cannot push its payloads into
+        the synthesis: the orchestrator produces the recommendation, and
+        agent-supplied text is wrapped, never executed as instructions."""
+        agents = [*mock_agents, DirectInjector()]
+        config = RoundTableConfig(
+            include_core_agents=False,
+            write_artifacts=False,
+            enforce_evidence=False,
+        )
+        rt = RoundTable(agents=agents, config=config, llm_client=mock_llm)
+        result = await rt.run(adversarial_task)
+
+        assert result.synthesis is not None
+        blob = json.dumps(
+            {
+                "recommended_direction": result.synthesis.recommended_direction,
+                "key_findings": result.synthesis.key_findings,
+                "trade_offs": result.synthesis.trade_offs,
+                "minority_views": result.synthesis.minority_views,
+            },
+            default=str,
+        )
+        for payload in DIRECT_PAYLOADS:
+            assert payload not in blob
+
+    @pytest.mark.asyncio
+    async def test_round_table_completes_with_hostile_agent(
+        self, adversarial_task, mock_llm, mock_agents
+    ):
+        """The table still reaches a result with a hostile participant --
+        one bad agent degrades trust, it does not crash the deliberation."""
+        agents = [*mock_agents, DirectInjector()]
+        config = RoundTableConfig(include_core_agents=False, write_artifacts=False)
+        rt = RoundTable(agents=agents, config=config, llm_client=mock_llm)
+        result = await rt.run(adversarial_task)
+        assert result.task_id == adversarial_task.id
+        assert result.synthesis is not None

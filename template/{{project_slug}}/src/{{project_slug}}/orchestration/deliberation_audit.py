@@ -33,7 +33,10 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
+
+from ..security.reasoning_chain_hash import compute_chain_hash
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +124,24 @@ class DeliberationAuditor:
         except Exception as exc:
             logger.warning(f"[DeliberationAudit] Failed to record event: {exc}")
 
+    @staticmethod
+    def chain_digest(result) -> tuple[str, str]:
+        """Reasoning-chain hash over a run's phase artifacts, in order.
+
+        Returns (hex_digest_or_empty, hash_status). Storing the digest on
+        the completion event makes after-the-fact edits to the recorded
+        phases detectable (recompute and compare). Best-effort: a missing
+        phase or an unserializable artifact yields a degraded status, not
+        an exception.
+        """
+        try:
+            phases = _result_phases(result)
+        except Exception as exc:
+            logger.warning(f"[DeliberationAudit] Chain hash phase build failed: {exc}")
+            return "", "degraded"
+        outcome = compute_chain_hash(phases)
+        return (outcome.hex_digest or ""), outcome.hash_status
+
     def get_timeline(self, correlation_id: str) -> list[dict]:
         """All events for one run, ordered by created_at (oldest first)."""
         if self._store is None:
@@ -130,6 +151,29 @@ class DeliberationAuditor:
             {"correlation_id": correlation_id},
             order_by="created_at",
         )
+
+
+def _to_jsonable(value):
+    """Convert a dataclass (or list of them) to plain JSON-able data."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    if isinstance(value, list):
+        return [_to_jsonable(v) for v in value]
+    return value
+
+
+def _result_phases(result) -> list[tuple[str, object]]:
+    """Ordered (phase_name, artifact) pairs for the reasoning chain hash.
+
+    Only phases that are present contribute, so the digest is stable for a
+    given recorded run regardless of which optional phases ran.
+    """
+    phases: list[tuple[str, object]] = []
+    for name in ("strategy", "analyses", "challenges", "synthesis", "votes"):
+        value = getattr(result, name, None)
+        if value:
+            phases.append((name, _to_jsonable(value)))
+    return phases
 
 
 async def audited_round_table(
@@ -178,6 +222,7 @@ async def audited_round_table(
 
     consensus = getattr(result, "consensus_reached", None)
     outcome = "consensus" if consensus else "no_consensus"
+    chain_digest, chain_status = auditor.chain_digest(result)
     auditor.event(
         correlation_id,
         EVENT_COMPLETED,
@@ -190,5 +235,7 @@ async def audited_round_table(
         approval_rate=getattr(result, "approval_rate", None),
         degraded=getattr(result, "degraded", None),
         failed_agent_count=getattr(result, "failed_agent_count", None),
+        chain_hash=chain_digest,
+        chain_hash_status=chain_status,
     )
     return result

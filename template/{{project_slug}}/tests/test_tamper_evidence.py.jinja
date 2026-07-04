@@ -1,0 +1,263 @@
+"""Tests for tamper-evidence: reasoning chain hash, output signer, and the
+extraction-sequence detector -- plus the auditor storing a chain digest on
+the deliberation completion event."""
+
+import pytest
+
+from {{project_slug}}.enforcement.signer import (
+    reset_signing_key_cache,
+    sign_output,
+    verify_output,
+)
+from {{project_slug}}.security.reasoning_chain_hash import (
+    ReasoningChainHasher,
+    compute_chain_hash,
+)
+
+
+# --- Reasoning chain hash ----------------------------------------------------
+
+
+class TestReasoningChainHash:
+    def test_identical_phases_hash_identically(self):
+        phases = [("phase1", {"a": 1}), ("phase2", ["x", "y"])]
+        assert (
+            compute_chain_hash(phases).hex_digest
+            == compute_chain_hash(phases).hex_digest
+        )
+
+    def test_key_order_does_not_change_digest(self):
+        a = compute_chain_hash([("p", {"a": 1, "b": 2})])
+        b = compute_chain_hash([("p", {"b": 2, "a": 1})])
+        assert a.hex_digest == b.hex_digest
+
+    def test_altered_phase_changes_digest(self):
+        original = compute_chain_hash([("p", {"finding": "safe"})])
+        tampered = compute_chain_hash([("p", {"finding": "safe "})])
+        assert original.hex_digest != tampered.hex_digest
+
+    def test_phase_order_matters(self):
+        a = compute_chain_hash([("p1", {"x": 1}), ("p2", {"y": 2})])
+        b = compute_chain_hash([("p2", {"y": 2}), ("p1", {"x": 1})])
+        assert a.hex_digest != b.hex_digest
+
+    def test_empty_chain_is_empty_status(self):
+        result = compute_chain_hash([])
+        assert result.hex_digest is None
+        assert result.hash_status == "empty"
+
+    def test_unserializable_phase_degrades(self):
+        hasher = ReasoningChainHasher()
+        circular: dict = {}
+        circular["self"] = circular  # circular refs are unserializable
+        hasher.add_phase("bad", circular)
+        result = hasher.finalize()
+        assert result.hex_digest is None
+        assert result.hash_status == "degraded"
+
+    def test_mark_degraded_forces_degraded_status(self):
+        hasher = ReasoningChainHasher()
+        hasher.add_phase("p", {"a": 1})
+        hasher.mark_degraded()
+        assert hasher.finalize().hash_status == "degraded"
+
+    def test_cannot_add_after_finalize(self):
+        hasher = ReasoningChainHasher()
+        hasher.add_phase("p", {"a": 1})
+        hasher.finalize()
+        with pytest.raises(RuntimeError):
+            hasher.add_phase("p2", {"b": 2})
+
+    def test_digest_is_64_hex_chars(self):
+        result = compute_chain_hash([("p", {"a": 1})])
+        assert result.hex_digest is not None
+        assert len(result.hex_digest) == 64
+        int(result.hex_digest, 16)  # parses as hex
+
+
+# --- Output signer -----------------------------------------------------------
+
+
+class TestOutputSigner:
+    def setup_method(self):
+        reset_signing_key_cache()
+
+    def teardown_method(self):
+        reset_signing_key_cache()
+
+    def test_sign_then_verify_round_trip(self):
+        signed = sign_output("recommended: continue monitoring")
+        assert verify_output(signed.payload, signed.signature) is True
+
+    def test_tampered_payload_fails_verification(self):
+        signed = sign_output("approve deployment")
+        assert verify_output("reject deployment", signed.signature) is False
+
+    def test_tampered_signature_fails_verification(self):
+        signed = sign_output("approve deployment")
+        bad = ("0" if signed.signature[0] != "0" else "1") + signed.signature[1:]
+        assert verify_output(signed.payload, bad) is False
+
+    def test_signature_is_stable_for_same_key_and_payload(self):
+        first = sign_output("same output").signature
+        second = sign_output("same output").signature
+        assert first == second
+
+    def test_short_key_in_dev_falls_back_to_ephemeral(self, monkeypatch):
+        monkeypatch.delenv("ENV", raising=False)
+        monkeypatch.setenv("OUTPUT_SIGNING_KEY", "too-short")
+        reset_signing_key_cache()
+        signed = sign_output("x")
+        assert verify_output(signed.payload, signed.signature) is True
+
+    def test_missing_key_in_production_raises(self, monkeypatch):
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.delenv("OUTPUT_SIGNING_KEY", raising=False)
+        reset_signing_key_cache()
+        with pytest.raises(RuntimeError):
+            sign_output("x")
+
+
+# --- Sequence detector -------------------------------------------------------
+
+
+class TestSequenceDetector:
+    @pytest.fixture
+    def store(self, tmp_path):
+        from {{project_slug}}.learning.store import SqliteLearningStore
+
+        return SqliteLearningStore(db_path=tmp_path / "seq.db")
+
+    def _event(self, store, route, method, user_id, when):
+        import uuid
+
+        store.insert(
+            "activity_events",
+            {
+                "id": str(uuid.uuid4())[:12],
+                "tenant_id": "default",
+                "user_id": user_id,
+                "route": route,
+                "method": method,
+                "status_code": 200,
+                "created_at": when.isoformat(),
+            },
+        )
+
+    def test_detects_knowledge_extraction_sequence(self, store):
+        from datetime import datetime, timedelta
+
+        from {{project_slug}}.harness.sequence_detector import SequenceDetector
+
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        self._event(store, "/api/v1/chat", "POST", "u1", base)
+        self._event(store, "/api/v1/corrections", "GET", "u1", base + timedelta(seconds=30))
+        self._event(store, "/api/v1/sessions", "GET", "u1", base + timedelta(seconds=60))
+
+        detector = SequenceDetector(store)
+        matches = detector.check("u1", now=base + timedelta(seconds=61))
+        names = {m.pattern_name for m in matches}
+        assert "knowledge_extraction" in names
+
+        flags = store.query("integrity_flags", {"flag_type": "extraction_sequence"})
+        assert len(flags) >= 1
+
+    def test_no_match_when_out_of_window(self, store):
+        from datetime import datetime, timedelta
+
+        from {{project_slug}}.harness.sequence_detector import SequenceDetector
+
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        self._event(store, "/api/v1/chat", "POST", "u2", base)
+        # Terminal step far outside the 300s window.
+        self._event(store, "/api/v1/corrections", "GET", "u2", base + timedelta(seconds=30))
+        self._event(store, "/api/v1/sessions", "GET", "u2", base + timedelta(seconds=9000))
+
+        detector = SequenceDetector(store)
+        matches = detector.check("u2", now=base + timedelta(seconds=9001))
+        assert all(m.pattern_name != "knowledge_extraction" for m in matches)
+
+    def test_no_match_when_step_missing(self, store):
+        from datetime import datetime, timedelta
+
+        from {{project_slug}}.harness.sequence_detector import SequenceDetector
+
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        self._event(store, "/api/v1/chat", "POST", "u3", base)
+        self._event(store, "/api/v1/sessions", "GET", "u3", base + timedelta(seconds=30))
+
+        detector = SequenceDetector(store)
+        matches = detector.check("u3", now=base + timedelta(seconds=31))
+        assert matches == []
+
+    def test_backward_chaining_ignores_backdated_noise(self, store):
+        """A back-dated earlier step cannot stretch the window: matching
+        anchors on the newest terminal action and walks backward."""
+        from datetime import datetime, timedelta
+
+        from {{project_slug}}.harness.sequence_detector import SequenceDetector
+
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        # Two chat events: one recent, one ancient. Backward-chaining picks
+        # the latest one before the anchor, keeping the window tight.
+        self._event(store, "/api/v1/chat", "POST", "u4", base - timedelta(days=10))
+        self._event(store, "/api/v1/chat", "POST", "u4", base)
+        self._event(store, "/api/v1/corrections", "GET", "u4", base + timedelta(seconds=20))
+        self._event(store, "/api/v1/sessions", "GET", "u4", base + timedelta(seconds=40))
+
+        detector = SequenceDetector(store)
+        matches = detector.check("u4", now=base + timedelta(seconds=41))
+        match = next(m for m in matches if m.pattern_name == "knowledge_extraction")
+        assert match.window_seconds <= 300
+
+    def test_pattern_validation_rejects_single_step(self):
+        from {{project_slug}}.harness.sequence_detector import ExtractionPattern, Step
+
+        with pytest.raises(ValueError):
+            ExtractionPattern(
+                name="bad", steps=(Step("/x"),), max_window_seconds=60
+            )
+
+
+# --- Auditor chain digest ----------------------------------------------------
+
+
+class TestAuditorChainDigest:
+    @pytest.fixture
+    def store(self, tmp_path):
+        from {{project_slug}}.learning.store import SqliteLearningStore
+
+        return SqliteLearningStore(db_path=tmp_path / "audit.db")
+
+    @pytest.mark.asyncio
+    async def test_completed_event_stores_chain_hash(
+        self, store, mock_llm, mock_agents
+    ):
+        import json
+
+        from {{project_slug}}.orchestration.deliberation_audit import (
+            DeliberationAuditor,
+            audited_round_table,
+        )
+        from {{project_slug}}.orchestration.round_table import (
+            RoundTable,
+            RoundTableConfig,
+            RoundTableTask,
+        )
+
+        auditor = DeliberationAuditor(store=store)
+        rt = RoundTable(
+            agents=mock_agents,
+            config=RoundTableConfig(include_core_agents=False, write_artifacts=False),
+            llm_client=mock_llm,
+        )
+        task = RoundTableTask(id="run1", content="analyze this")
+        await audited_round_table(rt, task, auditor, correlation_id="run1")
+
+        timeline = auditor.get_timeline("run1")
+        completed = [e for e in timeline if e["event_type"] == "deliberation_completed"]
+        assert len(completed) == 1
+        detail = json.loads(completed[0]["detail_json"])
+        assert detail["chain_hash_status"] in ("complete", "degraded", "empty")
+        if detail["chain_hash_status"] == "complete":
+            assert len(detail["chain_hash"]) == 64
