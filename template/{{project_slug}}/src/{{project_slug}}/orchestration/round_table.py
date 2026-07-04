@@ -377,7 +377,7 @@ class RoundTable:
                             confidence=analysis.confidence,
                             raw_response=analysis.raw_response,
                         )
-                    elif result.outcome != "accepted":
+                    else:
                         logger.warning(
                             f"[RoundTable] Dropping {analysis.agent_name}: corrected analysis was not parseable"
                         )

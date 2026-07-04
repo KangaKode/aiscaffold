@@ -185,6 +185,48 @@ class TestRoundTable:
         assert enforced[0].confidence == original.confidence
         assert enforced[0].raw_response == original.raw_response
 
+    @pytest.mark.asyncio
+    async def test_enforcement_drops_unparseable_accepted_correction(self, monkeypatch, mock_llm):
+        from {{project_slug}} import enforcement
+        from {{project_slug}}.enforcement import ValidationResult
+
+        class StubPipeline:
+            def __init__(self, llm_client=None):
+                pass
+
+            async def validate(self, agent_name, response_text, task):
+                return ValidationResult(
+                    outcome="accepted",
+                    violations=[],
+                    corrected_content="[VERIFIED: logs:row_1] Corrected prose only.",
+                )
+
+        monkeypatch.setattr(enforcement, "EvidenceEnforcementPipeline", StubPipeline)
+        rt = RoundTable(
+            agents=[],
+            config=RoundTableConfig(include_core_agents=False),
+            llm_client=mock_llm,
+        )
+        original = AgentAnalysis(
+            agent_name="analyst",
+            domain="analysis",
+            observations=[{
+                "finding": (
+                    "I think this probably indicates a breach and I believe "
+                    "the attacker likely used stolen credentials."
+                ),
+                "evidence": "This suggests lateral movement.",
+                "severity": "critical",
+            }],
+        )
+
+        enforced = await rt._enforce_evidence(
+            [original],
+            RoundTableTask(id="enforce_test", content="test"),
+        )
+
+        assert enforced == []
+
 
 class TestChatOrchestrator:
     @pytest.mark.asyncio
