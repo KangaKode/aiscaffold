@@ -16,7 +16,7 @@ Security:
   - Rate limiting via middleware
   - All external input validated at boundary
 
-Keep this file under 250 lines. Route logic lives in routes/.
+Keep this file under 300 lines. Route logic lives in routes/.
 """
 
 import logging
@@ -42,6 +42,7 @@ from .routes import (
     budgets,
     chat,
     checkins,
+    corrections,
     feedback,
     health,
     preferences,
@@ -172,6 +173,28 @@ def create_app(
     except Exception as e:
         logger.warning(f"[Gateway] Governance init failed (non-fatal): {e}")
 
+    # Corrections lifecycle over HTTP (API-first): manager + override
+    # detector on app.state. Reuses the learning store; degrades to 503
+    # at the routes when unavailable.
+    try:
+        from ..learning.content_policy import ContentPolicy
+        from ..learning.corrections import CorrectionsManager
+        from ..learning.override_detector import OverrideDetector
+        from ..learning.store import get_learning_store
+
+        corr_store = getattr(application.state, "learning_store", None)
+        if corr_store is None:
+            corr_store = get_learning_store()
+        application.state.corrections_manager = CorrectionsManager(
+            corr_store,
+            checkin_manager=getattr(application.state, "checkin_manager", None),
+            content_policy=ContentPolicy(store=corr_store),
+        )
+        application.state.override_detector = OverrideDetector(store=corr_store)
+        logger.info("[Gateway] Corrections manager initialized")
+    except Exception as e:
+        logger.warning(f"[Gateway] Corrections init failed (non-fatal): {e}")
+
     try:
         from ..learning.rag.transcript_indexer import TranscriptIndexer
 
@@ -224,6 +247,9 @@ def create_app(
     )
     application.include_router(
         audit.router, prefix="/api/v1", tags=["Governance - Audit"]
+    )
+    application.include_router(
+        corrections.router, prefix="/api/v1", tags=["Learning - Corrections"]
     )
 
     logger.info("[Gateway] API gateway initialized")

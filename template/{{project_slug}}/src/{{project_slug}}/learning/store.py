@@ -7,8 +7,9 @@ Defines a minimal storage protocol plus two reference backends:
     (install with the 'postgres' extra: pip install "<project>[postgres]")
 
 The protocol is intentionally tiny (ensure_schema / insert / query /
-update / count) so enterprise users can implement it against anything
-(MySQL, DynamoDB, an internal storage service) without touching callers.
+update / count / delete) so enterprise users can implement it against
+anything (MySQL, DynamoDB, an internal storage service) without touching
+callers.
 
 Table names and columns are defined ONCE here (TABLE_COLUMNS). Every SQL
 identifier is validated against that allowlist before interpolation;
@@ -176,7 +177,7 @@ class LearningStore(Protocol):
     """
     Minimal storage interface for the extended learning tables.
 
-    Implement these five methods against any datastore to bring your own
+    Implement these six methods against any datastore to bring your own
     backend (the scaffold ships SQLite and Postgres reference
     implementations). Rows are plain dicts keyed by column name; JSON
     columns (*_json) are stored as serialized strings by callers.
@@ -203,6 +204,12 @@ class LearningStore(Protocol):
 
     def count(self, table: str, filters: dict) -> int:
         """Count rows matching all equality filters."""
+        ...
+
+    def delete(self, table: str, row_id: str) -> bool:
+        """Hard-delete the row with the given id. Returns True if a row
+        was removed. Used by GDPR erasure -- must actually remove data,
+        not soft-delete."""
         ...
 
 
@@ -287,6 +294,12 @@ def _count_sql(table: str, filters: dict, ph: str) -> tuple[str, list]:
     return f"SELECT COUNT(*) AS n FROM {table}{where}", values  # nosec B608
 
 
+def _delete_sql(table: str, row_id: str, ph: str) -> tuple[str, list]:
+    _validate_table(table)
+    # Identifier allowlist-validated; value parameterized.
+    return f"DELETE FROM {table} WHERE id = {ph}", [row_id]  # nosec B608
+
+
 # =============================================================================
 # SQLITE BACKEND (default)
 # =============================================================================
@@ -365,6 +378,16 @@ class SqliteLearningStore:
         finally:
             conn.close()
 
+    def delete(self, table: str, row_id: str) -> bool:
+        sql, values = _delete_sql(table, row_id, "?")
+        conn = self._connect()
+        try:
+            cursor = conn.execute(sql, values)
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
 
 # =============================================================================
 # POSTGRES BACKEND (optional -- 'postgres' extra)
@@ -429,6 +452,12 @@ class PostgresLearningStore:
         with self._conn.cursor() as cur:
             cur.execute(sql, values)
             return cur.fetchone()["n"]
+
+    def delete(self, table: str, row_id: str) -> bool:
+        sql, values = _delete_sql(table, row_id, "%s")
+        with self._conn.cursor() as cur:
+            cur.execute(sql, values)
+            return cur.rowcount > 0
 
     def close(self) -> None:
         self._conn.close()
