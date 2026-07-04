@@ -120,6 +120,7 @@ async def submit_task(
             require_human_approval=overrides.get(
                 "require_human_approval", config.require_human_approval
             ),
+            min_quorum=overrides.get("min_quorum", config.min_quorum),
         )
 
     task_id = uuid.uuid4().hex[:16]
@@ -132,7 +133,7 @@ async def submit_task(
 
     try:
         llm = getattr(request.app.state, "llm_client", None) or create_client()
-        rt = RoundTable(agents=agents, config=config, llm_client=llm)
+        rt = RoundTable(agents=agents, config=config, llm_client=llm, registry=registry)
         result = await rt.run(task)
 
         try:
@@ -191,6 +192,8 @@ async def submit_task(
                 for v in result.votes
             ],
             duration_seconds=result.duration_seconds,
+            degraded=result.degraded,
+            failed_agent_count=result.failed_agent_count,
         )
 
         _cache_result(_result_key(task_id, auth), response)

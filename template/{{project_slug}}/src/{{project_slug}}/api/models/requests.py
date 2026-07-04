@@ -100,6 +100,16 @@ class AgentRegistration(BaseModel):
     capabilities: list[str] = Field(
         default_factory=list, description="List of capability tags"
     )
+    access_scopes: list[str] = Field(
+        default_factory=list,
+        description="Task-context keys the agent may access (empty = unrestricted)",
+    )
+    max_calls_per_hour: int | None = Field(
+        None, description="Per-agent rate limit (None = platform default)"
+    )
+    is_meta_agent: bool = Field(
+        False, description="Meta-agents also receive the peer_analyses context key"
+    )
     mode: str = Field(
         "sync", description="Communication mode: 'sync' (wait) or 'async' (webhook)"
     )

@@ -128,6 +128,69 @@ class TestAgentsAPI:
 
 
 # =============================================================================
+# AGENT CREDENTIALS & SUSPENSION
+# =============================================================================
+
+
+class TestAgentIntegrityAPI:
+    async def _register(self, client, name):
+        r = await client.post("/api/v1/agents", json={
+            "name": name, "domain": "testing", "base_url": "https://example.com",
+        })
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_rotate_returns_token(self, client):
+        await self._register(client, "rotate_agent")
+        r = await client.post("/api/v1/agents/rotate_agent/credentials/rotate")
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data["identity_token"], str)
+        assert len(data["identity_token"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_rotate_unknown_agent_404(self, client):
+        r = await client.post("/api/v1/agents/nonexistent/credentials/rotate")
+        assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_suspend_shows_in_listing(self, client):
+        await self._register(client, "suspend_agent")
+        r = await client.post("/api/v1/agents/suspend_agent/suspend")
+        assert r.status_code == 200
+        assert r.json()["status"] == "suspended"
+
+        listing = await client.get("/api/v1/agents")
+        info = next(
+            a for a in listing.json()["agents"] if a["name"] == "suspend_agent"
+        )
+        assert info["suspended"] is True
+
+        r = await client.post("/api/v1/agents/suspend_agent/unsuspend")
+        assert r.status_code == 200
+        listing = await client.get("/api/v1/agents")
+        info = next(
+            a for a in listing.json()["agents"] if a["name"] == "suspend_agent"
+        )
+        assert info["suspended"] is False
+
+    @pytest.mark.asyncio
+    async def test_revoke_sets_credential_status_none(self, client):
+        await self._register(client, "revoke_agent")
+        r = await client.delete("/api/v1/agents/revoke_agent/credentials")
+        assert r.status_code == 200
+        assert r.json()["status"] == "revoked"
+
+        detail = await client.get("/api/v1/agents/revoke_agent")
+        assert detail.json()["credential_status"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_revoke_unknown_agent_404(self, client):
+        r = await client.delete("/api/v1/agents/nonexistent/credentials")
+        assert r.status_code == 404
+
+
+# =============================================================================
 # ROUND TABLE
 # =============================================================================
 

@@ -79,13 +79,18 @@ Full 4-phase multi-agent deliberation protocol:
 
 Hub-and-spoke: agents report to orchestrator, never to each other directly. All intermediate results written to `artifacts/` for auditability.
 
+Phase 1 dispatch runs each agent through integrity gates (`orchestration/dispatch_helpers.py`): identity token verification (`orchestration/identity_check.py`), per-agent rate limiting, and scope filtering of the task context to the agent's declared `access_scopes` (with an advisory audit of data sources cited in outputs). Gated or crashed agents are skipped, never fatal. When at least one agent was skipped or failed AND fewer successful domain-agent analyses than `RoundTableConfig.min_quorum` (default 2) remain, the result is flagged `degraded=True` with `failed_agent_count` set, so callers can distinguish a real consensus from a deliberation that limped through.
+
 ### Chat Orchestrator (`orchestration/chat_orchestrator.py`)
 Lightweight orchestrator-worker pattern for real-time interaction. Lead agent selects 1-3 relevant specialists via `AgentRouter`, consults them in parallel, cross-checks responses for agreement/disagreement, and synthesizes a user-facing response. Surfaces both views when specialists disagree. Escalates to full round table when confidence is low. Routing is tenant-scoped (only agents visible to the caller's tenant are candidates, including LLM-suggested ones), and the evidence, skeptic, and sentinel safety agents join every consultation. Each synthesis is checked by the FactChecker; a rejected synthesis is re-generated once with a correction note, and a repeat rejection triggers an escalation suggestion.
 
 ### Agent System (`agents/`)
 - `example_agent.py` -- Reference implementation of `AgentProtocol`
 - `remote.py` -- `RemoteAgent` adapter wrapping HTTP endpoints as `AgentProtocol`
-- `registry.py` -- `AgentRegistry` managing local + remote agents with health checks
+- `registry.py` -- `AgentRegistry` managing local + remote agents with health checks, credential lifecycle (rotate/revoke), suspension, and dormancy flagging (`AGENT_DORMANT_AFTER_DAYS`, default 30)
+- `identity.py` -- Platform-issued JWT identity tokens (HS256) verified at dispatch; only token hashes are persisted, never raw tokens (`AGENT_IDENTITY_SIGNING_KEY` required in production)
+- `capability.py` -- `AgentCapability` declaring `access_scopes`, `is_meta_agent`, and `max_calls_per_hour`
+- `rate_limiter.py` -- Sliding-window per-agent call rate limiter shared by orchestrators
 - `core/` -- Six core safety agents (auto-included in every round table):
   - `skeptic.py` -- Devil's advocate: challenges assumptions, demands evidence, flags logical fallacies
   - `quality.py` -- Completeness checker: tracks requirement coverage, flags gaps in scope

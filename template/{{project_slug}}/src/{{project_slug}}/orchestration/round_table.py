@@ -140,7 +140,12 @@ class AgentVote:
 
 @dataclass
 class RoundTableResult:
-    """Complete round table output."""
+    """Complete round table output.
+
+    degraded/failed_agent_count: quorum tracking. degraded=True when fewer
+    domain (non-core) agents than config.min_quorum produced analyses AND
+    at least one agent was skipped by a dispatch gate or failed.
+    """
 
     task_id: str
     strategy: StrategyPlan | None = None
@@ -150,6 +155,8 @@ class RoundTableResult:
     votes: list[AgentVote] = field(default_factory=list)
     consensus_reached: bool = False
     duration_seconds: float = 0.0
+    degraded: bool = False
+    failed_agent_count: int = 0
 
     @property
     def approval_rate(self) -> float:
@@ -176,6 +183,7 @@ class RoundTableConfig:
     write_artifacts: bool = True
     include_core_agents: bool = True  # Auto-inject Skeptic, Quality, Evidence agents
     enforce_evidence: bool = True  # Run evidence enforcement pipeline on Phase 1 responses
+    min_quorum: int = 2  # Min successful domain-agent analyses before result is degraded
 
 
 # =============================================================================
@@ -199,15 +207,24 @@ class RoundTable:
             print("Dissent:", [v for v in result.votes if not v.approve])
     """
 
-    def __init__(self, agents: list, config: RoundTableConfig, llm_client: Any = None):
+    def __init__(
+        self,
+        agents: list,
+        config: RoundTableConfig,
+        llm_client: Any = None,
+        registry: Any = None,
+    ):
         self.config = config
         self.llm = llm_client
+        self._registry = registry  # Optional: enables identity/rate-limit gates
+        self._core_agent_names: set[str] = set()
 
         if config.include_core_agents:
             try:
                 from ..agents.core import get_core_agents
                 core = get_core_agents(llm_client=llm_client)
                 core_names = {a.name for a in core}
+                self._core_agent_names = core_names
                 user_agents = [a for a in agents if a.name not in core_names]
                 self.agents = core + user_agents
                 logger.info(
@@ -239,8 +256,22 @@ class RoundTable:
             task.context["agent_focus_areas"] = result.strategy.agent_focus_areas
 
         logger.info(f"[RoundTable] Phase 1: Independent analysis ({len(self.agents)} agents)")
-        result.analyses = await self._phase_independent(task)
+        result.analyses, result.failed_agent_count = await self._phase_independent(task)
         self._write_artifact(task.id, "phase1_analyses", [asdict(a) for a in result.analyses])
+
+        # Quorum: degraded when too few domain (non-core) analyses succeeded
+        # AND at least one agent was skipped by a gate or failed.
+        domain_ok = sum(
+            1 for a in result.analyses
+            if a.agent_name not in self._core_agent_names
+        )
+        if result.failed_agent_count > 0 and domain_ok < self.config.min_quorum:
+            result.degraded = True
+            logger.warning(
+                f"[RoundTable] Degraded result: {domain_ok} domain analyses "
+                f"(min_quorum={self.config.min_quorum}, "
+                f"{result.failed_agent_count} agents skipped/failed)"
+            )
 
         # Phase 2: Challenge
         if self.config.enable_challenge_phase:
@@ -324,69 +355,37 @@ class RoundTable:
                 success_criteria=["Actionable recommendations with evidence"],
             )
 
-    async def _phase_independent(self, task: RoundTableTask) -> list[AgentAnalysis]:
-        """Phase 1: All agents analyze independently and in PARALLEL."""
-        results = await asyncio.gather(
-            *[agent.analyze(task) for agent in self.agents],
-            return_exceptions=True,
+    async def _phase_independent(
+        self, task: RoundTableTask
+    ) -> tuple[list[AgentAnalysis], int]:
+        """Phase 1: All agents analyze independently and in PARALLEL.
+
+        Each agent passes identity and rate-limit gates before dispatch, and
+        its task context is scope-filtered by its capability. Gated/failed
+        agents are logged and excluded, never fatal.
+
+        Returns (analyses, failed_agent_count) where failed_agent_count is
+        agents skipped by a gate plus agents whose analyze() raised.
+        """
+        from .dispatch_helpers import dispatch_with_gates
+
+        rate_limiter = getattr(self._registry, "rate_limiter", None)
+        analyses, skipped, failed = await dispatch_with_gates(
+            self.agents, task, self._registry, rate_limiter, "RoundTable"
         )
-        analyses = []
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                logger.error(f"[RoundTable] {self.agents[i].name} failed: {r}")
-                continue
-            analyses.append(r)
 
         if self.config.enforce_evidence:
             analyses = await self._enforce_evidence(analyses, task)
 
-        return analyses
+        return analyses, skipped + failed
 
     async def _enforce_evidence(
         self, analyses: list[AgentAnalysis], task: RoundTableTask
     ) -> list[AgentAnalysis]:
-        """Run evidence enforcement pipeline on each analysis."""
-        try:
-            from ..enforcement import EvidenceEnforcementPipeline
-            from ..llm.json_parser import extract_json
-            pipeline = EvidenceEnforcementPipeline(llm_client=self.llm)
-            enforced = []
-            for analysis in analyses:
-                text = json.dumps(analysis.observations, default=str)
-                result = await pipeline.validate(analysis.agent_name, text, task)
-                if result.violations:
-                    logger.info(
-                        f"[RoundTable] {analysis.agent_name}: "
-                        f"{len(result.violations)} enforcement violations "
-                        f"({result.outcome})"
-                    )
-                if result.outcome == "rejected":
-                    logger.warning(f"[RoundTable] Dropping rejected analysis from {analysis.agent_name}")
-                    continue
-                if result.corrected_content:
-                    try:
-                        corrected_data = extract_json(result.corrected_content)
-                    except Exception:
-                        corrected_data = None
-                    if isinstance(corrected_data, list):
-                        analysis = AgentAnalysis(
-                            agent_name=analysis.agent_name,
-                            domain=analysis.domain,
-                            observations=corrected_data,
-                            recommendations=analysis.recommendations,
-                            confidence=analysis.confidence,
-                            raw_response=analysis.raw_response,
-                        )
-                    elif result.outcome != "accepted":
-                        logger.warning(
-                            f"[RoundTable] Dropping {analysis.agent_name}: corrected analysis was not parseable"
-                        )
-                        continue
-                enforced.append(analysis)
-            return enforced
-        except Exception as e:
-            logger.warning(f"[RoundTable] Evidence enforcement failed: {e}")
-            return analyses
+        """Run evidence enforcement pipeline (round_table_helpers)."""
+        from .round_table_helpers import enforce_evidence
+
+        return await enforce_evidence(analyses, task, self.llm)
 
     async def _phase_challenge(
         self, task: RoundTableTask, analyses: list[AgentAnalysis]

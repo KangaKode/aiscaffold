@@ -23,7 +23,6 @@ Security:
 Keep this file under 500 lines (helpers live in chat_helpers.py).
 """
 
-import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -290,27 +289,27 @@ class ChatOrchestrator:
         message: str,
         agents: list,
     ) -> list[ConsultationResult]:
-        """Consult selected specialists in parallel."""
+        """Consult selected specialists in parallel.
+
+        Each specialist passes identity and rate-limit gates before the
+        consultation; gated specialists just aren't consulted (the gate
+        logs why). Scope filtering applies to the task context.
+        """
         from ..orchestration.round_table import RoundTableTask
+        from .dispatch_helpers import dispatch_with_gates
 
         task = RoundTableTask(
             id=f"chat_{datetime.now().strftime('%H%M%S')}",
             content=message,
         )
 
-        results = await asyncio.gather(
-            *[agent.analyze(task) for agent in agents],
-            return_exceptions=True,
+        rate_limiter = getattr(self._registry, "rate_limiter", None)
+        analyses, _skipped, _failed = await dispatch_with_gates(
+            agents, task, self._registry, rate_limiter, "ChatOrchestrator"
         )
 
         consultations = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.error(
-                    f"[ChatOrchestrator] {agents[i].name} consultation failed: {result}"
-                )
-                continue
-
+        for result in analyses:
             evidence = []
             for obs in result.observations:
                 if isinstance(obs, dict) and obs.get("evidence"):
