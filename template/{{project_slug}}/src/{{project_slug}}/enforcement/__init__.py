@@ -15,5 +15,13 @@ Components:
 
 from .models import ValidationResult, Violation
 from .pipeline import EvidenceEnforcementPipeline
+from .signer import SignedOutput, sign_output, verify_output
 
-__all__ = ["EvidenceEnforcementPipeline", "ValidationResult", "Violation"]
+__all__ = [
+    "EvidenceEnforcementPipeline",
+    "ValidationResult",
+    "Violation",
+    "SignedOutput",
+    "sign_output",
+    "verify_output",
+]

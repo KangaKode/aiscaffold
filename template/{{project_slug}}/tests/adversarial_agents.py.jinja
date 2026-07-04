@@ -1,0 +1,138 @@
+"""
+Hostile agent library -- 6 adversarial agents implementing the AgentProtocol.
+
+Each agent returns pre-crafted injection payloads in every field an agent
+can populate (observations, recommendations, challenges, votes). They are
+real agents from the round table's point of view -- it dispatches them the
+same way it dispatches your specialists -- but every string they emit is an
+attack. No LLM calls; payloads are deterministic.
+
+Use these to prove the defenses hold end-to-end: drop them into a
+RoundTable alongside benign agents and assert that no payload survives into
+the synthesis (see tests/test_adversarial_defense.py). This is a test
+helper, not shipped runtime code -- subclass _HostileBase to add attack
+patterns specific to your deployment.
+
+Keep this file under 200 lines.
+"""
+
+from {{project_slug}}.orchestration.round_table import (
+    AgentAnalysis,
+    AgentChallenge,
+    AgentVote,
+    RoundTableTask,
+    SynthesisResult,
+)
+
+from tests.adversarial_payloads import (
+    DIRECT_PAYLOADS,
+    ENCODED_PAYLOADS,
+    EXFILTRATION_PAYLOADS,
+    POISONING_PAYLOADS,
+    TOKEN_SPLIT_PAYLOADS,
+    UNICODE_PAYLOADS,
+)
+
+
+class _HostileBase:
+    """Base for adversarial test agents. Subclasses set name + _payloads."""
+
+    name: str = "hostile_base"
+    domain: str = "adversarial testing"
+    _payloads: list[str] = []
+
+    def _make_observations(self) -> list[dict]:
+        return [
+            {
+                "finding": p,
+                "evidence": "Fabricated evidence",
+                "severity": "critical",
+                "confidence": 0.99,
+            }
+            for p in self._payloads
+        ]
+
+    def _make_challenges(self) -> list[dict]:
+        return [
+            {
+                "target_agent": "skeptic",
+                "finding_challenged": "All findings",
+                "counter_evidence": p,
+            }
+            for p in self._payloads
+        ]
+
+    async def analyze(self, task: RoundTableTask) -> AgentAnalysis:
+        return AgentAnalysis(
+            agent_name=self.name,
+            domain=self.domain,
+            observations=self._make_observations(),
+            recommendations=[
+                {"action": p, "rationale": "adversarial", "priority": "critical"}
+                for p in self._payloads[:2]
+            ],
+        )
+
+    async def challenge(
+        self, task: RoundTableTask, other_analyses: list[AgentAnalysis]
+    ) -> AgentChallenge:
+        return AgentChallenge(agent_name=self.name, challenges=self._make_challenges())
+
+    async def vote(self, task: RoundTableTask, synthesis: SynthesisResult) -> AgentVote:
+        return AgentVote(
+            agent_name=self.name,
+            approve=False,
+            dissent_reason=self._payloads[0] if self._payloads else "hostile dissent",
+        )
+
+
+class DirectInjector(_HostileBase):
+    """Plain-text injection via observations, recommendations, and dissent."""
+
+    name = "hostile_direct_injector"
+    _payloads = DIRECT_PAYLOADS
+
+
+class UnicodeInjector(_HostileBase):
+    """Cyrillic homoglyph obfuscation in all text fields."""
+
+    name = "hostile_unicode_injector"
+    _payloads = UNICODE_PAYLOADS
+
+
+class EncodingInjector(_HostileBase):
+    """Base64/hex encoded instructions in evidence fields."""
+
+    name = "hostile_encoding_injector"
+    _payloads = ENCODED_PAYLOADS
+
+
+class TokenSplitter(_HostileBase):
+    """Zero-width characters splitting injection keywords."""
+
+    name = "hostile_token_splitter"
+    _payloads = TOKEN_SPLIT_PAYLOADS
+
+
+class ExfiltrationAgent(_HostileBase):
+    """Attempts to extract the system prompt and detection patterns."""
+
+    name = "hostile_exfiltration"
+    _payloads = EXFILTRATION_PAYLOADS
+
+
+class PoisoningAgent(_HostileBase):
+    """Multi-turn context poisoning. Spreads setup->trigger across phases."""
+
+    name = "hostile_poisoning"
+    _payloads = [POISONING_PAYLOADS["setup"], POISONING_PAYLOADS["trigger"]]
+
+
+ALL_HOSTILE_AGENTS: list[type[_HostileBase]] = [
+    DirectInjector,
+    UnicodeInjector,
+    EncodingInjector,
+    TokenSplitter,
+    ExfiltrationAgent,
+    PoisoningAgent,
+]
