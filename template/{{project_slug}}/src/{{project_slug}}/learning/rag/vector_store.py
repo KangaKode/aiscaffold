@@ -5,7 +5,8 @@ Provides project-isolated vector storage for semantic search over preferences,
 feedback, and any other text the learning system needs to retrieve.
 
 By default: uses a deterministic in-memory cosine similarity store for local
-development and tests.
+development and tests. Existing Chroma persistence directories are reused
+automatically so upgrades do not drop previously indexed search data.
 
 Production recommendation: if the project uses Postgres, add pgvector and
 store embeddings alongside application data so retention, backups, tenant
@@ -23,6 +24,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ...security.prompt_guard import sanitize_for_prompt
@@ -70,15 +72,33 @@ class VectorStore:
     ):
         self._project_id = project_id
         self._persist_dir = persist_dir
-        self._use_chroma = (
-            os.environ.get("ROUNDTABLE_USE_CHROMA") == "1"
-            if use_chroma is None
-            else use_chroma
+        self._use_chroma, self._chroma_required = self._resolve_chroma_mode(
+            persist_dir=persist_dir,
+            use_chroma=use_chroma,
         )
         self._collection: Any = None
         self._fallback_store: list[dict] | None = None
 
         self._init_store()
+
+    @staticmethod
+    def _resolve_chroma_mode(
+        persist_dir: str,
+        use_chroma: bool | None,
+    ) -> tuple[bool, bool]:
+        """Return whether to use Chroma and whether failure should be fatal."""
+        if use_chroma is not None:
+            return use_chroma, use_chroma
+
+        env_value = os.environ.get("ROUNDTABLE_USE_CHROMA")
+        if env_value is not None:
+            enabled = env_value.strip().lower() in {"1", "true", "yes", "on"}
+            return enabled, enabled
+
+        # Preserve existing persistent indexes during upgrades while keeping
+        # brand-new local projects on the deterministic in-memory default.
+        has_existing_index = Path(persist_dir).exists()
+        return has_existing_index, has_existing_index
 
     def _init_store(self) -> None:
         """Initialize the configured store or fall back to in-memory."""
@@ -101,7 +121,13 @@ class VectorStore:
             logger.info(
                 f"[VectorStore] ChromaDB initialized for project {self._project_id}"
             )
-        except ImportError:
+        except ImportError as e:
+            if self._chroma_required:
+                raise RuntimeError(
+                    "[VectorStore] Existing or explicitly requested ChromaDB "
+                    "storage is unavailable. Install chromadb or set "
+                    "ROUNDTABLE_USE_CHROMA=0 to use an ephemeral in-memory store."
+                ) from e
             self._fallback_store = []
             logger.info(
                 "[VectorStore] ChromaDB not installed -- using in-memory fallback. "

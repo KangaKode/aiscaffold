@@ -1,0 +1,65 @@
+"""Regression tests for vector-store persistence mode selection."""
+
+import builtins
+
+import pytest
+
+from {{ project_slug }}.learning.rag.vector_store import VectorStore
+
+
+def test_existing_persist_dir_enables_chroma_by_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("ROUNDTABLE_USE_CHROMA", raising=False)
+    persist_dir = tmp_path / "chroma"
+    persist_dir.mkdir()
+
+    use_chroma, chroma_required = VectorStore._resolve_chroma_mode(
+        persist_dir=str(persist_dir),
+        use_chroma=None,
+    )
+
+    assert use_chroma is True
+    assert chroma_required is True
+
+
+def test_missing_persist_dir_uses_in_memory_by_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("ROUNDTABLE_USE_CHROMA", raising=False)
+
+    use_chroma, chroma_required = VectorStore._resolve_chroma_mode(
+        persist_dir=str(tmp_path / "missing"),
+        use_chroma=None,
+    )
+
+    assert use_chroma is False
+    assert chroma_required is False
+
+
+def test_env_disable_overrides_existing_persist_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("ROUNDTABLE_USE_CHROMA", "0")
+    persist_dir = tmp_path / "chroma"
+    persist_dir.mkdir()
+
+    use_chroma, chroma_required = VectorStore._resolve_chroma_mode(
+        persist_dir=str(persist_dir),
+        use_chroma=None,
+    )
+
+    assert use_chroma is False
+    assert chroma_required is False
+
+
+def test_existing_persist_dir_without_chromadb_fails_fast(monkeypatch, tmp_path):
+    monkeypatch.delenv("ROUNDTABLE_USE_CHROMA", raising=False)
+    persist_dir = tmp_path / "chroma"
+    persist_dir.mkdir()
+
+    real_import = builtins.__import__
+
+    def fail_chromadb_import(name, *args, **kwargs):
+        if name == "chromadb":
+            raise ImportError("chromadb missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_chromadb_import)
+
+    with pytest.raises(RuntimeError, match="ChromaDB storage is unavailable"):
+        VectorStore(project_id="test_vs", persist_dir=str(persist_dir))
