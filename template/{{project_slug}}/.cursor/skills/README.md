@@ -20,6 +20,13 @@ skills/
 3. Add reference files if the skill needs additional context
 4. The body of SKILL.md should be under 500 lines
 
+## Skills in This Template
+
+| Skill | Purpose |
+|-------|---------|
+| `example-review/` | Systematic code review with security, quality, and architecture checks (also serves as the format example) |
+| `phased-delivery/` | Four-phase multi-agent workflow (brainstorm, tickets, plan, parallel build) for features too large for a single session |
+
 ## Example
 
 See `example-review/SKILL.md` for a working example.
