@@ -270,6 +270,7 @@ Every scaffolded project includes **53+ Python source files** across 8 modules:
 
 API route modules expose the core workflow over HTTP:
 
+- `POST /api/v1/resolve` -- Cheapest tier: one enforced LLM call grounded in learned corrections, escalates to chat
 - `POST /api/v1/round-table/tasks` -- Submit task for full multi-agent deliberation
 - `GET  /api/v1/round-table/search?q=` -- Semantic search over past deliberations
 - `POST /api/v1/chat` -- Send message to chat orchestrator
@@ -279,6 +280,7 @@ API route modules expose the core workflow over HTTP:
 - `POST /api/v1/feedback` -- Record user feedback signal
 - `GET  /api/v1/preferences/search?q=` -- Semantic preference search
 - `GET  /api/v1/checkins` -- List pending check-ins
+- `POST /api/v1/mcp/servers` -- Register an MCP tool server (per-tenant, scope-gated, optional `[mcp]` extra)
 - `GET  /health` -- Liveness
 - `GET  /health/ready` -- Readiness
 - `GET  /metrics` -- Basic operational metrics
