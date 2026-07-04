@@ -66,6 +66,8 @@ class RoundTableResultResponse(BaseModel):
     synthesis: SynthesisResponse | None = None
     votes: list[VoteResponse] = Field(default_factory=list)
     duration_seconds: float = 0.0
+    degraded: bool = False  # Quorum of domain-agent analyses not met
+    failed_agent_count: int = 0  # Agents skipped by dispatch gates or failed
 
 
 # =============================================================================
@@ -84,6 +86,10 @@ class AgentInfo(BaseModel):
     mode: str = "sync"
     healthy: bool = True
     interaction_count: int = 0
+    suspended: bool = False
+    credential_status: str = "none"  # "active" if a token hash is stored
+    last_active: str | None = None
+    dormant: bool = False
 
 
 class AgentListResponse(BaseModel):

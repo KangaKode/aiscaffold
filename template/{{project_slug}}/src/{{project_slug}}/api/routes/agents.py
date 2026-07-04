@@ -6,6 +6,10 @@ Agent registry API -- register, list, inspect, and remove agents.
   GET    /api/v1/agents/{id}  -- Get agent details + health
   DELETE /api/v1/agents/{id}  -- Unregister an agent
   POST   /api/v1/agents/health -- Run health checks on all remote agents
+  POST   /api/v1/agents/{id}/credentials/rotate -- Re-issue identity token
+  DELETE /api/v1/agents/{id}/credentials -- Revoke identity token
+  POST   /api/v1/agents/{id}/suspend   -- Suspend agent (blocked at dispatch)
+  POST   /api/v1/agents/{id}/unsuspend -- Lift suspension
 
 Security:
   - Agent base_url is validated against SSRF (no private IPs, no file://)
@@ -51,6 +55,9 @@ async def register_agent(
         validate_list_size(
             registration.capabilities, "capabilities", max_items=MAX_CAPABILITIES
         )
+        validate_list_size(
+            registration.access_scopes, "access_scopes", max_items=MAX_CAPABILITIES
+        )
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -68,6 +75,9 @@ async def register_agent(
         api_key=registration.api_key,
         capabilities=registration.capabilities,
         mode=registration.mode,
+        access_scopes=registration.access_scopes,
+        max_calls_per_hour=registration.max_calls_per_hour,
+        is_meta_agent=registration.is_meta_agent,
     )
     logger.info(f"[AgentsAPI] Registered: {registration.name} at {registration.base_url}")
     return AgentInfo(
@@ -130,3 +140,68 @@ async def health_check_all(
     registry = request.app.state.registry
     results = await registry.health_check_all()
     return {"results": results, "all_healthy": all(results.values())}
+
+
+@router.post("/agents/{agent_id}/credentials/rotate")
+async def rotate_agent_credentials(
+    agent_id: str,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+) -> dict:
+    """Re-issue an agent's identity token. The raw token is shown ONCE."""
+    registry = request.app.state.registry
+    token = registry.rotate_credentials(agent_id)
+    if token is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+    logger.info(
+        f"[AgentsAPI] Rotated credentials: {agent_id} (tenant={auth.tenant_id})"
+    )
+    return {"identity_token": token, "note": "store securely; shown once"}
+
+
+@router.delete("/agents/{agent_id}/credentials")
+async def revoke_agent_credentials(
+    agent_id: str,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+) -> dict:
+    """Revoke an agent's identity token (remote agents blocked at dispatch)."""
+    registry = request.app.state.registry
+    if not registry.revoke_credentials(agent_id):
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+    logger.info(
+        f"[AgentsAPI] Revoked credentials: {agent_id} (tenant={auth.tenant_id})"
+    )
+    return {"status": "revoked", "agent": agent_id}
+
+
+@router.post("/agents/{agent_id}/suspend")
+async def suspend_agent(
+    agent_id: str,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+) -> dict:
+    """Suspend an agent -- excluded from dispatch and tenant listings."""
+    registry = request.app.state.registry
+    if not registry.suspend(agent_id):
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+    logger.info(f"[AgentsAPI] Suspended: {agent_id} (tenant={auth.tenant_id})")
+    return {"status": "suspended", "agent": agent_id}
+
+
+@router.post("/agents/{agent_id}/unsuspend")
+async def unsuspend_agent(
+    agent_id: str,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+) -> dict:
+    """Lift an agent's suspension."""
+    registry = request.app.state.registry
+    if not registry.unsuspend(agent_id):
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+    logger.info(f"[AgentsAPI] Unsuspended: {agent_id} (tenant={auth.tenant_id})")
+    return {"status": "active", "agent": agent_id}

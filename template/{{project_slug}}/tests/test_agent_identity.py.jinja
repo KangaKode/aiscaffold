@@ -1,0 +1,499 @@
+"""Agent integrity tests -- identity tokens, dispatch gates, rate limits,
+credential lifecycle, dormancy, scope filtering, and quorum degradation."""
+
+import json
+import time
+from datetime import UTC, datetime, timedelta
+
+import jwt as pyjwt
+import pytest
+
+from {{project_slug}}.agents import identity
+from {{project_slug}}.agents.capability import AgentCapability
+from {{project_slug}}.agents.identity import (
+    AUDIENCE,
+    ISSUER,
+    hash_token,
+    issue_token,
+    verify_token,
+)
+from {{project_slug}}.agents.rate_limiter import (
+    DEFAULT_MAX_CALLS_PER_HOUR,
+    AgentRateLimiter,
+)
+from {{project_slug}}.agents.registry import AgentEntry, AgentRegistry
+from {{project_slug}}.orchestration.identity_check import verify_agent_identity
+from {{project_slug}}.orchestration.round_table import (
+    RoundTable,
+    RoundTableConfig,
+    RoundTableTask,
+)
+from {{project_slug}}.orchestration.scope_filter import ScopeFilter
+
+TEST_SIGNING_KEY = "0123456789abcdef" * 4  # 64 chars, meets the minimum
+
+
+@pytest.fixture(autouse=True)
+def identity_env(monkeypatch):
+    """Pin the signing key and reset the module cache around every test.
+
+    The identity module caches the signing key after first use, so tests
+    must reset it or they'd leak a key from a previous test (or a dev-mode
+    ephemeral key) into the next one.
+    """
+    monkeypatch.setenv("AGENT_IDENTITY_SIGNING_KEY", TEST_SIGNING_KEY)
+    for var in (
+        "AGENT_IDENTITY_ENABLED",
+        "ENV",
+        "ENVIRONMENT",
+        "AGENT_DEFAULT_TTL_DAYS",
+        "AGENT_MAX_TTL_DAYS",
+        "AGENT_DORMANT_AFTER_DAYS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    identity._reset_signing_key()
+    yield
+    identity._reset_signing_key()
+
+
+def make_expired_token(agent_id: str = "stale_agent") -> str:
+    """Craft a token that expired an hour ago, signed with the test key.
+
+    issue_token clamps TTL to a minimum of 1 day, so expiry has to be
+    forged directly to test rejection.
+    """
+    now = int(time.time())
+    claims = {
+        "sub": agent_id,
+        "tid": "default",
+        "scopes": [],
+        "meta": False,
+        "iat": now - 7200,
+        "exp": now - 3600,
+        "iss": ISSUER,
+        "aud": AUDIENCE,
+    }
+    return pyjwt.encode(claims, TEST_SIGNING_KEY, algorithm="HS256")
+
+
+def tamper_signature(token: str) -> str:
+    """Flip the last character of the JWT signature segment."""
+    last = token[-1]
+    replacement = "A" if last != "A" else "B"
+    return token[:-1] + replacement
+
+
+class SimpleAgent:
+    """Minimal agent with just name/domain for registry tests."""
+
+    def __init__(self, name, domain="general analysis"):
+        self._name = name
+        self._domain = domain
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def domain(self) -> str:
+        return self._domain
+
+
+# =============================================================================
+# TOKEN ISSUE / VERIFY
+# =============================================================================
+
+
+class TestTokenRoundTrip:
+    def test_issue_then_verify_returns_claims(self):
+        token, ttl = issue_token(
+            "analyst_x", "tenant-a", ["financial"], is_meta_agent=True
+        )
+        assert isinstance(token, str)
+        assert ttl >= 1
+
+        claims = verify_token(token)
+        assert claims is not None
+        assert claims.agent_id == "analyst_x"
+        assert claims.tenant_id == "tenant-a"
+        assert claims.scopes == ["financial"]
+        assert claims.is_meta_agent is True
+        assert claims.issuer == ISSUER
+        assert claims.expires_at > claims.issued_at
+
+    def test_expired_token_rejected(self):
+        assert verify_token(make_expired_token()) is None
+
+    def test_tampered_token_rejected(self):
+        token, _ttl = issue_token("analyst_x", "default", [])
+        assert verify_token(token) is not None
+        assert verify_token(tamper_signature(token)) is None
+        assert verify_token("not-a-jwt-at-all") is None
+
+
+class TestKillSwitch:
+    def test_disabled_accepts_valid_unexpired_token(self, monkeypatch):
+        token, _ttl = issue_token("analyst_x", "tenant-a", ["logs"])
+        monkeypatch.setenv("AGENT_IDENTITY_ENABLED", "false")
+        claims = verify_token(token)
+        assert claims is not None
+        assert claims.agent_id == "analyst_x"
+
+    def test_disabled_still_rejects_expired_token(self, monkeypatch):
+        expired = make_expired_token()
+        monkeypatch.setenv("AGENT_IDENTITY_ENABLED", "false")
+        assert verify_token(expired) is None
+
+
+class TestHashToken:
+    def test_deterministic(self):
+        token, _ttl = issue_token("analyst_x", "default", [])
+        assert hash_token(token) == hash_token(token)
+
+    def test_hash_differs_from_raw_token(self):
+        token, _ttl = issue_token("analyst_x", "default", [])
+        digest = hash_token(token)
+        assert digest != token
+        assert len(digest) == 64  # sha256 hex
+
+    def test_different_tokens_different_hashes(self):
+        token_a, _ = issue_token("agent_a", "default", [])
+        token_b, _ = issue_token("agent_b", "default", [])
+        assert hash_token(token_a) != hash_token(token_b)
+
+
+# =============================================================================
+# DISPATCH IDENTITY POLICY
+# =============================================================================
+
+
+class TestIdentityCheckPolicy:
+    def test_no_registry_allowed(self):
+        assert verify_agent_identity(SimpleAgent("anyone"), None) is True
+
+    def test_unregistered_agent_allowed(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        assert verify_agent_identity(SimpleAgent("ghost"), registry) is True
+
+    def test_local_agent_without_token_allowed(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        agent = SimpleAgent("local_notoken")
+        registry.register_local(agent)
+        registry.get_entry("local_notoken").identity_token = None
+        assert verify_agent_identity(agent, registry) is True
+
+    def test_remote_agent_without_token_blocked(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        agent = registry.register_remote(
+            "remote_notoken", "testing", "https://example.com"
+        )
+        registry.get_entry("remote_notoken").identity_token = None
+        assert verify_agent_identity(agent, registry) is False
+
+    def test_suspended_agent_blocked(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        agent = SimpleAgent("suspended_one")
+        registry.register_local(agent)
+        registry.suspend("suspended_one")
+        assert verify_agent_identity(agent, registry) is False
+
+    def test_invalid_token_blocked(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        agent = SimpleAgent("bad_token_agent")
+        registry.register_local(agent)
+        entry = registry.get_entry("bad_token_agent")
+        entry.identity_token = tamper_signature(entry.identity_token)
+        assert verify_agent_identity(agent, registry) is False
+
+    def test_valid_token_allowed(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        agent = SimpleAgent("good_agent")
+        registry.register_local(agent)
+        assert verify_agent_identity(agent, registry) is True
+
+
+# =============================================================================
+# RATE LIMITER
+# =============================================================================
+
+
+class TestRateLimiter:
+    def test_default_limit_allows_100_blocks_101(self):
+        limiter = AgentRateLimiter()
+        for _ in range(DEFAULT_MAX_CALLS_PER_HOUR):
+            assert limiter.check_and_record("busy_agent") is True
+        assert limiter.check_and_record("busy_agent") is False
+
+    def test_agents_have_independent_counters(self):
+        limiter = AgentRateLimiter()
+        for _ in range(DEFAULT_MAX_CALLS_PER_HOUR):
+            assert limiter.check_and_record("agent_a") is True
+        assert limiter.check_and_record("agent_a") is False
+        assert limiter.check_and_record("agent_b") is True
+
+    def test_custom_max_calls(self):
+        limiter = AgentRateLimiter()
+        for _ in range(3):
+            assert limiter.check_and_record("small_quota", max_calls=3) is True
+        assert limiter.check_and_record("small_quota", max_calls=3) is False
+
+    def test_window_slides(self):
+        limiter = AgentRateLimiter()
+        assert limiter.check_and_record("slider", max_calls=1, now=1000.0) is True
+        assert limiter.check_and_record("slider", max_calls=1, now=1001.0) is False
+        # One hour later the first call has aged out.
+        assert limiter.check_and_record("slider", max_calls=1, now=1000.0 + 3601) is True
+
+
+# =============================================================================
+# REGISTRY CREDENTIAL LIFECYCLE
+# =============================================================================
+
+
+class TestRegistryLifecycle:
+    def test_rotate_returns_new_token_and_changes_hash(self, tmp_path, monkeypatch):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        registry.register_local(SimpleAgent("rotator"))
+        entry = registry.get_entry("rotator")
+        old_hash = entry.identity_token_hash
+
+        # Tokens carry second-resolution iat/exp claims, so a rotation within
+        # the same second would re-issue a byte-identical JWT. Shift the clock
+        # forward to make the rotation observable.
+        real_time = time.time
+        monkeypatch.setattr(time, "time", lambda: real_time() + 60)
+        new_token = registry.rotate_credentials("rotator")
+
+        assert isinstance(new_token, str)
+        assert entry.identity_token == new_token
+        assert entry.identity_token_hash == hash_token(new_token)
+        assert entry.identity_token_hash != old_hash
+
+    def test_rotate_unknown_agent_returns_none(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        assert registry.rotate_credentials("nobody") is None
+
+    def test_revoke_clears_token_and_hash(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        registry.register_local(SimpleAgent("revokee"))
+
+        assert registry.revoke_credentials("revokee") is True
+
+        entry = registry.get_entry("revokee")
+        assert entry.identity_token is None
+        assert entry.identity_token_hash is None
+        assert entry.to_dict()["credential_status"] == "none"
+
+    def test_revoke_unknown_agent_returns_false(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        assert registry.revoke_credentials("nobody") is False
+
+    def test_suspend_excludes_from_tenant_listing(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        registry.register_local(SimpleAgent("visible_one"))
+        registry.register_local(SimpleAgent("hidden_one"))
+
+        registry.suspend("hidden_one")
+        names = [e.agent.name for e in registry.list_for_tenant()]
+        assert "hidden_one" not in names
+        assert "visible_one" in names
+
+        registry.unsuspend("hidden_one")
+        names = [e.agent.name for e in registry.list_for_tenant()]
+        assert "hidden_one" in names
+
+    def test_persistence_stores_hash_never_raw_token(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        registry = AgentRegistry(persist_path=persist_path)
+        registry.register_remote("remote_persist", "testing", "https://example.com")
+
+        entry = registry.get_entry("remote_persist")
+        raw_token = entry.identity_token
+        assert raw_token is not None
+
+        on_disk = persist_path.read_text()
+        assert raw_token not in on_disk
+        data = json.loads(on_disk)
+        saved = data["remote_agents"][0]
+        assert saved["identity_token_hash"] == entry.identity_token_hash
+        assert "identity_token" not in saved
+
+    def test_reloaded_remote_agent_has_no_raw_token(self, tmp_path):
+        persist_path = tmp_path / "agents.json"
+        registry = AgentRegistry(persist_path=persist_path)
+        registry.register_remote("remote_reload", "testing", "https://example.com")
+        old_hash = registry.get_entry("remote_reload").identity_token_hash
+
+        reloaded = AgentRegistry(persist_path=persist_path)
+        entry = reloaded.get_entry("remote_reload")
+        assert entry is not None
+        assert entry.identity_token is None
+        assert entry.identity_token_hash == old_hash
+
+
+# =============================================================================
+# DORMANCY
+# =============================================================================
+
+
+class TestDormancy:
+    def test_old_last_active_is_dormant(self, monkeypatch):
+        monkeypatch.setenv("AGENT_DORMANT_AFTER_DAYS", "1")
+        two_days_ago = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+        entry = AgentEntry(agent=SimpleAgent("sleeper"), last_active=two_days_ago)
+        assert entry.is_dormant is True
+        assert entry.to_dict()["dormant"] is True
+
+    def test_fresh_last_active_not_dormant(self, monkeypatch):
+        monkeypatch.setenv("AGENT_DORMANT_AFTER_DAYS", "1")
+        entry = AgentEntry(
+            agent=SimpleAgent("awake"),
+            last_active=datetime.now(UTC).isoformat(),
+        )
+        assert entry.is_dormant is False
+
+    def test_no_last_active_not_dormant(self, monkeypatch):
+        monkeypatch.setenv("AGENT_DORMANT_AFTER_DAYS", "1")
+        entry = AgentEntry(agent=SimpleAgent("never_ran"), last_active=None)
+        assert entry.is_dormant is False
+
+
+# =============================================================================
+# SCOPE FILTER
+# =============================================================================
+
+
+class TestScopeFilter:
+    def test_filter_strips_out_of_scope_keys(self):
+        capability = AgentCapability(access_scopes=["financial"])
+        context = {"financial": {"q": 1}, "hr_records": {"x": 2}, "logs": []}
+        filtered = ScopeFilter().filter_data(context, capability)
+        assert filtered == {"financial": {"q": 1}}
+
+    def test_empty_scopes_means_no_filtering(self):
+        capability = AgentCapability(access_scopes=[])
+        context = {"financial": 1, "hr_records": 2}
+        assert ScopeFilter().filter_data(context, capability) == context
+
+    def test_no_capability_means_no_filtering(self):
+        context = {"financial": 1, "hr_records": 2}
+        assert ScopeFilter().filter_data(context, None) == context
+
+    def test_meta_agent_always_gets_peer_analyses(self):
+        capability = AgentCapability(access_scopes=["financial"], is_meta_agent=True)
+        context = {"financial": 1, "hr_records": 2, "peer_analyses": ["a"]}
+        filtered = ScopeFilter().filter_data(context, capability)
+        assert filtered == {"financial": 1, "peer_analyses": ["a"]}
+
+    def test_output_source_violation_flagged(self):
+        capability = AgentCapability(access_scopes=["financial"])
+        findings = [{
+            "finding": "Salary data shows an anomaly",
+            "data_sources": ["hr_records"],
+        }]
+        violations = ScopeFilter().check_output_sources(findings, capability)
+        assert len(violations) == 1
+        assert "hr_records" in violations[0]
+
+    def test_in_scope_sources_clean(self):
+        capability = AgentCapability(access_scopes=["financial"])
+        findings = [{"finding": "Revenue dipped", "data_sources": ["financial"]}]
+        assert ScopeFilter().check_output_sources(findings, capability) == []
+
+    def test_empty_scopes_exempt_from_output_check(self):
+        capability = AgentCapability(access_scopes=[])
+        findings = [{"finding": "Anything goes", "data_sources": ["hr_records"]}]
+        assert ScopeFilter().check_output_sources(findings, capability) == []
+
+
+# =============================================================================
+# QUORUM DEGRADATION
+# =============================================================================
+
+
+class FailingAgent:
+    """Agent whose analyze() always raises (simulates an offline agent)."""
+
+    def __init__(self, name):
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def domain(self) -> str:
+        return "unavailable"
+
+    async def analyze(self, task):
+        raise RuntimeError("agent offline")
+
+    async def challenge(self, task, other_analyses):
+        raise RuntimeError("agent offline")
+
+    async def vote(self, task, synthesis):
+        raise RuntimeError("agent offline")
+
+
+def quorum_config(tmp_path):
+    return RoundTableConfig(
+        enable_strategy_phase=False,
+        enable_challenge_phase=False,
+        include_core_agents=False,
+        enforce_evidence=False,
+        min_quorum=2,
+        artifacts_dir=tmp_path / "artifacts",
+    )
+
+
+class TestQuorumDegradation:
+    @pytest.mark.asyncio
+    async def test_all_agents_failing_marks_degraded(self, tmp_path):
+        rt = RoundTable(
+            agents=[FailingAgent("down_a"), FailingAgent("down_b")],
+            config=quorum_config(tmp_path),
+        )
+        result = await rt.run(RoundTableTask(id="quorum_fail", content="test"))
+        assert result.degraded is True
+        assert result.failed_agent_count == 2
+        assert result.analyses == []
+
+    @pytest.mark.asyncio
+    async def test_one_survivor_below_quorum_marks_degraded(
+        self, tmp_path, mock_agent
+    ):
+        rt = RoundTable(
+            agents=[mock_agent, FailingAgent("down_a")],
+            config=quorum_config(tmp_path),
+        )
+        result = await rt.run(RoundTableTask(id="quorum_partial", content="test"))
+        assert result.degraded is True
+        assert result.failed_agent_count == 1
+        assert len(result.analyses) == 1
+
+    @pytest.mark.asyncio
+    async def test_suspended_agents_count_toward_degradation(
+        self, tmp_path, mock_agents
+    ):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        for agent in mock_agents:
+            registry.register_local(agent)
+            registry.suspend(agent.name)
+
+        rt = RoundTable(
+            agents=mock_agents,
+            config=quorum_config(tmp_path),
+            registry=registry,
+        )
+        result = await rt.run(RoundTableTask(id="quorum_suspended", content="test"))
+        assert result.degraded is True
+        assert result.failed_agent_count == 2
+        assert result.analyses == []
+
+    @pytest.mark.asyncio
+    async def test_healthy_table_not_degraded(self, tmp_path, mock_agents):
+        rt = RoundTable(agents=mock_agents, config=quorum_config(tmp_path))
+        result = await rt.run(RoundTableTask(id="quorum_healthy", content="test"))
+        assert result.degraded is False
+        assert result.failed_agent_count == 0
+        assert len(result.analyses) == 2

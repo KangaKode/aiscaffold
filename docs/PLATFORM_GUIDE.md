@@ -324,6 +324,89 @@ See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the full HTTP contract with JSON 
 
 ---
 
+## Agent Integrity
+
+Once multiple teams connect agents, the agents themselves become an attack surface. The platform ships with a set of integrity controls, each mapped to a concrete threat:
+
+| Threat | Control |
+|--------|---------|
+| Agent impersonation (a rogue process claims to be a registered agent) | JWT identity tokens, verified at every dispatch |
+| Agent spam (one agent floods deliberations, burning LLM budget) | Per-agent rate limits (default 100 calls/hour) |
+| Data exfiltration via scope creep (an agent reads context it has no business seeing) | Scope filtering on input + output source audit |
+| Compromised or misbehaving agent needing emergency removal | Suspension + credential revocation |
+| Forgotten agents (registered once, never cleaned up, still credentialed) | Dormancy flagging after inactivity |
+| Degraded deliberations (so few agents respond the result is not trustworthy) | `min_quorum` on round table results |
+
+### Identity tokens
+
+Every registered agent gets a platform-issued JWT (HS256) binding its name, tenant, scopes, and meta-agent flag. Orchestrators verify the token before every dispatch:
+
+- Local agents without tokens are allowed (backward compatible).
+- Remote agents without tokens are **blocked** until credentials are rotated.
+- Suspended agents and agents with invalid/expired tokens are always blocked.
+
+Only the SHA-256 hash of a token is ever persisted -- the raw token is shown exactly once at issuance. After a restart, reloaded remote agents have no raw token in memory and must rotate before they dispatch again.
+
+Configure via environment:
+
+```bash
+# Required in production (64+ char hex). Generate one:
+#   python -c "import secrets; print(secrets.token_hex(32))"
+AGENT_IDENTITY_SIGNING_KEY=<64+ char hex>
+
+# Kill switch (dev only). Skips signature checks but STILL enforces
+# token expiry. Ignored in production.
+AGENT_IDENTITY_ENABLED=true
+
+# Days without dispatch before an agent is flagged dormant (default 30)
+AGENT_DORMANT_AFTER_DAYS=30
+```
+
+In development, an ephemeral signing key is generated per process, so tokens do not survive restarts -- fine for local work, wrong for production.
+
+### Credential lifecycle endpoints
+
+```bash
+# Re-issue an agent's token. The raw token is returned ONCE -- store it securely.
+curl -X POST https://platform.example.com/api/v1/agents/incident_responder/credentials/rotate \
+  -H "Authorization: Bearer $ADMIN_JWT"
+
+# Revoke credentials. Remote agents are blocked at dispatch until rotated.
+curl -X DELETE https://platform.example.com/api/v1/agents/incident_responder/credentials \
+  -H "Authorization: Bearer $ADMIN_JWT"
+
+# Emergency removal from all deliberations and tenant listings (reversible)
+curl -X POST https://platform.example.com/api/v1/agents/incident_responder/suspend \
+  -H "Authorization: Bearer $ADMIN_JWT"
+curl -X POST https://platform.example.com/api/v1/agents/incident_responder/unsuspend \
+  -H "Authorization: Bearer $ADMIN_JWT"
+```
+
+`GET /api/v1/agents` reports `suspended`, `credential_status` (`active`/`none`), `last_active`, and `dormant` per agent, so an audit of stale or de-credentialed agents is one API call. Restrict rotate/revoke/suspend to admins in your `require_role` matrix.
+
+### Scopes and rate limits
+
+Registration accepts `access_scopes`, `max_calls_per_hour`, and `is_meta_agent`. Scopes name the task-context keys the agent may read; before dispatch the context is filtered down to those keys, and after dispatch any finding citing a data source outside the agent's scopes is logged as a violation. An empty scope list means unrestricted (the zero-config default). Meta-agents additionally always receive `peer_analyses`.
+
+```bash
+curl -X POST https://platform.example.com/api/v1/agents \
+  -H "Authorization: Bearer $TEAM_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "finance_analyst",
+    "domain": "financial analysis",
+    "base_url": "https://finance-team.example.com",
+    "access_scopes": ["financial", "budgets"],
+    "max_calls_per_hour": 50
+  }'
+```
+
+### Quorum degradation
+
+A round table where most agents were skipped (suspended, rate limited, bad credentials) or crashed can quietly produce a one-agent "consensus". `RoundTableConfig.min_quorum` (default 2) guards this: when at least one agent failed or was gated AND fewer successful domain-agent analyses than `min_quorum` remain, the result is marked `degraded=True` with `failed_agent_count` set. Surface this flag to users -- a degraded deliberation is a signal to retry, not a verdict.
+
+---
+
 ## Compliance Considerations for Regulated Industries
 
 If your platform operates in a regulated industry (finance, healthcare, legal, government), AI interactions may be subject to legal discovery, audit, or regulatory review. Consider adding:
@@ -379,6 +462,7 @@ Define retention policies for each data store and document them for your legal/c
 | Evidence enforcement | **Built** | Runs on Phase 1 round-table analyses; extend validators for challenge and vote paths as needed |
 | Chat synthesis enforcement | **Built** | FactChecker checks every chat synthesis, with one corrective re-synthesis on rejection |
 | Tenant-aware chat routing | **Built** | Routing and LLM agent suggestions are validated against the tenant-visible agent set |
+| Agent integrity (identity tokens, rate limits, scopes, suspension, quorum) | **Built** | Set `AGENT_IDENTITY_SIGNING_KEY` in production; rotate/revoke/suspend via API |
 | JWT/OIDC auth | **You add** | Replace `verify_api_key` (~20 lines) |
 | RBAC role checks | **You add** | `require_role()` dependency (~15 lines) |
 | Per-tenant data scoping | **Partially built** | Request caches/search are scoped; map learning DB `project_id` to `auth.tenant_id` |

@@ -66,6 +66,8 @@ The round table engine handles complex decisions through four phases:
 3. Challenge: agents question each other's assumptions and evidence.
 4. Synthesis and voting: recommendations are merged while preserving dissent.
 
+Before any agent is dispatched, it passes integrity gates: its platform-issued JWT identity token is verified (suspended agents and remote agents without valid credentials are blocked), a per-agent rate limit is checked, and the task context is filtered to the agent's declared access scopes. Skipped or crashed agents never abort the deliberation, but when too few domain agents produce analyses (below the configured quorum), the result is explicitly flagged as degraded so a thin deliberation is never mistaken for a real consensus.
+
 ## Safety Agents
 
 Generated projects include core safety agents by default:
