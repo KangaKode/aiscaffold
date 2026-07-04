@@ -23,9 +23,10 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from ..security.prompt_guard import sanitize_for_prompt
 from .store import LearningStore

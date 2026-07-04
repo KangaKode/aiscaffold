@@ -196,8 +196,10 @@ def _insert_sql(table: str, row: dict, ph: str) -> tuple[str, list]:
     _validate_table(table)
     _validate_columns(table, row.keys())
     cols = list(row.keys())
+    # Identifiers are allowlist-validated above; values go through
+    # placeholders only, so string-building here is injection-safe.
     sql = (
-        f"INSERT INTO {table} ({', '.join(cols)})"
+        f"INSERT INTO {table} ({', '.join(cols)})"  # nosec B608
         f" VALUES ({', '.join([ph] * len(cols))})"
     )
     return sql, [row[c] for c in cols]
@@ -216,7 +218,8 @@ def _select_sql(
 ) -> tuple[str, list]:
     _validate_table(table)
     where, values = _where_sql(table, filters, ph)
-    sql = f"SELECT * FROM {table}{where}{_order_clause(table, order_by)}"
+    # Identifiers allowlist-validated; values parameterized.
+    sql = f"SELECT * FROM {table}{where}{_order_clause(table, order_by)}"  # nosec B608
     if limit:
         sql += f" LIMIT {int(limit)}"
     return sql, values
@@ -228,14 +231,16 @@ def _update_sql(table: str, row_id: str, changes: dict, ph: str) -> tuple[str, l
     if not changes:
         raise ValueError("update() requires at least one change")
     sets = ", ".join(f"{c} = {ph}" for c in changes)
-    sql = f"UPDATE {table} SET {sets} WHERE id = {ph}"
+    # Identifiers allowlist-validated; values parameterized.
+    sql = f"UPDATE {table} SET {sets} WHERE id = {ph}"  # nosec B608
     return sql, [*changes.values(), row_id]
 
 
 def _count_sql(table: str, filters: dict, ph: str) -> tuple[str, list]:
     _validate_table(table)
     where, values = _where_sql(table, filters, ph)
-    return f"SELECT COUNT(*) AS n FROM {table}{where}", values
+    # Identifiers allowlist-validated; values parameterized.
+    return f"SELECT COUNT(*) AS n FROM {table}{where}", values  # nosec B608
 
 
 # =============================================================================
