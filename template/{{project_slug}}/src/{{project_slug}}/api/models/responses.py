@@ -84,6 +84,8 @@ class AgentInfo(BaseModel):
     base_url: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     mode: str = "sync"
+    visibility: str = "public"
+    tenant_id: str = "default"
     healthy: bool = True
     interaction_count: int = 0
     suspended: bool = False

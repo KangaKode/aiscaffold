@@ -18,17 +18,21 @@ Usage:
     rt = RoundTable(agents=registry.get_all(), config=config)
 """
 
-import json
 import logging
 import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from ..security import ValidationError, validate_identifier, validate_url
+from ..security import validate_identifier, validate_in_choices
 from .capability import AgentCapability
 from .identity import hash_token, issue_token
 from .rate_limiter import AgentRateLimiter
+from .registry_persistence import (
+    VISIBILITY_CHOICES,
+    load_remote_entries,
+    save_remote_entries,
+)
 from .remote import RemoteAgent
 
 logger = logging.getLogger(__name__)
@@ -187,101 +191,15 @@ class AgentRegistry:
             return None, None
 
     def _load_remote_agents(self) -> None:
-        """Load persisted remote agent registrations from disk.
-
-        API keys are loaded from environment variables (AGENT_{NAME}_API_KEY),
-        never from the JSON file. Only the env var name is persisted.
-
-        Identity tokens: only the token HASH is ever persisted. Loaded remote
-        agents therefore get identity_token=None and must re-authenticate by
-        rotating credentials (POST /agents/{name}/credentials/rotate) before
-        they pass identity verification at dispatch.
-        """
-        if not self._persist_path.exists():
-            return
-        try:
-            with open(self._persist_path) as f:
-                data = json.load(f)
-            loaded_count = 0
-            for entry in data.get("remote_agents", []):
-                try:
-                    name = validate_identifier(entry["name"], "agent name")
-                    base_url = validate_url(entry["base_url"], "base_url")
-                    api_key_env = f"AGENT_{name.upper()}_API_KEY"
-                    base_url_env = f"AGENT_{name.upper()}_BASE_URL"
-                    expected_base_url = os.environ.get(base_url_env, "").rstrip("/")
-                    api_key = (
-                        os.environ.get(api_key_env, "")
-                        if expected_base_url == base_url.rstrip("/")
-                        else ""
-                    )
-
-                    agent = RemoteAgent(
-                        name=name,
-                        domain=entry["domain"],
-                        base_url=base_url,
-                        api_key=api_key,
-                        timeout=entry.get("timeout", 120),
-                        mode=entry.get("mode", "sync"),
-                    )
-                    capability = None
-                    cap_data = entry.get("capability")
-                    if isinstance(cap_data, dict):
-                        capability = AgentCapability(
-                            access_scopes=cap_data.get("access_scopes", []),
-                            is_meta_agent=cap_data.get("is_meta_agent", False),
-                            max_calls_per_hour=cap_data.get("max_calls_per_hour", 100),
-                        )
-                    self._agents[name] = AgentEntry(
-                        agent=agent,
-                        agent_type="remote",
-                        capabilities=entry.get("capabilities", []),
-                        identity_token=None,  # raw token never persisted; rotate to re-issue
-                        identity_token_hash=entry.get("identity_token_hash"),
-                        suspended=entry.get("suspended", False),
-                        capability=capability,
-                        last_active=entry.get("last_active"),
-                    )
-                    loaded_count += 1
-                except (KeyError, ValidationError) as e:
-                    logger.warning(
-                        f"[AgentRegistry] Skipping invalid persisted agent: {e}"
-                    )
-            logger.info(
-                f"[AgentRegistry] Loaded {loaded_count} "
-                f"remote agents from {self._persist_path}"
-            )
-        except Exception as e:
-            logger.warning(f"[AgentRegistry] Failed to load agents: {e}")
+        """Load persisted remote agent registrations (validation and env-based
+        credential resolution live in registry_persistence)."""
+        for kwargs in load_remote_entries(self._persist_path):
+            self._agents[kwargs["agent"].name] = AgentEntry(**kwargs)
 
     def _save_remote_agents(self) -> None:
-        """Persist remote agent registrations to disk.
-
-        Security: the raw identity token is NEVER written to disk -- only its
-        SHA-256 hash, the suspended flag, capability data, and last_active.
-        """
-        remote_entries = []
-        for entry in self._agents.values():
-            if entry.agent_type == "remote" and hasattr(entry.agent, "to_dict"):
-                agent_data = entry.agent.to_dict()
-                agent_data["capabilities"] = entry.capabilities
-                agent_data["identity_token_hash"] = entry.identity_token_hash
-                agent_data["suspended"] = entry.suspended
-                agent_data["last_active"] = entry.last_active
-                if entry.capability is not None:
-                    agent_data["capability"] = {
-                        "access_scopes": entry.capability.access_scopes,
-                        "is_meta_agent": entry.capability.is_meta_agent,
-                        "max_calls_per_hour": entry.capability.max_calls_per_hour,
-                    }
-                remote_entries.append(agent_data)
-
-        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._persist_path, "w") as f:
-            json.dump({"remote_agents": remote_entries}, f, indent=2)
-        logger.debug(
-            f"[AgentRegistry] Saved {len(remote_entries)} remote agents"
-        )
+        """Persist remote agent registrations to disk. The raw identity token
+        is NEVER written -- only its hash and visibility/tenant metadata."""
+        save_remote_entries(self._persist_path, list(self._agents.values()))
 
     def register_local(
         self,
@@ -319,13 +237,21 @@ class AgentRegistry:
         access_scopes: list[str] | None = None,
         max_calls_per_hour: int | None = None,
         is_meta_agent: bool = False,
+        visibility: str = "public",
+        tenant_id: str = "default",
     ) -> RemoteAgent:
         """Register a remote agent, issue an identity token, and persist.
 
         Optional access_scopes / max_calls_per_hour / is_meta_agent build an
         AgentCapability used for scope filtering and rate limiting at dispatch.
+        visibility ("public"/"team"/"private") and tenant_id control which
+        tenants can see and dispatch this agent; both survive restarts.
         The raw identity token is held in memory only (hash persisted).
+
+        Raises ValidationError on invalid visibility or tenant_id.
         """
+        visibility = validate_in_choices(visibility, VISIBILITY_CHOICES, "visibility")
+        tenant_id = validate_identifier(tenant_id, "tenant_id")
         agent = RemoteAgent(
             name=name,
             domain=domain,
@@ -344,11 +270,13 @@ class AgentRegistry:
                     max_calls_per_hour if max_calls_per_hour is not None else default_max
                 ),
             )
-        token, token_hash = self._issue_entry_token(name, capability)
+        token, token_hash = self._issue_entry_token(name, capability, tenant_id)
         self._agents[name] = AgentEntry(
             agent=agent,
             agent_type="remote",
             capabilities=capabilities,
+            visibility=visibility,
+            tenant_id=tenant_id,
             identity_token=token,
             identity_token_hash=token_hash,
             capability=capability,

@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from ...security import (
     ValidationError,
     validate_identifier,
+    validate_in_choices,
     validate_list_size,
     validate_url,
 )
@@ -58,6 +59,9 @@ async def register_agent(
         validate_list_size(
             registration.access_scopes, "access_scopes", max_items=MAX_CAPABILITIES
         )
+        validate_in_choices(
+            registration.visibility, ["public", "team", "private"], "visibility"
+        )
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -78,6 +82,8 @@ async def register_agent(
         access_scopes=registration.access_scopes,
         max_calls_per_hour=registration.max_calls_per_hour,
         is_meta_agent=registration.is_meta_agent,
+        visibility=registration.visibility,
+        tenant_id=auth.tenant_id,
     )
     logger.info(f"[AgentsAPI] Registered: {registration.name} at {registration.base_url}")
     return AgentInfo(
@@ -87,6 +93,8 @@ async def register_agent(
         base_url=registration.base_url,
         capabilities=registration.capabilities,
         mode=registration.mode,
+        visibility=registration.visibility,
+        tenant_id=auth.tenant_id,
     )
 
 
