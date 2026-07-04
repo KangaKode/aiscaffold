@@ -10,6 +10,12 @@ from .chat_orchestrator import ChatOrchestrator, ChatConfig  # noqa: F401
 from .agent_router import AgentRouter  # noqa: F401
 from .scope_filter import ScopeFilter  # noqa: F401
 from .identity_check import verify_agent_identity  # noqa: F401
+from .autonomy import AutonomyPolicy, DEFAULT_POLICIES, resolve_policy  # noqa: F401
+from .deliberation_audit import (  # noqa: F401
+    DeliberationAuditor,
+    audited_round_table,
+    new_correlation_id,
+)
 
 __all__ = [
     "RoundTable",
@@ -20,4 +26,10 @@ __all__ = [
     "AgentRouter",
     "ScopeFilter",
     "verify_agent_identity",
+    "AutonomyPolicy",
+    "DEFAULT_POLICIES",
+    "resolve_policy",
+    "DeliberationAuditor",
+    "audited_round_table",
+    "new_correlation_id",
 ]

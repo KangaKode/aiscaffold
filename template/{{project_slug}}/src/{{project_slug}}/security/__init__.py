@@ -14,6 +14,10 @@ from .injection_defense import (  # noqa: F401
     detect_output_drift,
     detect_multi_turn_poisoning,
 )
+from .pii import (  # noqa: F401
+    redact_pii,
+    contains_pii,
+)
 from .validators import (  # noqa: F401
     ValidationError,
     validate_length,
@@ -38,6 +42,8 @@ __all__ = [
     "validate_prompt_structure",
     "detect_output_drift",
     "detect_multi_turn_poisoning",
+    "redact_pii",
+    "contains_pii",
     "ValidationError",
     "validate_length",
     "validate_not_empty",

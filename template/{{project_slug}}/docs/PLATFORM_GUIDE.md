@@ -400,6 +400,39 @@ A round table where most agents were skipped (suspended, rate limited, bad crede
 
 ---
 
+## Agentic Governance
+
+Agent integrity controls govern individual agents; agentic governance governs the deliberations themselves -- how much autonomy a deployment grants, what each tenant may spend, and what trace a run leaves behind. Four controls compose:
+
+1. **Graduated autonomy** (`orchestration/autonomy.py`): trust levels 1 (most trusted) through 6 (most restricted) map to an `AutonomyPolicy` -- approval gate, specialist cap, rate-limit multiplier, and conflict auto-escalation. Set `RoundTableConfig.autonomy_level` or pass `autonomy_level=` to the chat orchestrator, which caps consulted specialists and auto-escalates to a full round table on specialist conflict per policy. Unknown or invalid levels always resolve to the most restrictive policy (fail-safe).
+2. **Per-tenant budgets** (`llm/budget_manager.py`): each tenant gets a spend cap with a warn threshold. The LLM client checks the budget *before* every provider call and raises `BudgetExceededError` for exhausted tenants; spend is recorded after each call and persists in the learning store's `budget_spend` table. A budget of 0 means unlimited.
+3. **Deliberation audit trail** (`orchestration/deliberation_audit.py`): metadata-only events (phases, agent counts, durations, outcomes) keyed by correlation id in the `audit_events` table. Detail values are structurally restricted to numbers, booleans, and short labels, so the trail cannot leak prompt or response content.
+4. **Check-ins** (`learning/checkin_manager.py`): when the resolved policy requires human approval, the round table marks its result `requires_approval=True` and opens a check-in a human must answer before the recommendation is acted on.
+
+Composed, the flow is: a request enters at some autonomy level, the policy caps how many agents deliberate, the budget gate bounds what the deliberation may cost, the auditor records that it happened, and restricted levels end in a human approval gate rather than autonomous action.
+
+### Configuration
+
+```bash
+# Tune individual policy fields per level (partial JSON overrides; malformed
+# or invalid values are logged and ignored -- defaults win):
+AUTONOMY_POLICIES='{"2": {"max_specialists": 3}, "4": {"rate_limit_multiplier": 1.0}}'
+```
+
+The gateway wires a learning-store-backed `BudgetManager` and `DeliberationAuditor` at startup (non-fatal when the store is unavailable) and attaches the budget manager to the LLM client.
+
+### API routes
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/v1/budgets/{tenant_id}` | GET | Budget config, current spend, and status for a tenant |
+| `/api/v1/budgets/{tenant_id}` | PUT | Set or replace a tenant's spend cap and warn threshold |
+| `/api/v1/audit/deliberations/{correlation_id}` | GET | Metadata timeline for one deliberation run (404 when empty) |
+
+See [GOVERNANCE.md](GOVERNANCE.md) for the full capability matrix, the honest "known limitations / non-claims" list, and extension points.
+
+---
+
 ## Scaling the Learning Layer
 
 The extended learning tables (corrections, activity events, agent dispatch stats, integrity flags) sit behind a deliberately tiny `LearningStore` protocol in `learning/store.py` -- five methods (`ensure_schema` / `insert` / `query` / `update` / `count`) with allowlist-validated identifiers and parameterized values. Two reference backends ship with the scaffold:
@@ -486,6 +519,8 @@ Define retention policies for each data store and document them for your legal/c
 | Agent integrity (identity tokens, rate limits, scopes, suspension, quorum) | **Built** | Set `AGENT_IDENTITY_SIGNING_KEY` in production; rotate/revoke/suspend via API |
 | Learning persistence (SQLite default, Postgres opt-in) | **Built** | `LearningStore` protocol -- bring your own backend via 5 methods |
 | Learning integrity (corrections four-eyes, override screening, collusion/drift, activity baselines) | **Built** | Findings surface at `GET /api/v1/activity/anomalies`; humans resolve |
+| Agentic governance (graduated autonomy, per-tenant budgets, audit trail, content policy, PII redaction) | **Built** | Tune levels via `AUTONOMY_POLICIES`; budgets/audit at `/api/v1/budgets` and `/api/v1/audit/deliberations` |
+| SIEM export, tamper-proof audit storage | **You add** | Poll `audit_events` by `created_at`; ship to append-only storage |
 | JWT/OIDC auth | **You add** | Replace `verify_api_key` (~20 lines) |
 | RBAC role checks | **You add** | `require_role()` dependency (~15 lines) |
 | Per-tenant data scoping | **Partially built** | Request caches/search are scoped; map learning DB `project_id` to `auth.tenant_id` |

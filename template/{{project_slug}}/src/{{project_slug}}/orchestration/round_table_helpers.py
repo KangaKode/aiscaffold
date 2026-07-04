@@ -8,9 +8,65 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .round_table import AgentAnalysis, RoundTableTask
+    from .round_table import (
+        AgentAnalysis,
+        RoundTableConfig,
+        RoundTableResult,
+        RoundTableTask,
+    )
 
 logger = logging.getLogger(__name__)
+
+
+def apply_approval_gate(
+    result: "RoundTableResult",
+    config: "RoundTableConfig",
+    checkin_manager: object = None,
+) -> None:
+    """Mark the result as requiring human approval when the config or the
+    resolved autonomy policy demands it, and create a check-in if a
+    manager is available.
+
+    Mutates result.requires_approval in place. Check-in creation is
+    best-effort -- a storage failure never fails the round table.
+    """
+    needs_approval = config.require_human_approval
+    if config.autonomy_level is not None:
+        from .autonomy import resolve_policy
+
+        policy = resolve_policy(config.autonomy_level)
+        needs_approval = needs_approval or policy.require_human_approval
+
+    if not needs_approval:
+        return
+
+    result.requires_approval = True
+    logger.info(
+        f"[RoundTable] Task {result.task_id}: human approval required "
+        f"before acting on this result"
+    )
+
+    if checkin_manager is None:
+        return
+    try:
+        direction = ""
+        if result.synthesis is not None:
+            direction = result.synthesis.recommended_direction[:500]
+        checkin_manager.create(
+            checkin_type="approval",
+            prompt=(
+                f"Round table task '{result.task_id}' finished "
+                f"(consensus: {'yes' if result.consensus_reached else 'no'}, "
+                f"approval rate: {result.approval_rate:.0%}) and requires "
+                f"your approval before its recommendation is acted on."
+            ),
+            suggested_action=direction or "Review the round table result",
+            context={"task_id": result.task_id},
+        )
+    except Exception as e:
+        logger.warning(
+            f"[RoundTable] Could not create approval check-in: {type(e).__name__}"
+        )
 
 
 async def enforce_evidence(

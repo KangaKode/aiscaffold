@@ -157,6 +157,7 @@ class RoundTableResult:
     duration_seconds: float = 0.0
     degraded: bool = False
     failed_agent_count: int = 0
+    requires_approval: bool = False  # Human must approve before acting on this
 
     @property
     def approval_rate(self) -> float:
@@ -184,6 +185,7 @@ class RoundTableConfig:
     include_core_agents: bool = True  # Auto-inject Skeptic, Quality, Evidence agents
     enforce_evidence: bool = True  # Run evidence enforcement pipeline on Phase 1 responses
     min_quorum: int = 2  # Min successful domain-agent analyses before result is degraded
+    autonomy_level: int | None = None  # 1-6; policy may force human approval
 
 
 # =============================================================================
@@ -213,10 +215,12 @@ class RoundTable:
         config: RoundTableConfig,
         llm_client: Any = None,
         registry: Any = None,
+        checkin_manager: Any = None,
     ):
         self.config = config
         self.llm = llm_client
         self._registry = registry  # Optional: enables identity/rate-limit gates
+        self._checkin_manager = checkin_manager  # Optional: approval check-ins
         self._core_agent_names: set[str] = set()
 
         if config.include_core_agents:
@@ -290,10 +294,14 @@ class RoundTable:
         result.consensus_reached = result.approval_rate >= self.config.consensus_threshold
         result.duration_seconds = (datetime.now() - start).total_seconds()
 
+        from .round_table_helpers import apply_approval_gate
+        apply_approval_gate(result, self.config, self._checkin_manager)
+
         self._write_artifact(task.id, "result_final", {
             "consensus": result.consensus_reached,
             "approval_rate": result.approval_rate,
             "duration": result.duration_seconds,
+            "requires_approval": result.requires_approval,
         })
 
         logger.info(
@@ -375,17 +383,10 @@ class RoundTable:
         )
 
         if self.config.enforce_evidence:
-            analyses = await self._enforce_evidence(analyses, task)
+            from .round_table_helpers import enforce_evidence
+            analyses = await enforce_evidence(analyses, task, self.llm)
 
         return analyses, skipped + failed
-
-    async def _enforce_evidence(
-        self, analyses: list[AgentAnalysis], task: RoundTableTask
-    ) -> list[AgentAnalysis]:
-        """Run evidence enforcement pipeline (round_table_helpers)."""
-        from .round_table_helpers import enforce_evidence
-
-        return await enforce_evidence(analyses, task, self.llm)
 
     async def _phase_challenge(
         self, task: RoundTableTask, analyses: list[AgentAnalysis]

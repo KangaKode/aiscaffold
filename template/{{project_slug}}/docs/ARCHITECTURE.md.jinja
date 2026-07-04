@@ -68,7 +68,9 @@ If `{{ layer_list[0] }}/foo.py` needs something defined in `{{ layer_list[-1] }}
 ### LLM Client (`llm/`)
 Provider-agnostic wrapper supporting Anthropic, OpenAI, and Google. Auto-detects provider from environment variables. Uses `CacheablePrompt(system, context, user_message)` to separate stable prompt prefix from dynamic content -- the stable parts are cached by the provider for significant token savings.
 
-**Key files:** `llm/client.py`
+- `llm/budget_manager.py` -- Per-tenant LLM spend governance: warn/exhaust thresholds, tenant context propagation via contextvars, and a pre-call gate that raises `BudgetExceededError` for exhausted tenants
+
+**Key files:** `llm/client.py`, `llm/budget_manager.py`
 
 ### Round Table (`orchestration/round_table.py`)
 Full 4-phase multi-agent deliberation protocol:
@@ -80,6 +82,10 @@ Full 4-phase multi-agent deliberation protocol:
 Hub-and-spoke: agents report to orchestrator, never to each other directly. All intermediate results written to `artifacts/` for auditability.
 
 Phase 1 dispatch runs each agent through integrity gates (`orchestration/dispatch_helpers.py`): identity token verification (`orchestration/identity_check.py`), per-agent rate limiting, and scope filtering of the task context to the agent's declared `access_scopes` (with an advisory audit of data sources cited in outputs). Gated or crashed agents are skipped, never fatal. When at least one agent was skipped or failed AND fewer successful domain-agent analyses than `RoundTableConfig.min_quorum` (default 2) remain, the result is flagged `degraded=True` with `failed_agent_count` set, so callers can distinguish a real consensus from a deliberation that limped through.
+
+Governance companions:
+- `orchestration/autonomy.py` -- Graduated autonomy: trust levels 1-6 resolve to an `AutonomyPolicy` (approval gate, specialist cap, rate multiplier, conflict auto-escalation); unknown levels fail safe to the most restrictive, tunable via `AUTONOMY_POLICIES`
+- `orchestration/deliberation_audit.py` -- Metadata-only audit trail for deliberation runs (phases, agent counts, durations, outcomes) keyed by correlation id; structurally cannot store prompt or response content
 
 ### Chat Orchestrator (`orchestration/chat_orchestrator.py`)
 Lightweight orchestrator-worker pattern for real-time interaction. Lead agent selects 1-3 relevant specialists via `AgentRouter`, consults them in parallel, cross-checks responses for agreement/disagreement, and synthesizes a user-facing response. Surfaces both views when specialists disagree. Escalates to full round table when confidence is low. Routing is tenant-scoped (only agents visible to the caller's tenant are candidates, including LLM-suggested ones), and the evidence, skeptic, and sentinel safety agents join every consultation. Each synthesis is checked by the FactChecker; a rejected synthesis is re-generated once with a correction note, and a repeat rejection triggers an escalation suggestion.
@@ -124,6 +130,8 @@ FastAPI application with route modules:
 - `routes/preferences.py` -- Learned preference management
 - `routes/checkins.py` -- Permission-based adaptation gates
 - `routes/activity.py` -- Integrity-flag review (anomaly listing + resolve)
+- `routes/budgets.py` -- Per-tenant LLM budget config, spend, and status (GET/PUT)
+- `routes/audit.py` -- Deliberation audit timelines by correlation id
 - `routes/health.py` -- Liveness, readiness, metrics
 - `middleware/auth.py` -- API key authentication
 - `middleware/rate_limit.py` -- Per-client rate limiting
@@ -134,6 +142,7 @@ FastAPI application with route modules:
 - `prompt_guard.py` -- XML delimiter wrapping, injection pattern detection, content sanitization
 - `injection_defense.py` -- Homoglyph normalization, invisible-character stripping, encoding-attack detection, canary tokens, output drift and multi-turn poisoning detection
 - `validators.py` -- Input length, URL (anti-SSRF), identifier, list/dict size validation
+- `pii.py` -- Pattern-based PII redaction (emails, SSNs, Luhn-verified cards, IPs, phones, names-in-context) with Unicode normalization; idempotent `[REDACTED:CATEGORY]` tokens
 
 Prompt injection is defended in 3 layers: static pattern matching in `prompt_guard.py` (Layer 1), advanced normalization and detection in `injection_defense.py` (Layer 2), and semantic screening by the Sentinel core agent (Layer 3). Security is wired into every module that handles external input, not bolted on as an afterthought.
 
@@ -152,6 +161,7 @@ Prompt injection is defended in 3 layers: static pattern matching in `prompt_gua
 - `override_detector.py` -- Screens proposed corrections for injection, safety-agent targeting, and evidence-level inflation
 - `collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection over round-table history
 - `activity.py` -- User activity thresholds and per-agent behavioral baselines over dispatch stats
+- `content_policy.py` -- Heuristic classifier for knowledge writes (approved/flagged/rejected); blocks standing-rule manipulation and persists integrity flags
 - `rag/` -- Vector store adapter, embeddings, semantic preference search
 - `rag/transcript_indexer.py` -- Indexes round table results for semantic search over past deliberations
 {% endif -%}

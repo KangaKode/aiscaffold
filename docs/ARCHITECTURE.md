@@ -103,8 +103,22 @@ The learning module persists its extended tables (corrections, activity events, 
 - `learning/override_detector.py` -- Screens proposed corrections for injection, safety-agent targeting, and evidence-level inflation
 - `learning/collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection
 - `learning/activity.py` -- User activity thresholds and per-agent behavioral baselines
+- `learning/content_policy.py` -- Heuristic classifier for knowledge writes (approved/flagged/rejected); blocks standing-rule manipulation and persists integrity flags
 
 Findings are persisted as integrity flags and reviewed by humans through the anomalies API -- nothing is auto-rejected or auto-suspended.
+
+## Agentic Governance
+
+Generated projects also ship a governance layer over the deliberations themselves:
+
+- `orchestration/autonomy.py` -- Graduated autonomy: trust levels 1-6 resolve to an `AutonomyPolicy` (approval gate, specialist cap, rate multiplier, conflict auto-escalation); unknown levels fail safe to the most restrictive
+- `llm/budget_manager.py` -- Per-tenant LLM spend caps with warn/exhaust thresholds; exhausted tenants are blocked before the provider call
+- `orchestration/deliberation_audit.py` -- Metadata-only audit trail (phases, agent counts, durations, outcomes) that structurally cannot store prompt or response content
+- `security/pii.py` -- Pattern-based, idempotent PII redaction with Unicode normalization, applied before correction text is persisted
+- `api/routes/budgets.py` -- GET/PUT per-tenant budget config, spend, and status
+- `api/routes/audit.py` -- GET deliberation audit timelines by correlation id
+
+See the generated project's `docs/GOVERNANCE.md` for the capability matrix and stated non-claims.
 
 ## External Agent Protocol
 
