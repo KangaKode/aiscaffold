@@ -1,5 +1,7 @@
 # roundtable
 
+[![Validate Scaffold](https://github.com/KangaKode/roundtable/actions/workflows/validate.yml/badge.svg)](https://github.com/KangaKode/roundtable/actions/workflows/validate.yml)
+
 **AI-Assisted Investigation Scaffold -- Evidence-Grounded Multi-Agent Workflows**
 
 `roundtable` is a public reference scaffold for building AI-assisted investigation and analysis systems where unsupported claims, weak evidence, unsafe automation, and access-boundary risks must be explicit and reviewable.
@@ -29,14 +31,14 @@ One-command scaffold ([copier](https://copier.readthedocs.io/)) for AI agent pro
 
 ---
 
-## What This Demonstrates
+## Design Principles
 
-- **Detection and response infrastructure mindset:** validation gates, red-team checks, evals, CI, architecture tests, and repeatable workflows.
-- **Investigation-grade evidence discipline:** evidence levels, citation validation hooks, fact checking, numeric verification, explicit dissent, and source-aware findings.
-- **AI security relevance:** multi-agent deliberation, adversarial safety agents, hallucination controls, prompt-injection guardrails, and human-in-the-loop workflows.
-- **Access-boundary design:** tenant-aware context patterns, agent visibility rules, session isolation primitives, and RBAC extension points.
-- **Systems thinking:** generated project architecture, platform guide, Docker/Kubernetes templates, API gateway, external agent protocol, and validation pipeline.
-- **Operational empathy:** cloneable scaffold, docs, quick start, generated tests, and clear commands for inspection.
+- **Validation gates:** Every generated project ships with quick checks, red-team scans, architecture tests, CI, and a 16-step validation pipeline before merge.
+- **Evidence discipline:** Claims carry explicit evidence levels (VERIFIED/CORROBORATED/INDICATED/POSSIBLE); citation validation, fact checking, and numeric verification are built into the enforcement pipeline.
+- **Adversarial safety by default:** Five core safety agents challenge every round table; prompt-injection guardrails and human-in-the-loop approval gates are first-class, not optional add-ons.
+- **Tenant-aware isolation:** Auth context scopes sessions, results, and transcript search; RBAC and agent visibility extension points are documented in the platform guide.
+- **Production-ready architecture:** Generated projects include FastAPI gateway, external agent protocol, Docker/Kubernetes templates, and a layered architecture enforced by tests.
+- **Inspectable by design:** Cloneable scaffold, generated tests, quick-start commands, and docs make every behavior reviewable without reading the entire codebase.
 
 ---
 
