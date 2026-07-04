@@ -321,7 +321,7 @@ if [ -d "$GEN_ROOT/tests" ]; then
 
     # Run all test files (all use mocks/in-process testing, no external deps)
     UNIT_FILES=""
-    for f in tests/test_security.py tests/test_injection_defense.py tests/test_llm.py tests/test_learning.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_chat_hardening.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py; do
+    for f in tests/test_security.py tests/test_injection_defense.py tests/test_llm.py tests/test_learning.py tests/test_learning_store.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_chat_hardening.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py; do
         if [ -f "$f" ]; then
             UNIT_FILES="$UNIT_FILES $f"
         fi

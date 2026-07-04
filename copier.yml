@@ -111,6 +111,14 @@ persistence:
     - "none"
   default: "sqlite"
 
+learning_backend:
+  type: str
+  help: "Learning system storage backend (postgres needs the 'postgres' extra: pip install '.[postgres]')"
+  choices:
+    - "sqlite"
+    - "postgres"
+  default: "sqlite"
+
 python_version:
   type: str
   default: "3.13"

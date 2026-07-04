@@ -77,10 +77,16 @@ def make_expired_token(agent_id: str = "stale_agent") -> str:
 
 
 def tamper_signature(token: str) -> str:
-    """Flip the last character of the JWT signature segment."""
-    last = token[-1]
-    replacement = "A" if last != "A" else "B"
-    return token[:-1] + replacement
+    """Corrupt the middle of the JWT signature segment.
+
+    The middle character is used (not the last) because the final base64url
+    character only contributes padding bits -- flipping it may decode to the
+    same signature bytes and still verify.
+    """
+    header, payload, sig = token.split(".")
+    mid = len(sig) // 2
+    replacement = "A" if sig[mid] != "A" else "B"
+    return f"{header}.{payload}.{sig[:mid]}{replacement}{sig[mid + 1:]}"
 
 
 class SimpleAgent:

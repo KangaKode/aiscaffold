@@ -70,12 +70,20 @@ async def timed_analyze(agent: Any, task: Any) -> Any:
         )
 
 
+async def _analyze_with_duration(agent: Any, task: Any) -> tuple[Any, float]:
+    """timed_analyze plus the elapsed seconds (for dispatch-stats recording)."""
+    start = time.monotonic()
+    result = await timed_analyze(agent, task)
+    return result, time.monotonic() - start
+
+
 async def dispatch_with_gates(
     agents: list,
     task: Any,
     registry: Any,
     rate_limiter: AgentRateLimiter | None,
     component: str,
+    baseline_tracker: Any = None,
 ) -> tuple[list[Any], int, int]:
     """Run analyze() on all agents in parallel with per-agent dispatch gates.
 
@@ -89,6 +97,11 @@ async def dispatch_with_gates(
 
     After analyze(), findings citing data sources outside the agent's
     scopes are logged (analysis is kept -- flags are advisory).
+
+    baseline_tracker: optional AgentBaselineTracker. When provided, each
+    successful dispatch records stats (duration, refused = premise_valid
+    is False, confidence attr when present, scope violation count) --
+    best-effort, never fatal. Callers that don't pass it are unaffected.
 
     Returns (analyses, skipped_count, failed_count) where skipped_count is
     agents blocked by a gate and failed_count is agents whose analyze()
@@ -121,20 +134,23 @@ async def dispatch_with_gates(
 
         dispatched.append(agent)
         capabilities.append(capability)
-        coros.append(timed_analyze(agent, agent_task))
+        coros.append(_analyze_with_duration(agent, agent_task))
 
     results = await asyncio.gather(*coros, return_exceptions=True)
     analyses = []
     failed = 0
-    for i, r in enumerate(results):
-        if isinstance(r, Exception):
-            logger.error("[%s] %s failed: %s", component, dispatched[i].name, r)
+    for i, item in enumerate(results):
+        if isinstance(item, Exception):
+            logger.error("[%s] %s failed: %s", component, dispatched[i].name, item)
             failed += 1
             continue
+        r, duration = item
         capability = capabilities[i]
+        violation_count = 0
         observations = getattr(r, "observations", None)
         if capability is not None and isinstance(observations, list):
             violations = scope_filter.check_output_sources(observations, capability)
+            violation_count = len(violations)
             if violations:
                 logger.warning(
                     "[%s] Agent '%s': %d scope violation(s) in output: %s",
@@ -142,6 +158,21 @@ async def dispatch_with_gates(
                     dispatched[i].name,
                     len(violations),
                     "; ".join(violations),
+                )
+        if baseline_tracker is not None:
+            try:
+                baseline_tracker.record_dispatch(
+                    agent_id=dispatched[i].name,
+                    duration_seconds=duration,
+                    refused=getattr(r, "premise_valid", True) is False,
+                    confidence=float(getattr(r, "confidence", 0.0) or 0.0),
+                    scope_violations=violation_count,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] baseline stats recording failed (ignored): %s",
+                    component,
+                    exc,
                 )
         analyses.append(r)
     return analyses, skipped, failed

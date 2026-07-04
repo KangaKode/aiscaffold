@@ -355,6 +355,8 @@ AGENT_DORMANT_AFTER_DAYS=30
 
 In development, an ephemeral signing key is generated per process, so tokens do not survive restarts -- fine for local work, wrong for production.
 
+The token layer is also an extension point: `issue_token` / `verify_token` / `hash_token` in `agents/identity.py` are the entire boundary between the registry and the JWT implementation. To integrate an external workload-identity provider or token authority (a corporate STS, a service-mesh identity system, a secrets platform that issues short-lived credentials), replace those three functions -- callers, dispatch gates, and the credential API keep working without interface changes.
+
 ### Credential lifecycle endpoints
 
 ```bash
@@ -395,6 +397,34 @@ curl -X POST https://platform.example.com/api/v1/agents \
 ### Quorum degradation
 
 A round table where most agents were skipped (suspended, rate limited, bad credentials) or crashed can quietly produce a one-agent "consensus". `RoundTableConfig.min_quorum` (default 2) guards this: when at least one agent failed or was gated AND fewer successful domain-agent analyses than `min_quorum` remain, the result is marked `degraded=True` with `failed_agent_count` set. Surface this flag to users -- a degraded deliberation is a signal to retry, not a verdict.
+
+---
+
+## Scaling the Learning Layer
+
+The extended learning tables (corrections, activity events, agent dispatch stats, integrity flags) sit behind a deliberately tiny `LearningStore` protocol in `learning/store.py` -- five methods (`ensure_schema` / `insert` / `query` / `update` / `count`) with allowlist-validated identifiers and parameterized values. Two reference backends ship with the scaffold:
+
+- **SQLite (default)** -- stdlib `sqlite3`, zero configuration, right for single-node deployments.
+- **Postgres (opt-in)** -- answer `learning_backend=postgres` at generation time, or set `LEARNING_BACKEND=postgres` plus `LEARNING_POSTGRES_DSN` at runtime, and install the extra: `pip install '.[postgres]'`.
+
+Because every caller goes through the protocol, enterprise deployments extend without touching callers:
+
+- **Row-level security**: every table carries `tenant_id`, so Postgres RLS policies keyed on it give hard tenant isolation.
+- **pgvector**: co-locate the vector store with the learning tables in the same Postgres instance.
+- **Alembic migrations**: the built-in forward-only `MIGRATIONS` list is fine for a handful of schema changes; swap in Alembic when schema churn justifies it.
+- **Bring your own store**: implement the five methods against anything (MySQL, DynamoDB, an internal storage service).
+
+### Learning integrity
+
+The learning layer reshapes agent behavior, so it gets its own integrity controls. All findings are persisted as integrity flags and surfaced through `GET /api/v1/activity/anomalies` (resolve via `POST /api/v1/activity/anomalies/{flag_id}/resolve`) -- nothing is auto-rejected or auto-suspended; a human closes every flag:
+
+- **Corrections lifecycle**: corrections only influence prompts after human approval, with a four-eyes rule (approver must differ from proposer; `require_four_eyes=False` for single-operator setups) and a check-in opened per proposal.
+- **Context budget**: approved corrections render into prompts under a character budget (`CORRECTION_CONTEXT_BUDGET`, default 4000) with sanitized fields.
+- **Override screening**: each proposed correction is screened for prompt injection, safety-agent targeting ("ignore the skeptic"), and evidence-level inflation before it reaches a reviewer.
+- **Collusion detection**: pairwise vote-lockstep and reciprocal never-challenge analysis flags agent pairs that stop checking each other.
+- **Correction drift**: a rising share of "softening" language in recent approved corrections flags a possible slow-poisoning campaign.
+- **User activity anomalies**: per-user request bursts, repeated auth failures, and agent-registration sprees trip configurable thresholds (`ACTIVITY_TRACKING_ENABLED` to opt out).
+- **Agent behavioral baselines**: each agent's refusal rate, confidence, latency, and scope discipline are compared against its own history -- an agent with valid credentials that stops behaving like itself still gets flagged.
 
 ---
 
@@ -454,6 +484,8 @@ Define retention policies for each data store and document them for your legal/c
 | Chat synthesis enforcement | **Built** | FactChecker checks every chat synthesis, with one corrective re-synthesis on rejection |
 | Tenant-aware chat routing | **Built** | Routing and LLM agent suggestions are validated against the tenant-visible agent set |
 | Agent integrity (identity tokens, rate limits, scopes, suspension, quorum) | **Built** | Set `AGENT_IDENTITY_SIGNING_KEY` in production; rotate/revoke/suspend via API |
+| Learning persistence (SQLite default, Postgres opt-in) | **Built** | `LearningStore` protocol -- bring your own backend via 5 methods |
+| Learning integrity (corrections four-eyes, override screening, collusion/drift, activity baselines) | **Built** | Findings surface at `GET /api/v1/activity/anomalies`; humans resolve |
 | JWT/OIDC auth | **You add** | Replace `verify_api_key` (~20 lines) |
 | RBAC role checks | **You add** | `require_role()` dependency (~15 lines) |
 | Per-tenant data scoping | **Partially built** | Request caches/search are scoped; map learning DB `project_id` to `auth.tenant_id` |

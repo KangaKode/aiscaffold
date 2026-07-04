@@ -35,7 +35,7 @@ from ..learning.user_profile import UserProfileManager
 from ..llm import create_client as create_llm_client
 from ..orchestration.round_table import RoundTableConfig
 from .middleware.auth import check_production_auth
-from .routes import agents, chat, checkins, feedback, health, preferences, round_table, sessions, webhooks
+from .routes import activity, agents, chat, checkins, feedback, health, preferences, round_table, sessions, webhooks
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,26 @@ def create_app(
     except Exception as e:
         logger.warning(f"[Gateway] Learning system init failed (non-fatal): {e}")
 
+    # Activity tracking: one activity_events row per request, plus the
+    # anomaly-review API. Enabled by default (ACTIVITY_TRACKING_ENABLED=false
+    # to opt out); degrades to a no-op if the learning store is unavailable,
+    # so zero-config deployments keep working.
+    if os.environ.get("ACTIVITY_TRACKING_ENABLED", "true").strip().lower() not in (
+        "false", "0", "no",
+    ):
+        try:
+            from ..learning.activity import ActivityTracker
+            from ..learning.store import get_learning_store
+            from .middleware.activity import ActivityTrackingMiddleware
+
+            store = get_learning_store()
+            application.state.learning_store = store
+            application.state.activity_tracker = ActivityTracker(store)
+            application.add_middleware(ActivityTrackingMiddleware)
+            logger.info("[Gateway] Activity tracking enabled")
+        except Exception as e:
+            logger.warning(f"[Gateway] Activity tracking init failed (non-fatal): {e}")
+
     try:
         from ..learning.rag.transcript_indexer import TranscriptIndexer
 
@@ -165,6 +185,9 @@ def create_app(
     )
     application.include_router(
         checkins.router, prefix="/api/v1", tags=["Learning - Check-ins"]
+    )
+    application.include_router(
+        activity.router, prefix="/api/v1", tags=["Activity"]
     )
 
     logger.info("[Gateway] API gateway initialized")

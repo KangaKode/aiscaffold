@@ -33,6 +33,10 @@ dependencies = [
     "pyjwt>=2.8",
 ]
 
+[project.optional-dependencies]
+# Learning store Postgres backend (LEARNING_BACKEND=postgres)
+postgres = ["psycopg[binary]>=3.1"]
+
 [build-system]
 requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
