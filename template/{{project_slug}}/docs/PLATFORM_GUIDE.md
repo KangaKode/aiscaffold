@@ -366,8 +366,10 @@ Define retention policies for each data store and document them for your legal/c
 | AuthContext with tenant_id | **Built** | Propagates to all 25+ routes |
 | Agent visibility (public/team/private) | **Built** | `list_for_tenant()` filters by rules |
 | Session isolation | **Built** | `{tenant_id}:{user_id}:{session_id}` |
-| Core safety agents | **Built** | Auto-included in every round table |
-| Evidence enforcement | **Built** | Runs on Phase 1 round-table analyses; extend validators for chat, challenge, and vote paths as needed |
+| Core safety agents | **Built** | Auto-included in every round table; evidence/skeptic/sentinel overlay joins every chat consultation |
+| Evidence enforcement | **Built** | Runs on Phase 1 round-table analyses; extend validators for challenge and vote paths as needed |
+| Chat synthesis enforcement | **Built** | FactChecker checks every chat synthesis, with one corrective re-synthesis on rejection |
+| Tenant-aware chat routing | **Built** | Routing and LLM agent suggestions are validated against the tenant-visible agent set |
 | JWT/OIDC auth | **You add** | Replace `verify_api_key` (~20 lines) |
 | RBAC role checks | **You add** | `require_role()` dependency (~15 lines) |
 | Per-tenant data scoping | **Partially built** | Request caches/search are scoped; map learning DB `project_id` to `auth.tenant_id` |

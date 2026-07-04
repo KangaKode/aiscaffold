@@ -65,6 +65,8 @@ class ChatMessageResponse(BaseModel):
     agreement_level: float | None = None
     conflicts: list[dict] = Field(default_factory=list)
     duration_seconds: float = 0.0
+    enforcement_result: str = ""
+    enforcement_violations: list[str] = Field(default_factory=list)
 
 
 class EscalateRequest(BaseModel):
@@ -154,6 +156,7 @@ async def send_message(
         message=chat_request.message,
         trust_scores=trust_scores,
         context=profile_context,
+        tenant_id=auth.tenant_id,
     )
 
     return ChatMessageResponse(
@@ -172,6 +175,8 @@ async def send_message(
             else []
         ),
         duration_seconds=chat_response.duration_seconds,
+        enforcement_result=chat_response.enforcement_result,
+        enforcement_violations=chat_response.enforcement_violations,
     )
 
 
@@ -219,6 +224,7 @@ async def send_message_stream(
             message=chat_request.message,
             trust_scores=trust_scores,
             context=profile_context,
+            tenant_id=auth.tenant_id,
         )
 
         if chat_response.agents_consulted:
@@ -239,6 +245,8 @@ async def send_message_stream(
                 else None
             ),
             "duration_seconds": chat_response.duration_seconds,
+            "enforcement_result": chat_response.enforcement_result,
+            "enforcement_violations": chat_response.enforcement_violations,
         })
 
         yield _sse_event("done", {})
