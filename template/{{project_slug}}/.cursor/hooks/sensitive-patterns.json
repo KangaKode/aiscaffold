@@ -1,0 +1,29 @@
+{
+  "description": "Shared sensitive file patterns for this project's Cursor hooks. Used by beforeTabFileRead. Guidance verified: 2026-07.",
+  "block_patterns": [
+    "\\.env$",
+    "\\.env\\.\\w+$",
+    "\\.key$",
+    "\\.pem$",
+    "\\.p12$",
+    "\\.pfx$",
+    "\\.jks$",
+    "\\.keystore$",
+    "\\.secret$",
+    "credentials\\.json$",
+    "service[_-]account.*\\.json$",
+    "secret\\.yaml$",
+    "id_rsa$",
+    "id_ed25519$",
+    "id_ecdsa$",
+    "\\.ssh/config$",
+    "\\.aws/credentials$",
+    "\\.netrc$",
+    "\\.pgpass$"
+  ],
+  "safe_patterns": [
+    "\\.env\\.example$",
+    "\\.env\\.template$",
+    "\\.env\\.sample$"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "_comment": "Cursor hooks for this project. Security gates fail closed. Guidance verified: 2026-07.",
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "python3 .cursor/hooks/session-start.py",
+        "timeout": 5
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "python3 .cursor/hooks/block-dangerous-shell.py",
+        "failClosed": true
+      }
+    ],
+    "beforeTabFileRead": [
+      {
+        "command": "python3 .cursor/hooks/block-tab-secrets.py",
+        "failClosed": true
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "python3 .cursor/hooks/log-subagent-start.py"
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "python3 .cursor/hooks/log-subagent-stop.py"
+      }
+    ]
+  }
+}

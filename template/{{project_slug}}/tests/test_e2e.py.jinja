@@ -43,7 +43,7 @@ class TestE2ERoundTable:
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "completed"
-        assert len(data["analyses"]) == 7  # 5 core + 2 user agents
+        assert len(data["analyses"]) == 8  # 6 core + 2 user agents
         assert data["task_id"] is not None
 
     @pytest.mark.asyncio

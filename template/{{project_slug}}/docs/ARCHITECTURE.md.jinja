@@ -86,12 +86,13 @@ Lightweight orchestrator-worker pattern for real-time interaction. Lead agent se
 - `example_agent.py` -- Reference implementation of `AgentProtocol`
 - `remote.py` -- `RemoteAgent` adapter wrapping HTTP endpoints as `AgentProtocol`
 - `registry.py` -- `AgentRegistry` managing local + remote agents with health checks
-- `core/` -- Five core safety agents (auto-included in every round table):
+- `core/` -- Six core safety agents (auto-included in every round table):
   - `skeptic.py` -- Devil's advocate: challenges assumptions, demands evidence, flags logical fallacies
   - `quality.py` -- Completeness checker: tracks requirement coverage, flags gaps in scope
   - `evidence.py` -- Claim verifier: grades evidence strength, flags speculation presented as fact
   - `fact_checker_agent.py` -- Challenges speculation language in deliberation, explains why it's problematic
   - `citation_agent.py` -- Enforces evidence level tagging (VERIFIED/CORROBORATED/INDICATED/POSSIBLE)
+  - `sentinel.py` -- Semantic guard: screens inputs for injection and extraction attempts, screens outputs for leaks, fails closed when the LLM is unavailable
 
 Core agents are meta-agents that evaluate *how well* the analysis was done, not *what* was analyzed. They participate automatically unless `include_core_agents=False` is set in `RoundTableConfig`. This is a deliberate opt-out -- the default is safety-on.
 
@@ -124,9 +125,10 @@ FastAPI application with 10 route modules:
 
 ### Security (`security/`)
 - `prompt_guard.py` -- XML delimiter wrapping, injection pattern detection, content sanitization
+- `injection_defense.py` -- Homoglyph normalization, invisible-character stripping, encoding-attack detection, canary tokens, output drift and multi-turn poisoning detection
 - `validators.py` -- Input length, URL (anti-SSRF), identifier, list/dict size validation
 
-Security is wired into every module that handles external input, not bolted on as an afterthought.
+Prompt injection is defended in 3 layers: static pattern matching in `prompt_guard.py` (Layer 1), advanced normalization and detection in `injection_defense.py` (Layer 2), and semantic screening by the Sentinel core agent (Layer 3). Security is wired into every module that handles external input, not bolted on as an afterthought.
 
 {% if include_learning -%}
 ### Learning System (`learning/`)

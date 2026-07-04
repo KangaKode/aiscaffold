@@ -320,7 +320,7 @@ See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the full HTTP contract with JSON 
 3. Team registers via `POST /api/v1/agents` with their credentials
 4. Platform admin sets visibility (`public` if shared, `team` if private)
 5. Team's agent now participates in their round tables and chat sessions
-6. Core safety agents (Skeptic, Quality, Evidence, FactChecker, Citation) automatically participate alongside the team's agents
+6. Core safety agents (Skeptic, Quality, Evidence, FactChecker, Citation, Sentinel) automatically participate alongside the team's agents
 
 ---
 

@@ -1,0 +1,30 @@
+---
+description: "Requires tests before behavioral implementation changes."
+globs: []
+alwaysApply: true
+---
+
+# Test First
+
+For behavioral changes, write or update focused tests before changing production code.
+
+Guidance verified: 2026-07.
+
+## Requirements
+
+- Add or update tests first for changes that alter runtime behavior, security controls, data access, routing, persistence, or public API responses.
+- Keep documentation-only edits, local-only planning, and generated artifact refreshes scoped and reviewable.
+- Do not weaken existing tests to make implementation easier.
+- If a package path, import path, environment variable, database identifier, or deployment name changes, add verification for the old and new behavior as appropriate.
+- Run the narrowest relevant tests while iterating, then the broader required suite before commit.
+
+## Exceptions
+
+Test-first may be skipped only for:
+
+- Documentation-only edits.
+- Local-only planning artifacts.
+- Mechanical generated artifacts after their source-of-truth file changed.
+- Fixes under 5 lines when the maintainer explicitly approves skipping.
+
+When in doubt, write the test.
