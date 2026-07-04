@@ -8,20 +8,30 @@ Commands:
     aiscaffold update          Pull template updates
 """
 
-import ast
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
+from yaml.nodes import MappingNode, ScalarNode
+from yaml.tokens import TagToken
 
 app = typer.Typer(help="AI project scaffold with 2026 best practices")
 console = Console()
 
 TEMPLATE_REPO = "gh:KangaKode/roundtable"
+TRUSTED_TEMPLATE_SOURCES = {
+    TEMPLATE_REPO,
+    "https://github.com/KangaKode/roundtable",
+    "https://github.com/KangaKode/roundtable.git",
+    "git@github.com:KangaKode/roundtable.git",
+}
+SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 LOCAL_TEMPLATE = str(Path(__file__).parent.parent.parent.parent / "aiscaffold-template")
 
 
@@ -30,6 +40,78 @@ def _get_template_source() -> str:
     if Path(LOCAL_TEMPLATE).exists():
         return LOCAL_TEMPLATE
     return TEMPLATE_REPO
+
+
+def _derive_project_slug(name: str) -> str:
+    """Match the template's default slug derivation for non-interactive init."""
+    return name.lower().replace(" ", "_").replace("-", "_")
+
+
+def _validate_project_slug(slug: str) -> None:
+    if not slug.isascii() or not slug.isidentifier():
+        console.print(
+            "[bold red]Error:[/bold red] project name must produce an ASCII "
+            "Python identifier slug (letters, numbers, and underscores; "
+            "cannot start with a number)."
+        )
+        raise typer.Exit(1)
+
+
+def _is_trusted_template_source(source: str) -> bool:
+    """Only trusted Roundtable templates may run Copier tasks."""
+    if source in TRUSTED_TEMPLATE_SOURCES:
+        return True
+    if source.startswith("git@") or SOURCE_SCHEME_RE.match(source):
+        return False
+
+    try:
+        source_path = Path(source).expanduser().resolve()
+        local_path = Path(LOCAL_TEMPLATE).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return local_path.exists() and source_path == local_path
+
+
+def _read_copier_source(answers_path: Path) -> str:
+    """Read an unambiguous top-level _src_path using YAML semantics."""
+    answers = answers_path.read_text(encoding="utf-8")
+    for line in answers.splitlines():
+        if line.lstrip().startswith("?"):
+            raise ValueError("complex YAML keys are not supported in .copier-answers.yml")
+
+    try:
+        for token in yaml.scan(answers):
+            if isinstance(token, TagToken):
+                raise ValueError("YAML tags are not supported in .copier-answers.yml")
+        root = yaml.compose(answers)
+    except yaml.YAMLError as e:
+        raise ValueError(f"invalid .copier-answers.yml: {e}") from e
+
+    if root is None or not isinstance(root, MappingNode):
+        raise ValueError(".copier-answers.yml must be a YAML mapping")
+
+    values: list[str] = []
+    for key_node, value_node in root.value:
+        if not isinstance(key_node, ScalarNode):
+            raise ValueError("complex YAML keys are not supported in .copier-answers.yml")
+        if key_node.tag != "tag:yaml.org,2002:str":
+            raise ValueError("YAML key tags are not supported in .copier-answers.yml")
+        if key_node.value == "<<":
+            raise ValueError("YAML merge keys are not supported in .copier-answers.yml")
+        if key_node.value != "_src_path":
+            continue
+        if not isinstance(value_node, ScalarNode) or value_node.tag != "tag:yaml.org,2002:str":
+            raise ValueError("_src_path must be a string scalar")
+        value = value_node.value
+        if value != value.strip():
+            raise ValueError("_src_path must not contain leading or trailing whitespace")
+        if not value:
+            raise ValueError("_src_path must not be empty")
+        values.append(value)
+
+    if len(values) != 1:
+        raise ValueError(".copier-answers.yml must contain exactly one _src_path")
+    return values[0]
 
 
 # =============================================================================
@@ -48,9 +130,14 @@ def init(
     console.print(f"\n[bold blue]aiscaffold init[/bold blue]")
     console.print(f"Template: {source}\n")
 
-    cmd = ["copier", "copy", source, ".", "--trust"]
+    cmd = ["copier", "copy", source, "."]
+    if _is_trusted_template_source(source):
+        cmd.append("--trust")
     if name:
+        project_slug = _derive_project_slug(name)
+        _validate_project_slug(project_slug)
         cmd.extend(["--data", f"project_name={name}"])
+        cmd.extend(["--data", f"project_slug={project_slug}"])
 
     try:
         subprocess.run(cmd, check=True)
@@ -226,7 +313,8 @@ def _add_layer(root: Path, name: str):
 @app.command()
 def update():
     """Pull template updates into the current project."""
-    if not Path(".copier-answers.yml").exists():
+    answers_path = Path(".copier-answers.yml")
+    if not answers_path.exists():
         console.print("[red]Not a scaffolded project (no .copier-answers.yml)[/red]")
         raise typer.Exit(1)
 
@@ -234,8 +322,18 @@ def update():
     console.print("Pulling template updates...\n")
 
     try:
+        source = _read_copier_source(answers_path)
+        if not _is_trusted_template_source(source):
+            console.print(
+                "[bold red]Update blocked:[/bold red] refusing to run trusted "
+                f"Copier tasks from untrusted template source: {source}"
+            )
+            raise typer.Exit(1)
         subprocess.run(["copier", "update", "--trust"], check=True)
         console.print("\n[bold green]Update complete![/bold green]")
+    except ValueError as e:
+        console.print(f"\n[bold red]Update blocked:[/bold red] {e}")
+        raise typer.Exit(1)
     except subprocess.CalledProcessError as e:
         console.print(f"\n[bold red]Update failed:[/bold red] {e}")
         raise typer.Exit(1)

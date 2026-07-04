@@ -20,6 +20,12 @@ class CopierSecurityTests(unittest.TestCase):
         validator = self.config[question]["validator"]
         return self.jinja.from_string(validator).render({question: value}).strip()
 
+    def test_project_name_rejects_shell_metacharacters(self):
+        self.assertEqual("", self.render_validator("project_name", "My AI Tool"))
+        self.assertEqual("", self.render_validator("project_name", "safe-project_2"))
+        self.assertTrue(self.render_validator("project_name", 'Safe"; touch /tmp/pwned #'))
+        self.assertTrue(self.render_validator("project_name", "$(touch /tmp/pwned)"))
+
     def test_project_slug_rejects_shell_metacharacters(self):
         self.assertEqual("", self.render_validator("project_slug", "safe_project"))
         self.assertTrue(self.render_validator("project_slug", 'safe_project"; touch /tmp/pwned #'))
@@ -35,7 +41,7 @@ class CopierSecurityTests(unittest.TestCase):
 
     def test_cli_uses_trust_for_template_tasks(self):
         cli_source = (REPO_ROOT / "core" / "src" / "aiscaffold" / "cli.py").read_text(encoding="utf-8")
-        self.assertIn('["copier", "copy", source, ".", "--trust"]', cli_source)
+        self.assertIn('cmd.append("--trust")', cli_source)
         self.assertIn('["copier", "update", "--trust"]', cli_source)
 
 
