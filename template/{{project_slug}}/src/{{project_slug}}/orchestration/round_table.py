@@ -14,8 +14,6 @@ Key design principles from 2026 research:
 - Separate context windows: each agent gets its own LLM call (80% of performance)
 
 Reference: docs/REFERENCES.md
-
-Keep this file under 400 lines.
 """
 
 import asyncio
@@ -92,6 +90,8 @@ class AgentAnalysis:
     # Each: {"action": str, "rationale": str, "priority": str}
     confidence: float = 0.0
     raw_response: str = ""  # Full LLM output preserved for audit
+    premise_valid: bool = True  # False when the agent refuses a flawed/unsafe task
+    refusal_reason: str = ""
 
 
 @dataclass

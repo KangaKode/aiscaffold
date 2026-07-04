@@ -22,3 +22,5 @@
 - [ ] New code has corresponding tests
 - [ ] Test names describe what they test
 - [ ] Appropriate markers (P0/P1/smoke/slow)
+
+Guidance verified: 2026-07

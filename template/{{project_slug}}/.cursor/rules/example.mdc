@@ -35,3 +35,5 @@ description: Specifications for the authentication system including JWT tokens, 
 - Never store plain-text passwords
 - Use bcrypt for password hashing
 ```
+
+Guidance verified: 2026-07

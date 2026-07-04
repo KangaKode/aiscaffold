@@ -249,7 +249,7 @@ registry.register_local(CodeReviewer(llm_client=llm_client), capabilities=["code
 registry.register_local(SecurityAnalyst(llm_client=llm_client), capabilities=["security"])
 ```
 
-> **Note:** The 5 core safety agents (Skeptic, Quality, Evidence, FactChecker, Citation) are auto-registered by the round table -- you don't need to register them manually. Your agents are additive: if you register 3, round tables will have 8 participants (your 3 + 5 core).
+> **Note:** The 6 core safety agents (Skeptic, Quality, Evidence, FactChecker, Citation, Sentinel) are auto-registered by the round table -- you don't need to register them manually. Your agents are additive: if you register 3, round tables will have 9 participants (your 3 + 6 core).
 {% else -%}
 Register your agent when creating a round table:
 
@@ -263,7 +263,7 @@ agents = [MyAgent(llm)]
 rt = RoundTable(agents=agents, config=RoundTableConfig(), llm_client=llm)
 ```
 
-The 5 core safety agents are auto-included alongside your agents.
+The 6 core safety agents are auto-included alongside your agents.
 {% endif -%}
 
 ---

@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 from {{project_slug}}.agents.registry import AgentRegistry
 from {{project_slug}}.agents.remote import RemoteAgent
-from {{project_slug}}.orchestration.round_table import AgentProtocol
+from {{project_slug}}.orchestration.round_table import AgentAnalysis, AgentProtocol
 
 
 class TestAgentRegistry:
@@ -192,3 +192,44 @@ class TestAgentProtocol:
         class NotAnAgent:
             pass
         assert not isinstance(NotAnAgent(), AgentProtocol)
+
+
+class TestCoreAgentRegistration:
+    def test_get_core_agents_returns_six(self):
+        from {{project_slug}}.agents.core import get_core_agents
+        agents = get_core_agents()
+        assert len(agents) == 6
+        names = [a.name for a in agents]
+        assert "sentinel" in names
+
+    def test_core_agents_implement_protocol(self):
+        from {{project_slug}}.agents.core import get_core_agents
+        for agent in get_core_agents():
+            assert isinstance(agent, AgentProtocol)
+
+
+class TestSentinelAgent:
+    @pytest.mark.asyncio
+    async def test_analyze_without_llm_fails_closed(self, sample_task):
+        """Without an LLM the input gate must flag, never silently pass."""
+        from {{project_slug}}.agents.core import SentinelAgent
+        agent = SentinelAgent(llm_client=None)
+        analysis = await agent.analyze(sample_task)
+        assert analysis.premise_valid is False
+        assert analysis.refusal_reason == "sentinel_unavailable"
+        assert len(analysis.observations) > 0
+
+    @pytest.mark.asyncio
+    async def test_vote_without_llm_dissents(self, sample_task):
+        from {{project_slug}}.agents.core import SentinelAgent
+        from {{project_slug}}.orchestration.round_table import SynthesisResult
+        agent = SentinelAgent(llm_client=None)
+        result = await agent.vote(sample_task, SynthesisResult())
+        assert result.approve is False
+
+
+class TestAgentAnalysisDefaults:
+    def test_premise_valid_defaults_true(self):
+        analysis = AgentAnalysis(agent_name="test", domain="testing")
+        assert analysis.premise_valid is True
+        assert analysis.refusal_reason == ""

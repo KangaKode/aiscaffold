@@ -10,14 +10,15 @@ The scaffold combines multi-agent deliberation, adversarial safety agents, evide
 
 One-command scaffold ([copier](https://copier.readthedocs.io/)) for AI agent projects: multi-agent round table with adversarial safety agents, chat orchestrator, HTTP API for agents in any language, prompt caching, adaptive learning, and deployment templates (Docker + Kubernetes).
 
-**Safety-first deliberation** -- Every round table includes five core safety agents by default:
+**Safety-first deliberation** -- Every round table includes six core safety agents by default:
 - **Skeptic** -- challenges assumptions, demands evidence, flags logical fallacies
 - **Quality** -- tracks requirement coverage, catches gaps across agents
 - **Evidence & compliance** -- grades claim strength, flags speculation-as-fact language, validates evidence-level tags when agents provide them (VERIFIED/CORROBORATED/INDICATED/POSSIBLE)
 - **Fact checking** -- flags unsupported certainty and challenges hedging presented as analysis
 - **Citation enforcement** -- asks agents for source-backed claims and explicit evidence levels
+- **Sentinel** -- semantic guard: screens inputs for injection and extraction attempts, screens outputs for leaks, fails closed
 
-**Secure** -- SSRF protection, prompt injection defense, rate limiting, HMAC-SHA256 webhook verification, API key auth with tenant-scoped request isolation.
+**Secure** -- SSRF protection, 3-layer prompt injection defense (static patterns, homoglyph/encoding normalization, semantic screening by Sentinel), rate limiting, HMAC-SHA256 webhook verification, API key auth with tenant-scoped request isolation.
 
 **Cost-efficient** -- Anthropic/OpenAI/Google prompt caching (up to ~90% savings on cached content), per-call token tracking with budget enforcement.
 
@@ -35,7 +36,7 @@ One-command scaffold ([copier](https://copier.readthedocs.io/)) for AI agent pro
 
 - **Validation gates:** Every generated project ships with quick checks, red-team scans, architecture tests, CI, and a 16-step validation pipeline before merge.
 - **Evidence discipline:** Claims carry explicit evidence levels (VERIFIED/CORROBORATED/INDICATED/POSSIBLE); citation validation, fact checking, and numeric verification are built into the enforcement pipeline.
-- **Adversarial safety by default:** Five core safety agents challenge every round table; prompt-injection guardrails and human-in-the-loop approval gates are first-class, not optional add-ons.
+- **Adversarial safety by default:** Six core safety agents challenge every round table; a 3-layer prompt-injection defense and human-in-the-loop approval gates are first-class, not optional add-ons.
 - **Tenant-aware isolation:** Auth context scopes sessions, results, and transcript search; RBAC and agent visibility extension points are documented in the platform guide.
 - **Production-ready architecture:** Generated projects include FastAPI gateway, external agent protocol, Docker/Kubernetes templates, and a layered architecture enforced by tests.
 - **Inspectable by design:** Cloneable scaffold, generated tests, quick-start commands, and docs make every behavior reviewable without reading the entire codebase.
@@ -137,6 +138,7 @@ flowchart TD
         EvidenceA[Evidence]
         FactChk[FactChecker]
         Citation[Citation]
+        SentinelA[Sentinel]
     end
     safety --> RT
     subgraph learn [Learning System]
@@ -175,6 +177,7 @@ flowchart LR
         S[Skeptic]
         Q[Quality]
         E[Evidence]
+        SN[Sentinel]
     end
     subgraph enforce [Evidence Enforcement]
         EF[FactChecker + EvidenceLevelEnforcer]
@@ -204,6 +207,7 @@ flowchart TD
         Evidence["Evidence\nGrades claim strength\nFlags speculation as fact\nChecks citation quality"]
         FactChecker["FactChecker\nFlags unsupported certainty\nChallenges weak claims"]
         Citation["Citation\nRequests source-backed claims\nChecks evidence levels"]
+        Sentinel["Sentinel\nScreens inputs for injection\nScreens outputs for leaks"]
     end
     subgraph user [Your Domain Specialists]
         UserA["Your Agent A"]
@@ -259,7 +263,7 @@ Every scaffolded project includes **53+ Python source files** across 8 modules:
 
 ### Two Interaction Modes
 
-- **Round Table** -- Full 4-phase multi-agent deliberation (Strategy, Independent Analysis, Challenge, Synthesis + Voting). For complex decisions needing all perspectives. Five core safety agents (Skeptic, Quality, Evidence, FactChecker, Citation) participate automatically. Evidence enforcement pipeline runs between Phase 1 and Phase 2.
+- **Round Table** -- Full 4-phase multi-agent deliberation (Strategy, Independent Analysis, Challenge, Synthesis + Voting). For complex decisions needing all perspectives. Six core safety agents (Skeptic, Quality, Evidence, FactChecker, Citation, Sentinel) participate automatically. Evidence enforcement pipeline runs between Phase 1 and Phase 2.
 - **Chat Orchestrator** -- Lightweight real-time chat. A lead agent selectively consults 1-3 specialists, cross-checks for agreement, and escalates to the round table when needed.
 
 ### API Gateway (FastAPI)
@@ -314,7 +318,7 @@ Teaches your project to learn from user interactions:
 ### Security (Baked In Everywhere)
 
 - SSRF protection on agent registration (blocks private IPs, non-http schemes, cloud metadata endpoints)
-- Prompt injection defense (all external agent responses sanitized, injection patterns detected)
+- 3-layer prompt injection defense: static pattern detection (`prompt_guard`), homoglyph normalization / invisible-character stripping / encoding-attack detection (`injection_defense`), and semantic screening by the Sentinel agent
 - Input size limits on every endpoint
 - Rate limiting per client IP with stale-IP eviction and 10K IP hard cap
 - HMAC-SHA256 webhook signature verification for async agents
@@ -448,7 +452,7 @@ make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-servic
 template/{{project_slug}}/
   src/{{project_slug}}/
     agents/           # Agent implementations + core safety agents
-      core/           # Skeptic, Quality, Evidence, FactChecker, Citation (auto-included)
+      core/           # Skeptic, Quality, Evidence, FactChecker, Citation, Sentinel (auto-included)
       example_agent.py
       remote.py       # HTTP adapter for any-language agents
       registry.py     # Agent management with tenant visibility
@@ -459,7 +463,7 @@ template/{{project_slug}}/
     harness/          # Session lifecycle (Item/Turn/Thread)
     llm/              # LLM client with prompt caching
     orchestration/    # Round Table + Chat Orchestrator + Agent Router
-    security/         # Prompt guard, validators, SSRF protection
+    security/         # Prompt guard, injection defense, validators, SSRF protection
     learning/         # Feedback, trust, preferences, RAG, graduation
       rag/            # VectorStore, embeddings, transcript search
   deploy/k8s/         # Kubernetes manifests

@@ -36,7 +36,7 @@ Generated projects use a layered layout with a safety-first multi-agent runtime:
     learning/         # Feedback, trust, preferences, RAG, graduation
     llm/              # Provider-aware LLM client with prompt caching
     orchestration/    # Round table, chat orchestrator, routing
-    security/         # Prompt guard, SSRF validation, webhook verification
+    security/         # Prompt guard, injection defense, SSRF validation, webhook verification
   docs/               # Generated project documentation
   evals/              # Capability and regression eval infrastructure
   tests/              # Architecture, security, API, and orchestration tests
@@ -77,8 +77,9 @@ Generated projects include core safety agents by default:
 | Evidence | Grades claim strength and flags speculation-as-fact |
 | FactChecker | Detects unsupported confidence and hedging patterns |
 | Citation | Checks evidence-level tagging and citation discipline |
+| Sentinel | Semantic guard: screens inputs for injection and extraction attempts, screens outputs for leaks; fails closed |
 
-These are meta-agents. They evaluate the quality of analysis rather than replacing domain specialists.
+These are meta-agents. They evaluate the quality of analysis rather than replacing domain specialists. Sentinel is also the semantic layer of a 3-layer injection defense: static pattern matching in `security/prompt_guard.py` (Layer 1), homoglyph normalization, invisible-character stripping, and encoding-attack detection in `security/injection_defense.py` (Layer 2), and Sentinel's LLM-based screening (Layer 3).
 
 ## Evidence Enforcement
 

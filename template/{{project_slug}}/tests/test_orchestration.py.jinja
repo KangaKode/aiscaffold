@@ -86,7 +86,7 @@ class TestRoundTable:
         rt = RoundTable(agents=mock_agents, config=config, llm_client=mock_llm)
         result = await rt.run(sample_task)
         assert result.task_id == sample_task.id
-        assert len(result.analyses) == 7  # 5 core + 2 user agents
+        assert len(result.analyses) == 8  # 6 core + 2 user agents
 
     @pytest.mark.asyncio
     async def test_consensus_threshold(self, mock_agents, mock_llm, sample_task):
@@ -247,7 +247,8 @@ class TestCoreAgents:
         assert "evidence" in agent_names
         assert "fact_checker" in agent_names
         assert "citation" in agent_names
-        assert len(rt.agents) == len(mock_agents) + 5
+        assert "sentinel" in agent_names
+        assert len(rt.agents) == len(mock_agents) + 6
 
     @pytest.mark.asyncio
     async def test_core_agents_opt_out(self, mock_agents, mock_llm):
@@ -285,8 +286,8 @@ class TestCoreAgents:
         ))
         task = RoundTableTask(id="no_llm_test", content="Test without LLM")
         result = await rt.run(task)
-        core_analyses = [a for a in result.analyses if a.agent_name in ("skeptic", "quality", "evidence", "fact_checker", "citation")]
-        assert len(core_analyses) == 5
+        core_analyses = [a for a in result.analyses if a.agent_name in ("skeptic", "quality", "evidence", "fact_checker", "citation", "sentinel")]
+        assert len(core_analyses) == 6
         for a in core_analyses:
             assert len(a.observations) > 0
 

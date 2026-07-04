@@ -34,3 +34,5 @@ See `example-review/SKILL.md` for a working example.
 ## Reference
 
 See `docs/REFERENCES.md` for the Anthropic Skills guide and other industry research.
+
+Guidance verified: 2026-07
