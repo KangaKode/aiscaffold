@@ -44,6 +44,7 @@ from .routes import (
     checkins,
     corrections,
     feedback,
+    mcp,
     health,
     preferences,
     reflections,
@@ -211,6 +212,19 @@ def create_app(
     except Exception as e:
         logger.warning(f"[Gateway] Corrections init failed (non-fatal): {e}")
 
+    # MCP connectors: per-tenant server registry + platform-controlled tool
+    # client. The real transport (the optional 'mcp' extra) is imported
+    # lazily at call time, so init always succeeds.
+    try:
+        from ..connectors.mcp_client import MCPClient
+        from ..connectors.mcp_registry import create_mcp_registry
+
+        application.state.mcp_registry = create_mcp_registry()
+        application.state.mcp_client = MCPClient()
+        logger.info("[Gateway] MCP connectors initialized")
+    except Exception as e:
+        logger.warning(f"[Gateway] MCP connectors init failed (non-fatal): {e}")
+
     try:
         from ..learning.rag.transcript_indexer import TranscriptIndexer
 
@@ -272,6 +286,9 @@ def create_app(
     )
     application.include_router(
         reflections.router, prefix="/api/v1", tags=["Learning - Reflections"]
+    )
+    application.include_router(
+        mcp.router, prefix="/api/v1", tags=["MCP Connectors"]
     )
 
     logger.info("[Gateway] API gateway initialized")

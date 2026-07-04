@@ -436,6 +436,10 @@ The gateway wires a learning-store-backed `BudgetManager` and `DeliberationAudit
 | `/api/v1/corrections/{id}/retire` | POST | Retire an approved correction |
 | `/api/v1/corrections/{id}` | DELETE | GDPR Art. 17 hard-delete (daily-capped, audited) |
 | `/api/v1/reflections` | GET | Process lessons from past deliberations (filter by `reflection_type`) |
+| `/api/v1/mcp/servers` | POST / GET | Register / list this tenant's MCP servers |
+| `/api/v1/mcp/servers/{name}` | DELETE | Remove an MCP server registration |
+| `/api/v1/mcp/servers/{name}/health` | POST | Reachability + tool count |
+| `/api/v1/mcp/servers/{name}/invoke` | POST | Call one tool (sanitized output) |
 
 The corrections routes make the platform API-first for the learning loop: a non-Python client (or a reviewer UI) can drive the whole propose -> approve -> retire lifecycle over HTTP. `created_by`/`approved_by` always come from the authenticated caller, so the four-eyes rule cannot be spoofed by naming someone else in a request body.
 
@@ -482,6 +486,19 @@ Beyond individual corrections, the learning layer compounds knowledge in two det
 ### Adversarial verification
 
 Shipping defenses is not the same as proving they hold. The generated project includes a red-team harness -- `tests/adversarial_payloads.py` (a payload library by attack vector) and `tests/adversarial_agents.py` (6 deterministic hostile agents implementing the agent protocol) -- exercised by `tests/test_adversarial_defense.py`. The hostile agents attack a full round table with injection payloads in every field they can populate; the tests assert no payload survives into the synthesis and that every attack vector is detected. No LLM calls, so the suite is deterministic and free. Extend the payloads and agents with attacks specific to your deployment and it becomes your standing red-team gate.
+
+---
+
+## MCP Connectors
+
+The `connectors/` package integrates external tool servers over the Model Context Protocol without giving agents direct tool access. The platform is the only caller (`connectors/mcp_client.py`), so every call is governed the same way:
+
+- **Registration** (`POST /api/v1/mcp/servers`): each server is registered per tenant with a validated URL (anti-SSRF -- private IPs, localhost, and cloud metadata endpoints are rejected), an `mcp:*` scope key, and a credential env var *reference* (`MCP_*`) -- the secret itself never appears in a request body or the persisted registry file (`MCP_REGISTRY_PATH`). Loaded registry files are re-validated entry by entry, so a tampered file cannot inject an unsafe server.
+- **Scope gating**: an MCP server's data enters the round-table task context under its scope key (e.g. `mcp:tickets`), which means the existing `ScopeFilter` decides which agents see it -- only agents whose `AgentCapability.access_scopes` include that key. Registering a server does not expose it to any agent by itself.
+- **Enrichment, non-fatal by construction** (`orchestration/mcp_enrichment.py`): before dispatch, the platform calls each needed server's configured default tool. Responses are scanned for injection patterns, sanitized, and boundary-wrapped (`MCP_DATA`) before entering context. A down server, missing credential, or timeout logs a warning and the task proceeds without that data.
+- **Direct invocation** (`POST /api/v1/mcp/servers/{name}/invoke`): call one tool ad hoc; output is sanitized before it leaves the platform, and errors come back as structured fields, never stack traces.
+
+The real transport is the official `mcp` SDK, installed via the optional extra (`pip install '.[mcp]'`) -- like the Postgres extra, projects that don't use MCP pay nothing. Tests and custom protocols can inject their own transport into `MCPClient`.
 
 ---
 

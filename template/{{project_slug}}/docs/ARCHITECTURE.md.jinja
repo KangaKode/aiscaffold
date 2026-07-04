@@ -33,6 +33,7 @@ These modules are not part of the dependency chain above:
 |--------|-------------|-------------|---------|
 | `llm/` | `security/` | `orchestration/`, `agents/` | LLM client with prompt caching |
 | `security/` | (none) | All modules | Prompt guard, validators, SSRF protection |
+| `connectors/` | `security/` | `orchestration/`, `api/` | MCP client + per-tenant server registry |
 {% if include_api_gateway -%}
 | `api/` | All modules | (external HTTP) | FastAPI gateway, routes, middleware |
 {% endif -%}
@@ -97,6 +98,11 @@ Governance companions:
 
 ### Chat Orchestrator (`orchestration/chat_orchestrator.py`)
 Lightweight orchestrator-worker pattern for real-time interaction. Lead agent selects 1-3 relevant specialists via `AgentRouter`, consults them in parallel, cross-checks responses for agreement/disagreement, and synthesizes a user-facing response. Surfaces both views when specialists disagree. Escalates to full round table when confidence is low. Routing is tenant-scoped (only agents visible to the caller's tenant are candidates, including LLM-suggested ones), and the evidence, skeptic, and sentinel safety agents join every consultation. Each synthesis is checked by the FactChecker; a rejected synthesis is re-generated once with a correction note, and a repeat rejection triggers an escalation suggestion.
+
+### MCP Connectors (`connectors/`)
+Optional integration with external tool servers over the Model Context Protocol. `mcp_registry.py` tracks servers per tenant (JSON persistence via `MCP_REGISTRY_PATH`; credentials stored as `MCP_*` env var references, never raw tokens; URLs SSRF-validated on register and on load). `mcp_client.py` is the platform's only call path -- agents never call MCP directly -- returning structured, never-raising results. The real transport is the official `mcp` SDK (optional extra: `pip install '.[mcp]'`), and a custom transport can be injected for tests.
+
+`orchestration/mcp_enrichment.py` bridges connectors into the task pipeline: when participating agents declare `mcp:*` access scopes, the matching servers' default tools are called before dispatch and their sanitized, boundary-wrapped output lands in the task context under the scope key -- so the existing `ScopeFilter` governs which agents see it. Every failure is a logged warning, never a dead task.
 
 ### Agent System (`agents/`)
 - `example_agent.py` -- Reference implementation of `AgentProtocol`

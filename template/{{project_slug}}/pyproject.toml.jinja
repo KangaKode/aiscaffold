@@ -36,6 +36,8 @@ dependencies = [
 [project.optional-dependencies]
 # Learning store Postgres backend (LEARNING_BACKEND=postgres)
 postgres = ["psycopg[binary]>=3.1"]
+# MCP connectors real transport (connectors/mcp_client.py)
+mcp = ["mcp>=1.0"]
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]

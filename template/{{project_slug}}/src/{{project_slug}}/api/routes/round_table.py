@@ -132,6 +132,28 @@ async def submit_task(
         constraints=task_request.constraints,
     )
 
+    # MCP enrichment (best-effort): when participating agents declare mcp:*
+    # scopes and a matching server is registered for this tenant, fetch its
+    # data into the task context. Scope filtering then limits which agents
+    # see it. Failures degrade the context, never the task.
+    try:
+        mcp_registry = getattr(request.app.state, "mcp_registry", None)
+        mcp_client = getattr(request.app.state, "mcp_client", None)
+        if mcp_registry is not None and mcp_client is not None:
+            from ...orchestration.mcp_enrichment import (
+                collect_mcp_scopes,
+                enrich_mcp_data,
+            )
+
+            entries = [registry.get_entry(getattr(a, "name", "")) for a in agents]
+            needed = collect_mcp_scopes([e for e in entries if e is not None])
+            if needed:
+                task.context = await enrich_mcp_data(
+                    task.context, needed, auth.tenant_id, mcp_client, mcp_registry
+                )
+    except Exception as e:
+        logger.warning(f"[RoundTableAPI] MCP enrichment failed (non-fatal): {e}")
+
     try:
         llm = getattr(request.app.state, "llm_client", None) or create_client()
         rt = RoundTable(agents=agents, config=config, llm_client=llm, registry=registry)
