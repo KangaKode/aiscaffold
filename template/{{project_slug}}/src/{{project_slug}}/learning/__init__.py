@@ -34,6 +34,7 @@ from .corrections import (  # noqa: F401
     STATUS_REJECTED,
     STATUS_RETIRED,
 )
+from .erasure import ErasureCapExceededError, erase_correction  # noqa: F401
 from .override_detector import OverrideDetector  # noqa: F401
 from .content_policy import ContentPolicy  # noqa: F401
 from .collusion import CollusionDetector, analyze_correction_drift  # noqa: F401
@@ -65,6 +66,8 @@ __all__ = [
     "STATUS_APPROVED",
     "STATUS_REJECTED",
     "STATUS_RETIRED",
+    "ErasureCapExceededError",
+    "erase_correction",
     "OverrideDetector",
     "ContentPolicy",
     "CollusionDetector",

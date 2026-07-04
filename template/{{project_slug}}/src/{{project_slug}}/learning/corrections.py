@@ -18,7 +18,7 @@ sanitize_for_prompt so stored content cannot inject into prompts.
 Rendering respects a character budget (CORRECTION_CONTEXT_BUDGET env
 override). An optional ContentPolicy can gate propose().
 
-Keep this file under 400 lines.
+Keep this file under 450 lines.
 """
 
 import json
@@ -295,6 +295,29 @@ class CorrectionsManager:
         """Fetch a correction by id, or None."""
         rows = self._store.query("corrections", {"id": correction_id}, limit=1)
         return self._from_row(rows[0]) if rows else None
+
+    @property
+    def store(self) -> LearningStore:
+        """The underlying LearningStore (used by erasure and admin APIs)."""
+        return self._store
+
+    def list(
+        self,
+        tenant_id: str = "default",
+        status: str = "",
+        agent_id: str = "",
+        limit: int = 100,
+    ) -> list[Correction]:
+        """List a tenant's corrections, newest first, optionally filtered."""
+        filters: dict[str, Any] = {"tenant_id": tenant_id}
+        if status:
+            filters["status"] = status
+        if agent_id:
+            filters["agent_id"] = agent_id
+        rows = self._store.query(
+            "corrections", filters, order_by="created_at DESC", limit=limit
+        )
+        return [self._from_row(row) for row in rows]
 
     def get_approved_for_context(
         self,

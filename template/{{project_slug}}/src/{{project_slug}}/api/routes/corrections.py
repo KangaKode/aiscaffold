@@ -1,0 +1,272 @@
+"""
+Corrections API -- the full correction lifecycle over HTTP.
+
+  POST   /api/v1/corrections                    -- Propose a correction
+  GET    /api/v1/corrections                    -- List (filter by status/agent)
+  POST   /api/v1/corrections/{id}/approve       -- Approve (four-eyes)
+  POST   /api/v1/corrections/{id}/reject        -- Reject (terminal)
+  POST   /api/v1/corrections/{id}/retire        -- Retire an approved one
+  DELETE /api/v1/corrections/{id}               -- GDPR Art. 17 hard-delete
+
+API-first: this is the only write path a non-Python client needs to
+participate in the learning loop. The manager is expected at
+app.state.corrections_manager (wired at startup); 503 when absent so
+callers can tell "learning not enabled" apart from "no corrections".
+
+Security:
+  - All endpoints require API key; tenant comes from AuthContext, never
+    from the request body.
+  - created_by / approved_by are the authenticated caller's user id, so
+    the four-eyes rule cannot be spoofed by naming someone else.
+  - Proposals are screened by the override detector (results returned to
+    the caller and flagged for review) on top of the manager's built-in
+    PII redaction and content-policy gate.
+  - Status-transition violations map to 409, not 500.
+"""
+
+import logging
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from ...learning.corrections import (
+    STATUS_APPROVED,
+    STATUS_PROPOSED,
+    STATUS_REJECTED,
+    STATUS_RETIRED,
+    Correction,
+    CorrectionsManager,
+)
+from ...learning.erasure import ErasureCapExceededError, erase_correction
+from ...security import ValidationError, validate_identifier, validate_in_choices
+from ..middleware.auth import AuthContext, verify_api_key
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+MAX_CLAIM_CHARS = 4000
+MAX_REASON_CHARS = 2000
+
+VALID_STATUSES = [STATUS_PROPOSED, STATUS_APPROVED, STATUS_REJECTED, STATUS_RETIRED]
+
+# Correction ids are short uuid prefixes; anything else can 404 early
+# without touching the store.
+_CORRECTION_ID_RE = re.compile(r"^[a-zA-Z0-9-]{1,64}$")
+
+
+class CorrectionProposal(BaseModel):
+    """Request body for proposing a correction."""
+
+    agent_id: str = Field(..., min_length=1, max_length=100)
+    original_claim: str = Field(..., min_length=1, max_length=MAX_CLAIM_CHARS)
+    corrected_claim: str = Field(..., min_length=1, max_length=MAX_CLAIM_CHARS)
+    reason: str = Field("", max_length=MAX_REASON_CHARS)
+    evidence_level: str = Field("", max_length=50)
+    session_id: str = Field("", max_length=100)
+
+
+class CorrectionResponse(BaseModel):
+    """A correction as returned by the API."""
+
+    id: str
+    agent_id: str
+    original_claim: str
+    corrected_claim: str
+    reason: str
+    evidence_level: str
+    status: str
+    created_by: str
+    approved_by: str
+    created_at: str
+    updated_at: str
+    override_flags: list[str] = []
+
+
+class ErasureResponse(BaseModel):
+    """Result of a GDPR erasure."""
+
+    correction_id: str
+    erased: bool
+    erasures_today: int
+
+
+def _get_manager(request: Request) -> CorrectionsManager:
+    manager = getattr(request.app.state, "corrections_manager", None)
+    if manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Corrections are not enabled: no corrections manager is "
+                "configured on this deployment (app.state.corrections_manager)"
+            ),
+        )
+    return manager
+
+
+def _to_response(
+    correction: Correction, override_flags: list[str] | None = None
+) -> CorrectionResponse:
+    return CorrectionResponse(
+        id=correction.id,
+        agent_id=correction.agent_id,
+        original_claim=correction.original_claim,
+        corrected_claim=correction.corrected_claim,
+        reason=correction.reason,
+        evidence_level=correction.evidence_level,
+        status=correction.status,
+        created_by=correction.created_by,
+        approved_by=correction.approved_by,
+        created_at=correction.created_at,
+        updated_at=correction.updated_at,
+        override_flags=override_flags or [],
+    )
+
+
+def _validated_id(correction_id: str) -> str:
+    if not _CORRECTION_ID_RE.match(correction_id):
+        raise HTTPException(status_code=404, detail="Correction not found")
+    return correction_id
+
+
+def _get_tenant_correction(
+    manager: CorrectionsManager, correction_id: str, tenant_id: str
+) -> Correction:
+    """404 for missing AND cross-tenant ids -- no existence leak."""
+    correction = manager.get(_validated_id(correction_id))
+    if correction is None or correction.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Correction not found")
+    return correction
+
+
+@router.post("/corrections", response_model=CorrectionResponse, status_code=201)
+async def propose_correction(
+    proposal: CorrectionProposal,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+) -> CorrectionResponse:
+    """Propose a correction. It only influences prompts after approval."""
+    manager = _get_manager(request)
+    try:
+        validate_identifier(proposal.agent_id, "agent_id")
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        correction = manager.propose(
+            agent_id=proposal.agent_id,
+            original_claim=proposal.original_claim,
+            corrected_claim=proposal.corrected_claim,
+            reason=proposal.reason,
+            evidence_level=proposal.evidence_level,
+            tenant_id=auth.tenant_id,
+            session_id=proposal.session_id,
+            created_by=auth.user_id,
+        )
+    except ValueError as e:
+        # Content-policy rejection: refuse the write, tell the caller why.
+        raise HTTPException(status_code=422, detail=str(e))
+
+    override_flags: list[str] = []
+    detector = getattr(request.app.state, "override_detector", None)
+    if detector is not None:
+        try:
+            override_flags = detector.screen_and_flag(
+                correction, tenant_id=auth.tenant_id
+            )
+        except Exception as e:
+            logger.warning(f"[CorrectionsAPI] Override screening failed: {e}")
+
+    return _to_response(correction, override_flags)
+
+
+@router.get("/corrections", response_model=list[CorrectionResponse])
+async def list_corrections(
+    request: Request,
+    status: str = "",
+    agent_id: str = "",
+    limit: int = 100,
+    auth: AuthContext = Depends(verify_api_key),
+) -> list[CorrectionResponse]:
+    """List this tenant's corrections, newest first."""
+    manager = _get_manager(request)
+    try:
+        if status:
+            validate_in_choices(status, VALID_STATUSES, "status")
+        if agent_id:
+            validate_identifier(agent_id, "agent_id")
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    corrections = manager.list(
+        tenant_id=auth.tenant_id,
+        status=status,
+        agent_id=agent_id,
+        limit=max(1, min(limit, 500)),
+    )
+    return [_to_response(c) for c in corrections]
+
+
+@router.post("/corrections/{correction_id}/approve", response_model=CorrectionResponse)
+async def approve_correction(
+    correction_id: str,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+) -> CorrectionResponse:
+    """Approve a proposed correction. Approver is the authenticated caller."""
+    manager = _get_manager(request)
+    _get_tenant_correction(manager, correction_id, auth.tenant_id)
+    try:
+        return _to_response(manager.approve(correction_id, approved_by=auth.user_id))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.post("/corrections/{correction_id}/reject", response_model=CorrectionResponse)
+async def reject_correction(
+    correction_id: str,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+) -> CorrectionResponse:
+    """Reject a proposed correction (terminal)."""
+    manager = _get_manager(request)
+    _get_tenant_correction(manager, correction_id, auth.tenant_id)
+    try:
+        return _to_response(manager.reject(correction_id, rejected_by=auth.user_id))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.post("/corrections/{correction_id}/retire", response_model=CorrectionResponse)
+async def retire_correction(
+    correction_id: str,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+) -> CorrectionResponse:
+    """Retire an approved correction (stops influencing prompts)."""
+    manager = _get_manager(request)
+    _get_tenant_correction(manager, correction_id, auth.tenant_id)
+    try:
+        return _to_response(manager.retire(correction_id))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.delete("/corrections/{correction_id}", response_model=ErasureResponse)
+async def erase_correction_endpoint(
+    correction_id: str,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+) -> ErasureResponse:
+    """GDPR Article 17 hard-delete. Daily-capped; leaves an audit event."""
+    manager = _get_manager(request)
+    try:
+        result = erase_correction(
+            manager.store,
+            _validated_id(correction_id),
+            tenant_id=auth.tenant_id,
+            actor=auth.user_id,
+        )
+    except ErasureCapExceededError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Correction not found")
+    return ErasureResponse(**result)

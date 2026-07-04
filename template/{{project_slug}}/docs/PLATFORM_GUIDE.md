@@ -428,6 +428,14 @@ The gateway wires a learning-store-backed `BudgetManager` and `DeliberationAudit
 | `/api/v1/budgets/{tenant_id}` | GET | Budget config, current spend, and status for a tenant |
 | `/api/v1/budgets/{tenant_id}` | PUT | Set or replace a tenant's spend cap and warn threshold |
 | `/api/v1/audit/deliberations/{correlation_id}` | GET | Metadata timeline for one deliberation run (404 when empty) |
+| `/api/v1/corrections` | POST | Propose a correction (override-screened; PII-redacted) |
+| `/api/v1/corrections` | GET | List this tenant's corrections (filter by `status`, `agent_id`) |
+| `/api/v1/corrections/{id}/approve` | POST | Approve -- approver is the authenticated caller (four-eyes enforced) |
+| `/api/v1/corrections/{id}/reject` | POST | Reject a proposed correction (terminal) |
+| `/api/v1/corrections/{id}/retire` | POST | Retire an approved correction |
+| `/api/v1/corrections/{id}` | DELETE | GDPR Art. 17 hard-delete (daily-capped, audited) |
+
+The corrections routes make the platform API-first for the learning loop: a non-Python client (or a reviewer UI) can drive the whole propose -> approve -> retire lifecycle over HTTP. `created_by`/`approved_by` always come from the authenticated caller, so the four-eyes rule cannot be spoofed by naming someone else in a request body.
 
 See [GOVERNANCE.md](GOVERNANCE.md) for the full capability matrix, the honest "known limitations / non-claims" list, and extension points.
 
@@ -435,7 +443,7 @@ See [GOVERNANCE.md](GOVERNANCE.md) for the full capability matrix, the honest "k
 
 ## Scaling the Learning Layer
 
-The extended learning tables (corrections, activity events, agent dispatch stats, integrity flags) sit behind a deliberately tiny `LearningStore` protocol in `learning/store.py` -- five methods (`ensure_schema` / `insert` / `query` / `update` / `count`) with allowlist-validated identifiers and parameterized values. Two reference backends ship with the scaffold:
+The extended learning tables (corrections, activity events, agent dispatch stats, integrity flags) sit behind a deliberately tiny `LearningStore` protocol in `learning/store.py` -- six methods (`ensure_schema` / `insert` / `query` / `update` / `count` / `delete`) with allowlist-validated identifiers and parameterized values. Two reference backends ship with the scaffold:
 
 - **SQLite (default)** -- stdlib `sqlite3`, zero configuration, right for single-node deployments.
 - **Postgres (opt-in)** -- answer `learning_backend=postgres` at generation time, or set `LEARNING_BACKEND=postgres` plus `LEARNING_POSTGRES_DSN` at runtime, and install the extra: `pip install '.[postgres]'`.
@@ -445,13 +453,14 @@ Because every caller goes through the protocol, enterprise deployments extend wi
 - **Row-level security**: every table carries `tenant_id`, so Postgres RLS policies keyed on it give hard tenant isolation.
 - **pgvector**: co-locate the vector store with the learning tables in the same Postgres instance.
 - **Alembic migrations**: the built-in forward-only `MIGRATIONS` list is fine for a handful of schema changes; swap in Alembic when schema churn justifies it.
-- **Bring your own store**: implement the five methods against anything (MySQL, DynamoDB, an internal storage service).
+- **Bring your own store**: implement the six methods against anything (MySQL, DynamoDB, an internal storage service).
 
 ### Learning integrity
 
 The learning layer reshapes agent behavior, so it gets its own integrity controls. All findings are persisted as integrity flags and surfaced through `GET /api/v1/activity/anomalies` (resolve via `POST /api/v1/activity/anomalies/{flag_id}/resolve`) -- nothing is auto-rejected or auto-suspended; a human closes every flag:
 
-- **Corrections lifecycle**: corrections only influence prompts after human approval, with a four-eyes rule (approver must differ from proposer; `require_four_eyes=False` for single-operator setups) and a check-in opened per proposal.
+- **Corrections lifecycle**: corrections only influence prompts after human approval, with a four-eyes rule (approver must differ from proposer; `require_four_eyes=False` for single-operator setups) and a check-in opened per proposal. The full lifecycle is exposed over HTTP at `/api/v1/corrections` (see the governance API routes above).
+- **Right to be forgotten**: `learning/erasure.py` hard-deletes a correction on request (GDPR Art. 17) -- an actual row delete, not a status flip -- with a per-tenant daily cap (`ERASURE_DAILY_CAP`, default 10) so a compromised credential cannot bulk-wipe learned knowledge, and a metadata-only audit event recording that the erasure happened.
 - **Context budget**: approved corrections render into prompts under a character budget (`CORRECTION_CONTEXT_BUDGET`, default 4000) with sanitized fields.
 - **Override screening**: each proposed correction is screened for prompt injection, safety-agent targeting ("ignore the skeptic"), and evidence-level inflation before it reaches a reviewer.
 - **Collusion detection**: pairwise vote-lockstep and reciprocal never-challenge analysis flags agent pairs that stop checking each other.
@@ -500,6 +509,7 @@ Define retention policies for each data store and document them for your legal/c
 | Transcript search index | Vector store / pgvector (permanent if enabled) | Subject to discovery; include in hold policy |
 | Feedback signals | SQLite (permanent) | May contain PII; subject to GDPR/CCPA |
 | Agent trust scores | SQLite (permanent) | Audit trail for routing decisions |
+| Learned corrections | Learning store (until erased) | PII-redacted at write; hard-deletable via `DELETE /api/v1/corrections/{id}` (GDPR Art. 17) |
 
 > **Note:** These are considerations for your legal and compliance team to evaluate. The scaffold provides the infrastructure hooks -- your organization defines the policies.
 
