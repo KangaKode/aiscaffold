@@ -20,6 +20,10 @@ class CopierSecurityTests(unittest.TestCase):
         validator = self.config[question]["validator"]
         return self.jinja.from_string(validator).render({question: value}).strip()
 
+    def render_project_slug_default(self, project_name: str) -> str:
+        default = self.config["project_slug"]["default"]
+        return self.jinja.from_string(default).render({"project_name": project_name}).strip()
+
     def test_project_name_rejects_shell_metacharacters(self):
         self.assertEqual("", self.render_validator("project_name", "My AI Tool"))
         self.assertEqual("", self.render_validator("project_name", "safe-project_2"))
@@ -29,6 +33,16 @@ class CopierSecurityTests(unittest.TestCase):
     def test_project_slug_rejects_shell_metacharacters(self):
         self.assertEqual("", self.render_validator("project_slug", "safe_project"))
         self.assertTrue(self.render_validator("project_slug", 'safe_project"; touch /tmp/pwned #'))
+
+    def test_project_slug_default_is_validator_safe(self):
+        for project_name, expected_slug in [
+            ("2024 Demo", "project_2024_demo"),
+            ("v1.0 Release", "v1_0_release"),
+        ]:
+            with self.subTest(project_name=project_name):
+                slug = self.render_project_slug_default(project_name)
+                self.assertEqual(expected_slug, slug)
+                self.assertEqual("", self.render_validator("project_slug", slug))
 
     def test_layers_reject_shell_metacharacters_and_path_traversal(self):
         self.assertEqual("", self.render_validator("layers", "data,analysis,components"))
