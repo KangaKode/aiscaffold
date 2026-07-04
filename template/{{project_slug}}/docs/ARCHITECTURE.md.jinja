@@ -114,7 +114,7 @@ External agents implement 3 HTTP endpoints (`/analyze`, `/challenge`, `/vote`) i
 
 {% if include_api_gateway -%}
 ### API Gateway (`api/`)
-FastAPI application with 10 route modules:
+FastAPI application with route modules:
 - `routes/round_table.py` -- Task submission and results
 - `routes/chat.py` -- Chat messages with SSE streaming
 - `routes/agents.py` -- Agent registry CRUD
@@ -123,9 +123,11 @@ FastAPI application with 10 route modules:
 - `routes/feedback.py` -- User feedback signals
 - `routes/preferences.py` -- Learned preference management
 - `routes/checkins.py` -- Permission-based adaptation gates
+- `routes/activity.py` -- Integrity-flag review (anomaly listing + resolve)
 - `routes/health.py` -- Liveness, readiness, metrics
 - `middleware/auth.py` -- API key authentication
 - `middleware/rate_limit.py` -- Per-client rate limiting
+- `middleware/activity.py` -- Per-request activity event recording (`ACTIVITY_TRACKING_ENABLED`)
 {% endif -%}
 
 ### Security (`security/`)
@@ -145,6 +147,11 @@ Prompt injection is defended in 3 layers: static pattern matching in `prompt_gua
 - `user_profile.py` -- Aggregates preferences + trust into context bundles
 - `global_profile.py` -- Cross-project identity at `~/.aiscaffold/`
 - `graduation.py` -- Promotes stable patterns to global level (pluggable rules)
+- `store.py` -- Pluggable `LearningStore` protocol (5 methods) with SQLite (default) and Postgres reference backends (`LEARNING_BACKEND`)
+- `corrections.py` -- Correction lifecycle (proposed -> approved -> retired) with four-eyes approval and budgeted, sanitized prompt rendering
+- `override_detector.py` -- Screens proposed corrections for injection, safety-agent targeting, and evidence-level inflation
+- `collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection over round-table history
+- `activity.py` -- User activity thresholds and per-agent behavioral baselines over dispatch stats
 - `rag/` -- Vector store adapter, embeddings, semantic preference search
 - `rag/transcript_indexer.py` -- Indexes round table results for semantic search over past deliberations
 {% endif -%}

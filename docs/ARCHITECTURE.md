@@ -33,7 +33,7 @@ Generated projects use a layered layout with a safety-first multi-agent runtime:
     api/              # FastAPI gateway, routes, models, middleware
     enforcement/      # Evidence levels, citation validation, fact checking
     harness/          # Session lifecycle and external state hooks
-    learning/         # Feedback, trust, preferences, RAG, graduation
+    learning/         # Feedback, trust, preferences, RAG, corrections, integrity analytics
     llm/              # Provider-aware LLM client with prompt caching
     orchestration/    # Round table, chat orchestrator, routing
     security/         # Prompt guard, injection defense, SSRF validation, webhook verification
@@ -93,6 +93,18 @@ The enforcement pipeline runs between independent analysis and cross-agent chall
 - numeric claims that can be checked against a ground-truth provider
 
 Critical findings are logged in validation results; projects can add stricter correction behavior by configuring concrete validators and LLM correction paths.
+
+## Learning Persistence and Integrity
+
+The learning module persists its extended tables (corrections, activity events, agent dispatch stats, integrity flags) behind a small `LearningStore` protocol with SQLite (default) and Postgres (opt-in) backends. The files added for this layer in generated projects:
+
+- `learning/store.py` -- `LearningStore` protocol, SQLite/Postgres backends, allowlist-validated SQL, forward-only migrations
+- `learning/corrections.py` -- Correction lifecycle (proposed -> approved -> retired) with four-eyes approval and budgeted prompt rendering
+- `learning/override_detector.py` -- Screens proposed corrections for injection, safety-agent targeting, and evidence-level inflation
+- `learning/collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection
+- `learning/activity.py` -- User activity thresholds and per-agent behavioral baselines
+
+Findings are persisted as integrity flags and reviewed by humans through the anomalies API -- nothing is auto-rejected or auto-suspended.
 
 ## External Agent Protocol
 
