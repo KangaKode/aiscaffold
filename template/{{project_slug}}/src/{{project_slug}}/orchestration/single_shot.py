@@ -95,6 +95,7 @@ async def resolve_single_shot(
     query: str,
     llm: Any,
     corrections_manager: Any = None,
+    learning_store: Any = None,
     tenant_id: str = "default",
     agent_id: str = "",
     max_tokens: int = DEFAULT_MAX_TOKENS,
@@ -103,9 +104,10 @@ async def resolve_single_shot(
     Resolve a query in one cheap LLM call, or escalate to chat.
 
     Requires an LLM client. corrections_manager (optional) supplies the
-    approved-corrections context; without any approved corrections the
-    query escalates immediately -- single-shot only answers what the
-    platform has already learned.
+    approved-corrections context, and learning_store (optional) adds
+    extracted error schemas (learning/error_schemata.py) alongside them.
+    Without any learned knowledge the query escalates immediately --
+    single-shot only answers what the platform has already learned.
     """
     start = time.monotonic()
 
@@ -120,6 +122,18 @@ async def resolve_single_shot(
             )
         except Exception as exc:
             logger.warning("[SingleShot] Corrections context failed: %s", exc)
+
+    if learning_store is not None:
+        try:
+            from ..learning.error_schemata import get_schemas_for_context
+
+            schema_block = get_schemas_for_context(
+                learning_store, tenant_id=tenant_id, agent_id=agent_id
+            )
+            if schema_block:
+                context = f"{context}\n\n{schema_block}" if context else schema_block
+        except Exception as exc:
+            logger.warning("[SingleShot] Error-schema context failed: %s", exc)
 
     if not context:
         return _escalate("No approved corrections to ground an answer", start)

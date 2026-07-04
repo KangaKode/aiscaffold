@@ -1,0 +1,376 @@
+"""Tests for the learning maturity pack: reflector (process lessons from
+round table results), error schemata (deterministic generalization of
+correction clusters, injected into single-shot context), and the
+contradiction detector (TF-IDF + negation over approved corrections)."""
+
+import pytest
+
+from {{project_slug}}.learning.contradiction import (
+    FLAG_TYPE_CONTRADICTION,
+    scan_corrections,
+)
+from {{project_slug}}.learning.corrections import CorrectionsManager
+from {{project_slug}}.learning.error_schemata import (
+    extract_error_schemas,
+    get_schemas_for_context,
+)
+from {{project_slug}}.learning.reflector import (
+    DAILY_CAP,
+    MAX_REFLECTIONS_PER_SESSION,
+    ReflectionType,
+    reflect,
+)
+from {{project_slug}}.learning.store import SqliteLearningStore
+from {{project_slug}}.orchestration.round_table import (
+    AgentAnalysis,
+    AgentChallenge,
+    AgentVote,
+    RoundTableResult,
+    SynthesisResult,
+)
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
+
+
+@pytest.fixture
+def manager(store):
+    return CorrectionsManager(store)
+
+
+def _rich_result(task_id="task-1"):
+    """A RoundTableResult that triggers every reflection detector."""
+    return RoundTableResult(
+        task_id=task_id,
+        analyses=[
+            AgentAnalysis(
+                agent_name="analyst",
+                domain="analysis",
+                observations=[
+                    {"finding": f"f{i}", "evidence": "vendor docs"} for i in range(4)
+                ],
+            ),
+        ],
+        challenges=[
+            AgentChallenge(
+                agent_name="skeptic",
+                concessions=[{"target_agent": "analyst", "finding_accepted": "f1"}],
+            ),
+        ],
+        synthesis=SynthesisResult(
+            recommended_direction="proceed",
+            key_findings=[
+                {"agent_name": "analyst", "finding": "f1"},
+                {"agent_name": "analyst", "finding": "f2"},
+                {"agent_name": "skeptic", "finding": "f3"},
+            ],
+            minority_views=[{"agent_name": "skeptic", "view": "risky"}],
+        ),
+        votes=[
+            AgentVote(agent_name="analyst", approve=True),
+            AgentVote(agent_name="skeptic", approve=False, dissent_reason="risk"),
+        ],
+    )
+
+
+def _propose_approved(manager, agent_id="analyst", original="X", corrected="Y",
+                      reason="docs", created_by="alice", approved_by="bob",
+                      tenant_id="default", evidence_level="documented"):
+    c = manager.propose(
+        agent_id=agent_id, original_claim=original, corrected_claim=corrected,
+        reason=reason, evidence_level=evidence_level, created_by=created_by,
+        tenant_id=tenant_id,
+    )
+    return manager.approve(c.id, approved_by=approved_by)
+
+
+# --- Reflector ---------------------------------------------------------------
+
+
+class TestReflector:
+    def test_extracts_and_persists_reflections(self, store):
+        reflections = reflect(_rich_result(), tenant_id="default", store=store)
+
+        assert 1 <= len(reflections) <= MAX_REFLECTIONS_PER_SESSION
+        rows = store.query("reflections", {"tenant_id": "default"})
+        assert len(rows) == len(reflections)
+        types = {r.reflection_type for r in reflections}
+        assert types <= set(ReflectionType.ALL)
+
+    def test_detects_agent_effectiveness(self, store):
+        reflections = reflect(_rich_result(), tenant_id="default", store=store)
+        effectiveness = [
+            r for r in reflections
+            if r.reflection_type == ReflectionType.AGENT_EFFECTIVENESS
+        ]
+        assert effectiveness
+        assert "analyst" in effectiveness[0].title
+        assert effectiveness[0].quality_metrics["citation_count"] == 2
+
+    def test_detects_dissent_value(self, store):
+        reflections = reflect(_rich_result(), tenant_id="default", store=store)
+        assert any(
+            r.reflection_type == ReflectionType.DISSENT_VALUE
+            and "skeptic" in r.title
+            for r in reflections
+        )
+
+    def test_empty_result_produces_nothing(self, store):
+        result = RoundTableResult(task_id="empty")
+        assert reflect(result, tenant_id="default", store=store) == []
+        assert store.query("reflections", {"tenant_id": "default"}) == []
+
+    def test_daily_cap_blocks_extraction(self, store):
+        from datetime import datetime
+
+        for i in range(DAILY_CAP):
+            store.insert("reflections", {
+                "id": f"r{i}",
+                "tenant_id": "default",
+                "source_task_id": "t",
+                "reflection_type": ReflectionType.AGENT_EFFECTIVENESS,
+                "title": "t",
+                "detail": "d",
+                "quality_metrics_json": "{}",
+                "status": "recorded",
+                "created_at": datetime.now().isoformat(),
+            })
+        assert reflect(_rich_result(), tenant_id="default", store=store) == []
+
+    def test_reflections_are_tenant_scoped(self, store):
+        reflect(_rich_result(), tenant_id="team-a", store=store)
+        assert store.query("reflections", {"tenant_id": "team-b"}) == []
+
+
+# --- Error schemata ----------------------------------------------------------
+
+
+class TestErrorSchemata:
+    def _seed_cluster(self, manager, n=3, agent_id="analyst"):
+        creators = ["alice", "carol", "alice", "carol", "alice"]
+        for i in range(n):
+            _propose_approved(
+                manager,
+                agent_id=agent_id,
+                original=f"claim {i} is fine",
+                corrected=f"claim {i} needs verified telemetry first",
+                reason=f"missed validation step {i}",
+                created_by=creators[i % len(creators)],
+                approved_by="dave",
+            )
+
+    def test_extracts_schema_from_cluster(self, store, manager):
+        self._seed_cluster(manager)
+        schemas = extract_error_schemas(store, tenant_id="default")
+
+        assert len(schemas) == 1
+        schema = schemas[0]
+        assert schema.agent_id == "analyst"
+        assert "3 approved" in schema.title
+        assert len(schema.source_correction_ids) == 3
+        assert schema.mitigation_steps
+
+    def test_requires_min_cluster_size(self, store, manager):
+        self._seed_cluster(manager, n=2)
+        assert extract_error_schemas(store, tenant_id="default") == []
+
+    def test_requires_distinct_creators(self, store, manager):
+        for i in range(3):
+            _propose_approved(
+                manager, original=f"c{i}", corrected=f"fix {i}",
+                created_by="alice", approved_by="bob",
+            )
+        assert extract_error_schemas(store, tenant_id="default") == []
+
+    def test_rerun_updates_instead_of_duplicating(self, store, manager):
+        self._seed_cluster(manager)
+        first = extract_error_schemas(store, tenant_id="default")
+        second = extract_error_schemas(store, tenant_id="default")
+
+        assert first[0].id == second[0].id
+        rows = store.query("error_schemas", {"tenant_id": "default"})
+        assert len(rows) == 1
+
+    def test_context_block_renders_and_respects_budget(self, store, manager):
+        self._seed_cluster(manager)
+        extract_error_schemas(store, tenant_id="default")
+
+        block = get_schemas_for_context(store, tenant_id="default")
+        assert "Known error patterns" in block
+        assert "Recurring corrections for analyst" in block
+
+        assert get_schemas_for_context(store, tenant_id="default", budget_chars=60) == ""
+
+    def test_context_block_empty_without_schemas(self, store):
+        assert get_schemas_for_context(store, tenant_id="default") == ""
+        assert get_schemas_for_context(None, tenant_id="default") == ""
+
+    @pytest.mark.asyncio
+    async def test_schemas_feed_single_shot_context(self, store, manager):
+        """Single-shot proceeds on schema knowledge even without corrections
+        rendered (schemas alone are enough grounding to attempt a call)."""
+        from {{project_slug}}.llm.mock import MockLLMClient
+        from {{project_slug}}.orchestration.single_shot import resolve_single_shot
+
+        self._seed_cluster(manager)
+        extract_error_schemas(store, tenant_id="default")
+
+        answer = (
+            "Claims require verified telemetry before publication. "
+            "[VERIFIED: error_schemas] This reflects the extracted error pattern."
+        )
+        result = await resolve_single_shot(
+            query="What did we learn about claim validation?",
+            llm=MockLLMClient(response=answer),
+            corrections_manager=None,
+            learning_store=store,
+            tenant_id="default",
+        )
+        assert result.escalated is False
+        assert result.citations_count > 0
+
+
+# --- Contradiction detector --------------------------------------------------
+
+
+class TestContradictionDetector:
+    def test_flags_contradicting_pair(self, store, manager):
+        _propose_approved(
+            manager,
+            original="deploys can go out on Fridays",
+            corrected="always use the blue deploy pipeline for releases",
+            reason="pipeline standard",
+        )
+        _propose_approved(
+            manager,
+            original="deploys can go out on Fridays",
+            corrected="stop using the blue deploy pipeline for releases",
+            reason="pipeline deprecated",
+            created_by="carol", approved_by="dave",
+        )
+
+        findings = scan_corrections(store, tenant_id="default")
+
+        assert len(findings) == 1
+        assert findings[0].negation_marker in ("stop using", "deprecated")
+        assert findings[0].similarity >= 0.5
+        flags = store.query(
+            "integrity_flags", {"flag_type": FLAG_TYPE_CONTRADICTION}
+        )
+        assert len(flags) == 1
+        assert flags[0]["severity"] == "warning"
+
+    def test_no_flag_for_dissimilar_corrections(self, store, manager):
+        _propose_approved(
+            manager,
+            original="rate limit is 100",
+            corrected="never exceed 60 requests per minute on the API",
+        )
+        _propose_approved(
+            manager,
+            original="logo color",
+            corrected="the brand palette uses cobalt for headers",
+            created_by="carol", approved_by="dave",
+        )
+        assert scan_corrections(store, tenant_id="default") == []
+
+    def test_no_flag_without_negation(self, store, manager):
+        _propose_approved(
+            manager,
+            original="rate limit",
+            corrected="the API rate limit is 60 requests per minute",
+        )
+        _propose_approved(
+            manager,
+            original="rate limit",
+            corrected="the API rate limit is 60 requests per minute today",
+            created_by="carol", approved_by="dave",
+        )
+        assert scan_corrections(store, tenant_id="default") == []
+
+    def test_rescan_does_not_duplicate_flags(self, store, manager):
+        _propose_approved(
+            manager,
+            original="cache policy",
+            corrected="enable the shared result cache for lookups",
+        )
+        _propose_approved(
+            manager,
+            original="cache policy",
+            corrected="disable the shared result cache for lookups",
+            created_by="carol", approved_by="dave",
+        )
+        scan_corrections(store, tenant_id="default")
+        scan_corrections(store, tenant_id="default")
+
+        flags = store.query(
+            "integrity_flags", {"flag_type": FLAG_TYPE_CONTRADICTION}
+        )
+        assert len(flags) == 1
+
+    def test_scan_is_tenant_scoped(self, store, manager):
+        _propose_approved(
+            manager, tenant_id="team-a",
+            original="cache", corrected="enable the shared cache",
+        )
+        _propose_approved(
+            manager, tenant_id="team-a",
+            original="cache", corrected="disable the shared cache",
+            created_by="carol", approved_by="dave",
+        )
+        assert scan_corrections(store, tenant_id="team-b") == []
+        assert len(scan_corrections(store, tenant_id="team-a")) == 1
+
+
+{% if include_api_gateway -%}
+# --- Reflections API ---------------------------------------------------------
+
+
+class TestReflectionsAPI:
+    @pytest.fixture
+    async def api(self, store, tmp_path, monkeypatch):
+        from httpx import ASGITransport, AsyncClient
+
+        from {{project_slug}}.agents.registry import AgentRegistry
+        from {{project_slug}}.api.gateway import create_app
+
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.delenv("ENV", raising=False)
+        monkeypatch.setenv("ACTIVITY_TRACKING_ENABLED", "false")
+        monkeypatch.chdir(tmp_path)
+
+        app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
+        app.state.learning_store = store
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
+
+    async def test_lists_tenant_reflections(self, api, store):
+        reflect(_rich_result(), tenant_id="default", store=store)
+
+        resp = await api.get("/api/v1/reflections")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] >= 1
+        assert body["reflections"][0]["reflection_type"] in ReflectionType.ALL
+
+    async def test_filters_by_type_and_validates(self, api, store):
+        reflect(_rich_result(), tenant_id="default", store=store)
+
+        resp = await api.get(
+            "/api/v1/reflections",
+            params={"reflection_type": ReflectionType.AGENT_EFFECTIVENESS},
+        )
+        assert resp.status_code == 200
+        assert all(
+            r["reflection_type"] == ReflectionType.AGENT_EFFECTIVENESS
+            for r in resp.json()["reflections"]
+        )
+
+        bad = await api.get(
+            "/api/v1/reflections", params={"reflection_type": "not-a-type"}
+        )
+        assert bad.status_code == 400
+{% endif -%}

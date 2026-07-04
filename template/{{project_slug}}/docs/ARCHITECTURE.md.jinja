@@ -164,12 +164,15 @@ Prompt injection is defended in 3 layers: static pattern matching in `prompt_gua
 - `user_profile.py` -- Aggregates preferences + trust into context bundles
 - `global_profile.py` -- Cross-project identity at `~/.aiscaffold/`
 - `graduation.py` -- Promotes stable patterns to global level (pluggable rules)
-- `store.py` -- Pluggable `LearningStore` protocol (5 methods) with SQLite (default) and Postgres reference backends (`LEARNING_BACKEND`)
+- `store.py` -- Pluggable `LearningStore` protocol (6 methods) with SQLite (default) and Postgres reference backends (`LEARNING_BACKEND`); table definitions in `tables.py`
 - `corrections.py` -- Correction lifecycle (proposed -> approved -> retired) with four-eyes approval and budgeted, sanitized prompt rendering
 - `override_detector.py` -- Screens proposed corrections for injection, safety-agent targeting, and evidence-level inflation
 - `collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection over round-table history
 - `activity.py` -- User activity thresholds and per-agent behavioral baselines over dispatch stats
 - `content_policy.py` -- Heuristic classifier for knowledge writes (approved/flagged/rejected); blocks standing-rule manipulation and persists integrity flags
+- `reflector.py` -- Deterministic process-level lessons after each round table (agent effectiveness, evidence patterns, challenge impact, dissent value); capped, structured-fields-only, read via `GET /api/v1/reflections`
+- `error_schemata.py` -- Generalizes clusters of approved corrections (>= 3, >= 2 distinct proposers) into reusable error schemas injected into single-shot context
+- `contradiction.py` -- Pure-Python TF-IDF + negation heuristic flagging approved corrections that likely disagree; findings go to integrity flags
 - `rag/` -- Vector store adapter, embeddings, semantic preference search
 - `rag/transcript_indexer.py` -- Indexes round table results for semantic search over past deliberations
 {% endif -%}
