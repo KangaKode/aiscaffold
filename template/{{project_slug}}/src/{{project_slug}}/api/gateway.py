@@ -46,6 +46,7 @@ from .routes import (
     feedback,
     health,
     preferences,
+    resolve,
     round_table,
     sessions,
     webhooks,
@@ -173,6 +174,20 @@ def create_app(
     except Exception as e:
         logger.warning(f"[Gateway] Governance init failed (non-fatal): {e}")
 
+    # Model routing (opt-in via MODEL_ROUTING_ENABLED). When off, this is
+    # None and the single-model path is unchanged.
+    try:
+        from ..llm.model_router import create_model_router
+
+        application.state.model_router = create_model_router(
+            budget_manager=getattr(application.state, "budget_manager", None)
+        )
+        if application.state.model_router is not None:
+            logger.info("[Gateway] Model router enabled")
+    except Exception as e:
+        logger.warning(f"[Gateway] Model router init failed (non-fatal): {e}")
+        application.state.model_router = None
+
     # Corrections lifecycle over HTTP (API-first): manager + override
     # detector on app.state. Reuses the learning store; degrades to 503
     # at the routes when unavailable.
@@ -229,6 +244,9 @@ def create_app(
     )
     application.include_router(
         chat.router, prefix="/api/v1", tags=["Chat"]
+    )
+    application.include_router(
+        resolve.router, prefix="/api/v1", tags=["Resolve"]
     )
     application.include_router(
         feedback.router, prefix="/api/v1", tags=["Learning - Feedback"]

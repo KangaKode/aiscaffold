@@ -39,7 +39,7 @@ Stating what a control does *not* do is part of the control. These are the hones
 
 - **SIEM export**: the `audit_events` table is a clean feed for a log shipper -- poll by `created_at` and forward to your SIEM.
 - **Ground-truth verification**: plug a real `GroundTruthProvider` into the enforcement pipeline so numeric claims are checked against authoritative data.
-- **Multi-provider model diversity**: run safety agents on a different LLM provider than domain agents so one provider's blind spots don't propagate.
+- **Multi-provider model diversity**: model routing (`llm/model_router.py`, `MODEL_ROUTING_ENABLED`) already maps roles to cost tiers with cascade and budget-aware downgrades. Point the frontier tier (used by `sentinel_analysis`) at a different provider than your domain agents via `MODEL_TIER_MAP_JSON` so one provider's blind spots don't propagate.
 - **Workload identity**: replace `issue_token`/`verify_token`/`hash_token` in `agents/identity.py` with your corporate STS or service-mesh identity system.
 - **Real-time human escalation**: wire `CheckInManager` to a pager/chat integration so approval-required results notify a person immediately instead of waiting to be polled.
 - **Per-call sandboxing**: execute agent-initiated tool calls inside a sandbox (container, seccomp, or WASM) so a manipulated agent's blast radius stays bounded.
