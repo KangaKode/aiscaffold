@@ -13,6 +13,7 @@ suite becomes your standing red-team gate.
 """
 
 import json
+import re
 
 import pytest
 
@@ -24,7 +25,7 @@ from {{project_slug}}.orchestration.round_table import (
     SynthesisResult,
 )
 from {{project_slug}}.security.injection_defense import detect_multi_turn_poisoning
-from {{project_slug}}.security.prompt_guard import detect_injection_attempt
+from {{project_slug}}.security.prompt_guard import detect_injection_attempt, wrap_user_content
 
 from tests.adversarial_agents import (
     ALL_HOSTILE_AGENTS,
@@ -32,7 +33,11 @@ from tests.adversarial_agents import (
     ExfiltrationAgent,
     PoisoningAgent,
 )
-from tests.adversarial_payloads import ATTACK_TYPES, DIRECT_PAYLOADS
+from tests.adversarial_payloads import (
+    ATTACK_TYPES,
+    DIRECT_PAYLOADS,
+    FENCE_BREAK_PAYLOADS,
+)
 
 
 @pytest.fixture
@@ -54,13 +59,29 @@ def _assert_blocked(attack_type: str, findings: list[str]) -> None:
 
 class TestDefenseDetection:
     def test_all_attack_types_have_payloads(self):
-        """The harness covers every declared attack type (6 + poisoning)."""
-        assert len(ATTACK_TYPES) >= 7
+        """The harness covers every declared attack type (7 + poisoning)."""
+        assert len(ATTACK_TYPES) >= 8
         for attack_type in (
             "direct", "unicode", "encoded", "token_split",
-            "exfiltration", "rot13", "poisoning",
+            "exfiltration", "rot13", "fence_break", "poisoning",
         ):
             assert attack_type in ATTACK_TYPES
+
+    @pytest.mark.parametrize("payload", FENCE_BREAK_PAYLOADS)
+    def test_fence_break_payloads_cannot_escape_wrapper(self, payload):
+        """After wrap_user_content, every surviving live tag is one of the
+        wrapper's own canonical delimiters -- no attacker case/whitespace/attr
+        variant survives, and exactly one closing delimiter exists."""
+        label = "TASK_CONTENT"
+        wrapped = wrap_user_content(payload, label)
+        # Built by concatenation: f-string braces would collide with template syntax.
+        live_tag = re.compile(
+            r"<\s{0,32}/?\s{0,32}" + re.escape(label) + r"(?![A-Za-z0-9_])[^>]{0,64}>",
+            re.IGNORECASE,
+        )
+        canonical = {f"<{label}>", f"</{label}>"}
+        assert set(live_tag.findall(wrapped)) <= canonical
+        assert wrapped.count(f"</{label}>") == 1  # only the real closing fence
 
     @pytest.mark.asyncio
     async def test_every_hostile_agent_output_is_detected(self, adversarial_task):
