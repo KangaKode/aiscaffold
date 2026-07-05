@@ -30,6 +30,7 @@ from ..models.requests import RoundTableTaskRequest
 from ..models.responses import (
     AnalysisResponse,
     ChallengeResponse,
+    PremiseChallengeResponse,
     RoundTableResultResponse,
     SynthesisResponse,
     VoteResponse,
@@ -70,8 +71,9 @@ async def submit_task(
     """
     Submit a task to the round table for multi-agent analysis.
 
-    All registered agents (or a subset via agent_ids) will analyze the task
-    through the 4-phase protocol: Strategy -> Independent -> Challenge -> Synthesis.
+    All registered agents (or a subset via agent_ids) analyze the task through
+    the phased protocol: Premise Gate -> Strategy -> Independent -> Challenge ->
+    Synthesis. A refused premise returns status="refused" with the gate outcome.
     """
     registry = request.app.state.registry
     config: RoundTableConfig = request.app.state.round_table_config
@@ -195,9 +197,19 @@ async def submit_task(
         metrics["total_duration"] += result.duration_seconds
         metrics["total_agent_calls"] += len(agents) * 3
 
+        pcr = result.premise_challenge
         response = RoundTableResultResponse(
             task_id=task_id,
-            status="completed",
+            status="refused" if pcr is not None else "completed",
+            premise_challenge=PremiseChallengeResponse(
+                what_is_wrong=pcr.what_is_wrong,
+                what_is_missing=pcr.what_is_missing,
+                better_question=pcr.better_question,
+                refusing_agents=[r["agent_name"] for r in pcr.challenge_reasons],
+                agents_who_would_proceed=pcr.agents_who_would_proceed,
+            )
+            if pcr is not None
+            else None,
             consensus_reached=result.consensus_reached,
             approval_rate=result.approval_rate,
             analyses=[

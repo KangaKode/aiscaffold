@@ -1,0 +1,321 @@
+"""Tests for the Phase 0.5 premise refusal gate.
+
+Covers: threshold clamping (single-agent veto prevention), gate tripping
+and short-circuiting, fail-open behavior on parse/LLM failures, the
+no-LLM and disabled-flag skip paths, sanitization/truncation of
+attacker-influenced refusal fields, and the mock-default regression
+guard (a default MockLLMClient run must never short-circuit).
+"""
+
+import json
+
+import pytest
+
+from {{project_slug}}.llm.mock import MockLLMClient
+from {{project_slug}}.orchestration.premise import (
+    PremiseChallengeResult,
+    build_premise_challenge_result,
+    compute_refusal_threshold,
+    phase_premise_validation,
+)
+from {{project_slug}}.orchestration.round_table import (
+    RoundTable,
+    RoundTableConfig,
+    RoundTableTask,
+)
+
+REFUSAL_JSON = json.dumps(
+    {
+        "premise_valid": False,
+        "refusal_reason": "false_premise",
+        "missing_info": "No dataset was provided",
+        "better_question": "What data should this analysis use?",
+    }
+)
+
+VALID_JSON = json.dumps(
+    {"premise_valid": True, "refusal_reason": "", "missing_info": "", "better_question": ""}
+)
+
+
+class StubAgent:
+    """Minimal AgentProtocol stub that records whether analyze() ran."""
+
+    def __init__(self, name, domain="general analysis"):
+        self.name = name
+        self.domain = domain
+        self.analyze_called = False
+
+    async def analyze(self, task):
+        self.analyze_called = True
+        from {{project_slug}}.orchestration.round_table import AgentAnalysis
+
+        return AgentAnalysis(agent_name=self.name, domain=self.domain, confidence=0.7)
+
+    async def challenge(self, task, other_analyses):
+        from {{project_slug}}.orchestration.round_table import AgentChallenge
+
+        return AgentChallenge(agent_name=self.name)
+
+    async def vote(self, task, synthesis):
+        from {{project_slug}}.orchestration.round_table import AgentVote
+
+        return AgentVote(agent_name=self.name, approve=True)
+
+
+def _task():
+    return RoundTableTask(id="premise_test", content="Analyze the provided dataset")
+
+
+def _config(tmp_path, **overrides):
+    defaults = dict(
+        artifacts_dir=tmp_path / "artifacts",
+        include_core_agents=False,
+        enforce_evidence=False,
+        enable_strategy_phase=False,
+        enable_challenge_phase=False,
+    )
+    defaults.update(overrides)
+    return RoundTableConfig(**defaults)
+
+
+# --- Threshold clamp ---------------------------------------------------------
+
+
+class TestRefusalThreshold:
+    def test_floor_of_two_prevents_single_agent_veto(self):
+        # Even misconfigured to 1, a 5-agent room needs 2 refusals.
+        assert compute_refusal_threshold(5, configured=1) == 2
+
+    def test_ceiling_of_half_the_room(self):
+        # A threshold larger than the room clamps to ceil(n/2).
+        assert compute_refusal_threshold(4, configured=10) == 2
+        assert compute_refusal_threshold(5, configured=10) == 3
+
+    def test_single_agent_room_needs_one(self):
+        assert compute_refusal_threshold(1, configured=2) == 1
+        assert compute_refusal_threshold(0, configured=2) == 1
+
+    def test_default_config_two_agent_room(self):
+        assert compute_refusal_threshold(2, configured=2) == 2
+
+
+# --- Deterministic synthesis of verdicts -------------------------------------
+
+
+def _verdict(name, valid, reason="false_premise", missing="", better=""):
+    return {
+        "agent_name": name,
+        "premise_valid": valid,
+        "refusal_reason": reason,
+        "missing_info": missing,
+        "better_question": better,
+    }
+
+
+class TestBuildChallengeResult:
+    def test_below_threshold_proceeds(self):
+        results = [_verdict("a", False), _verdict("b", True), _verdict("c", True)]
+        pcr = build_premise_challenge_result("t1", results, 0.1, configured_threshold=2)
+        assert pcr.premise_challenged is False
+        assert pcr.agents_who_would_proceed == ["b", "c"]
+
+    def test_at_threshold_challenges(self):
+        results = [
+            _verdict("a", False, missing="ground truth", better="Reframe it"),
+            _verdict("b", False),
+            _verdict("c", True),
+        ]
+        pcr = build_premise_challenge_result("t1", results, 0.1, configured_threshold=2)
+        assert pcr.premise_challenged is True
+        assert len(pcr.challenge_reasons) == 2
+        assert "false_premise" in pcr.what_is_wrong
+        assert pcr.what_is_missing == "ground truth"
+        assert pcr.better_question == "Reframe it"
+        assert pcr.agents_who_would_proceed == ["c"]
+
+    def test_single_refuser_cannot_trip_even_with_threshold_one(self):
+        results = [_verdict("a", False), _verdict("b", True), _verdict("c", True)]
+        pcr = build_premise_challenge_result("t1", results, 0.1, configured_threshold=1)
+        assert pcr.premise_challenged is False
+
+    def test_attacker_influenced_fields_truncated(self):
+        # Refusal fields come from LLM output influenced by task content.
+        results = [
+            _verdict("a", False, reason="x" * 5000, missing="m" * 5000, better="b" * 5000),
+            _verdict("b", False, reason="y" * 5000),
+        ]
+        pcr = build_premise_challenge_result("t1", results, 0.1)
+        assert len(pcr.what_is_wrong) <= 1100
+        assert len(pcr.what_is_missing) <= 1100
+        assert len(pcr.better_question) <= 600
+
+    def test_null_bytes_stripped_from_surfaced_fields(self):
+        results = [
+            _verdict("a", False, reason="bad\x00premise", better="ask\x00differently"),
+            _verdict("b", False),
+        ]
+        pcr = build_premise_challenge_result("t1", results, 0.1)
+        assert "\x00" not in pcr.what_is_wrong
+        assert "\x00" not in pcr.better_question
+
+
+# --- phase_premise_validation ------------------------------------------------
+
+
+class TestPhasePremiseValidation:
+    @pytest.mark.asyncio
+    async def test_all_refuse_trips_gate(self):
+        agents = [StubAgent("a"), StubAgent("b"), StubAgent("c")]
+        llm = MockLLMClient(response=REFUSAL_JSON)
+        pcr = await phase_premise_validation(agents, _task(), llm)
+        assert pcr.premise_challenged is True
+        assert len(pcr.challenge_reasons) == 3
+
+    @pytest.mark.asyncio
+    async def test_all_valid_proceeds(self):
+        agents = [StubAgent("a"), StubAgent("b")]
+        llm = MockLLMClient(response=VALID_JSON)
+        pcr = await phase_premise_validation(agents, _task(), llm)
+        assert pcr.premise_challenged is False
+        assert set(pcr.agents_who_would_proceed) == {"a", "b"}
+
+    @pytest.mark.asyncio
+    async def test_unparseable_response_fails_open(self):
+        agents = [StubAgent("a"), StubAgent("b")]
+        llm = MockLLMClient(response="not json at all")
+        pcr = await phase_premise_validation(agents, _task(), llm)
+        assert pcr.premise_challenged is False
+
+    @pytest.mark.asyncio
+    async def test_llm_exception_fails_open(self):
+        class ExplodingLLM:
+            async def call(self, **kwargs):
+                raise RuntimeError("provider down")
+
+        agents = [StubAgent("a"), StubAgent("b")]
+        pcr = await phase_premise_validation(agents, _task(), ExplodingLLM())
+        assert pcr.premise_challenged is False
+        assert set(pcr.agents_who_would_proceed) == {"a", "b"}
+
+    @pytest.mark.asyncio
+    async def test_single_agent_room_can_refuse(self):
+        agents = [StubAgent("solo")]
+        llm = MockLLMClient(response=REFUSAL_JSON)
+        pcr = await phase_premise_validation(agents, _task(), llm)
+        assert pcr.premise_challenged is True
+
+    @pytest.mark.asyncio
+    async def test_mock_default_never_refuses(self):
+        # Regression guard: MockLLMClient's role-keyed default for
+        # premise_validation must be a valid premise, or every demo and
+        # full-run test would short-circuit at the gate.
+        agents = [StubAgent("a"), StubAgent("b"), StubAgent("c")]
+        pcr = await phase_premise_validation(agents, _task(), MockLLMClient())
+        assert pcr.premise_challenged is False
+
+
+# --- Round table integration -------------------------------------------------
+
+
+class TestRoundTableIntegration:
+    @pytest.mark.asyncio
+    async def test_tripped_gate_short_circuits_all_phases(self, tmp_path):
+        agents = [StubAgent("a"), StubAgent("b")]
+        rt = RoundTable(
+            agents=agents,
+            config=_config(tmp_path),
+            llm_client=MockLLMClient(response=REFUSAL_JSON),
+        )
+        result = await rt.run(_task())
+
+        assert result.premise_challenge is not None
+        assert result.premise_challenge.premise_challenged is True
+        assert result.synthesis is None
+        assert result.analyses == []
+        assert result.votes == []
+        assert not any(a.analyze_called for a in agents)
+
+    @pytest.mark.asyncio
+    async def test_tripped_gate_writes_artifact(self, tmp_path):
+        agents = [StubAgent("a"), StubAgent("b")]
+        rt = RoundTable(
+            agents=agents,
+            config=_config(tmp_path),
+            llm_client=MockLLMClient(response=REFUSAL_JSON),
+        )
+        await rt.run(_task())
+
+        artifact = tmp_path / "artifacts" / "premise_test" / "phase0_5_premise_challenge.json"
+        assert artifact.exists()
+        data = json.loads(artifact.read_text())
+        assert data["premise_challenged"] is True
+
+    @pytest.mark.asyncio
+    async def test_disabled_flag_bypasses_gate(self, tmp_path):
+        agents = [StubAgent("a"), StubAgent("b")]
+        rt = RoundTable(
+            agents=agents,
+            config=_config(tmp_path, premise_challenge_enabled=False),
+            llm_client=MockLLMClient(response=REFUSAL_JSON),
+        )
+        result = await rt.run(_task())
+
+        assert result.premise_challenge is None
+        assert all(a.analyze_called for a in agents)
+
+    @pytest.mark.asyncio
+    async def test_no_llm_skips_gate(self, tmp_path):
+        # Without an LLM the gate is skipped (not failed); Sentinel's
+        # per-agent fail-closed screening remains the backstop.
+        agents = [StubAgent("a"), StubAgent("b")]
+        rt = RoundTable(agents=agents, config=_config(tmp_path), llm_client=None)
+        result = await rt.run(_task())
+
+        assert result.premise_challenge is None
+        assert all(a.analyze_called for a in agents)
+
+    @pytest.mark.asyncio
+    async def test_valid_premise_runs_full_deliberation(self, tmp_path):
+        agents = [StubAgent("a"), StubAgent("b")]
+        rt = RoundTable(
+            agents=agents,
+            config=_config(tmp_path),
+            llm_client=MockLLMClient(),
+        )
+        result = await rt.run(_task())
+
+        assert result.premise_challenge is None
+        assert len(result.analyses) == 2
+        assert result.synthesis is not None
+
+
+# --- Audit integration -------------------------------------------------------
+
+
+class TestAuditOutcome:
+    @pytest.mark.asyncio
+    async def test_refused_run_audited_as_premise_refused(self, tmp_path):
+        from {{project_slug}}.orchestration.deliberation_audit import (
+            DeliberationAuditor,
+            audited_round_table,
+        )
+
+        events = []
+
+        class RecordingStore:
+            def insert(self, table, row):
+                events.append(row)
+
+        agents = [StubAgent("a"), StubAgent("b")]
+        rt = RoundTable(
+            agents=agents,
+            config=_config(tmp_path),
+            llm_client=MockLLMClient(response=REFUSAL_JSON),
+        )
+        auditor = DeliberationAuditor(store=RecordingStore())
+        result = await audited_round_table(rt, _task(), auditor)
+
+        assert result.premise_challenge is not None
+        completed = [e for e in events if e["event_type"] == "deliberation_completed"]
+        assert completed and completed[0]["outcome"] == "premise_refused"

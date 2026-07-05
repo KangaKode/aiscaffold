@@ -13,9 +13,77 @@ if TYPE_CHECKING:
         RoundTableConfig,
         RoundTableResult,
         RoundTableTask,
+        SynthesisResult,
     )
 
 logger = logging.getLogger(__name__)
+
+
+async def phase_synthesis(
+    partial: "RoundTableResult",
+    llm: object,
+    system_prompt: str,
+) -> "SynthesisResult":
+    """Phase 3a: Synthesize analyses. CRITICAL: preserve ALL evidence fields."""
+    from ..llm import CacheablePrompt
+    from .round_table import SynthesisResult
+
+    if not llm:
+        return SynthesisResult(recommended_direction="No LLM available for synthesis")
+
+    try:
+        analyses_json = json.dumps(
+            [{"agent": a.agent_name, "domain": a.domain,
+              "observations": a.observations, "recommendations": a.recommendations,
+              "confidence": a.confidence} for a in partial.analyses],
+            indent=2, default=str,
+        )
+    except Exception as e:
+        logger.warning(f"[RoundTable] Analysis serialization failed: {e}")
+        analyses_json = json.dumps(
+            [{"agent": a.agent_name, "domain": a.domain}
+             for a in partial.analyses], indent=2,
+        )
+
+    prompt = CacheablePrompt(
+        system=system_prompt,
+        context=(
+            f"Analyses from {len(partial.analyses)} agents:\n{analyses_json}"
+        ),
+        user_message=(
+            "Synthesize these specialist analyses into a recommendation.\n\n"
+            'Return JSON: {"recommended_direction": "...", '
+            '"key_findings": [{"agent_name": ..., "finding": ..., "evidence": ...}], '
+            '"trade_offs": [...], "minority_views": [...]}'
+        ),
+    )
+    try:
+        from ..llm.json_parser import extract_json
+
+        response = await llm.call(prompt=prompt, role="synthesis", temperature=0.2)
+
+        if not response or not response.content:
+            logger.warning("[RoundTable] Synthesis returned empty response")
+            return SynthesisResult(recommended_direction="Synthesis returned empty response")
+
+        data = extract_json(response.content)
+        if data is None:
+            logger.warning("[RoundTable] Synthesis returned unparseable JSON")
+            return SynthesisResult(recommended_direction=response.content[:500])
+
+        if not isinstance(data, dict):
+            logger.warning("[RoundTable] Synthesis returned non-dict JSON")
+            return SynthesisResult(recommended_direction=str(data)[:500])
+
+        return SynthesisResult(
+            recommended_direction=data.get("recommended_direction", ""),
+            key_findings=data.get("key_findings", []),
+            trade_offs=data.get("trade_offs", []),
+            minority_views=data.get("minority_views", []),
+        )
+    except Exception as e:
+        logger.warning(f"[RoundTable] Synthesis failed: {e}")
+        return SynthesisResult(recommended_direction="Synthesis failed -- review individual analyses")
 
 
 def apply_approval_gate(

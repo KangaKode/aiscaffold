@@ -63,10 +63,13 @@ The chat orchestrator routes messages to the most relevant specialists (based on
 
 **Escalation triggers:** When the cross-check finds specialist agreement below 40% (configurable via `escalation_threshold` in `ChatConfig`), the response is flagged with `escalation_suggested=True` and both conflicting views are shown. The chat endpoint also escalates when the agent router can't find enough relevant specialists. Users can manually escalate any topic via `POST /api/v1/chat/escalate`.
 
-### Round Table: 4-Phase Multi-Agent Deliberation
+### Round Table: Phased Multi-Agent Deliberation
 
 ```mermaid
 flowchart LR
+    subgraph gate [Phase 0.5: Premise Gate]
+        PG["Agents may collectively refuse a flawed task"]
+    end
     subgraph phase1 [Phase 1: Independent Analysis]
         A1[Agent A]
         A2[Agent B]
@@ -86,13 +89,15 @@ flowchart LR
         SY[Synthesis]
         V[Voting]
     end
+    gate -->|"premise sound"| phase1
+    gate -->|"refused"| Refuse["Short-circuit: what is wrong + a better question"]
     phase1 --> enforce
     enforce -->|"validation findings logged"| phase2
     phase2 --> phase3
     phase3 --> Result[Consensus or Dissent]
 ```
 
-Each agent analyzes the task independently. The enforcement pipeline validates Phase 1 analyses, flags speculation, checks evidence-tag formatting when tags are present, and logs weak-claim findings before challenge. Agents then challenge each other's findings with counter-evidence, and finally vote on a synthesized recommendation.
+Before any expensive phase runs, each agent gets one cheap premise check: is this task sound, or is it built on a false premise, underspecified, or unanswerable? When enough agents independently refuse (threshold clamped so a single agent can never veto alone), the round table declines the task and returns what is wrong and how to reframe it, instead of confidently analyzing a flawed question. Each agent then analyzes the task independently. The enforcement pipeline validates Phase 1 analyses, flags speculation, checks evidence-tag formatting when tags are present, and logs weak-claim findings before challenge. Agents then challenge each other's findings with counter-evidence, and finally vote on a synthesized recommendation.
 
 ### Core Safety Agents
 
@@ -115,7 +120,7 @@ Every scaffolded project includes **100+ Python source files** across 9 modules:
 
 ### Two Interaction Modes
 
-- **Round Table** -- Full 4-phase multi-agent deliberation (Strategy, Independent Analysis, Challenge, Synthesis + Voting). For complex decisions needing all perspectives. Six core safety agents participate automatically. Evidence enforcement pipeline runs between Phase 1 and Phase 2.
+- **Round Table** -- Full phased multi-agent deliberation (Premise Gate, Strategy, Independent Analysis, Challenge, Synthesis + Voting). For complex decisions needing all perspectives. Agents can collectively refuse a flawed task before any expensive phase runs. Six core safety agents participate automatically. Evidence enforcement pipeline runs between Phase 1 and Phase 2.
 - **Chat Orchestrator** -- Lightweight real-time chat. A lead agent selectively consults 1-3 specialists, cross-checks for agreement, and escalates to the round table when needed.
 
 ### API Gateway (FastAPI)
@@ -325,7 +330,7 @@ The scaffold itself is validated by a 16-check pipeline:
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
                          ruff lint, bandit security, import validation, red team,
-                         AI checks, agent review, pytest (541 tests, 83% coverage),
+                         AI checks, agent review, pytest (588 tests, 83% coverage),
                          file structure verification
 make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
 ```
@@ -357,6 +362,6 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 541 tests across 23 test files
+  tests/              # 588 tests across 24 test files
   evals/              # Eval infrastructure
 ```

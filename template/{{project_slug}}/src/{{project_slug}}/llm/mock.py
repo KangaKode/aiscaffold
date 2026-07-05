@@ -108,6 +108,18 @@ _CHAT_RESPONSE = (
     "authentication pipeline."
 )
 
+# Default premise verdict is VALID so demos and full-run tests never
+# short-circuit at the Phase 0.5 gate. Tests that exercise the gate
+# script explicit refusals instead.
+_PREMISE_RESPONSE = json.dumps(
+    {
+        "premise_valid": True,
+        "refusal_reason": "",
+        "missing_info": "",
+        "better_question": "",
+    }
+)
+
 _SENTINEL_RESPONSE = json.dumps(
     {
         "risk_level": "SAFE",
@@ -129,6 +141,7 @@ _ROLE_RESPONSES: dict[str, str] = {
     "specialist": _CHAT_RESPONSE,
     "analyst": _ANALYSIS_RESPONSE,
     "resolve": _CHAT_RESPONSE,
+    "premise_validation": _PREMISE_RESPONSE,
 }
 
 _ROLE_SUFFIX_MAP: dict[str, str] = {

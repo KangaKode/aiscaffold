@@ -11,7 +11,7 @@ Implements the Orchestrator-Worker pattern (2026 best practices Section 4.1):
 Token efficiency:
   - Uses CacheablePrompt so system instructions are cached across messages
   - Only consults relevant specialists (not all agents)
-  - Single synthesis pass (vs round table's 4 phases)
+  - Single synthesis pass (vs round table's phased protocol)
 
 Security:
   - All specialist responses sanitized before synthesis

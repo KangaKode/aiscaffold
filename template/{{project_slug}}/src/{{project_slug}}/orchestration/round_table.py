@@ -1,6 +1,7 @@
 """
-Generic Round Table Protocol - Multi-agent coordination with 4 phases.
+Generic Round Table Protocol - Multi-agent coordination in phases.
 
+Phase 0.5: PREMISE  -- Agents may collectively refuse a flawed task (cheap gate)
 Phase 0: STRATEGY   -- Orchestrator plans before dispatching (extended thinking)
 Phase 1: INDEPENDENT -- Agents analyze in parallel (prevent groupthink)
 Phase 2: CHALLENGE   -- Cross-agent questioning with evidence (mediated hub-and-spoke)
@@ -148,6 +149,7 @@ class RoundTableResult:
     """
 
     task_id: str
+    premise_challenge: Any = None  # PremiseChallengeResult when the gate tripped
     strategy: StrategyPlan | None = None
     analyses: list[AgentAnalysis] = field(default_factory=list)
     challenges: list[AgentChallenge] = field(default_factory=list)
@@ -186,6 +188,8 @@ class RoundTableConfig:
     enforce_evidence: bool = True  # Run evidence enforcement pipeline on Phase 1 responses
     min_quorum: int = 2  # Min successful domain-agent analyses before result is degraded
     autonomy_level: int | None = None  # 1-6; policy may force human approval
+    premise_challenge_enabled: bool = True  # Phase 0.5 refusal gate (needs an LLM)
+    refusal_threshold: int = 2  # Agents needed to trip the gate (clamped, see premise.py)
 
 
 # =============================================================================
@@ -244,9 +248,30 @@ class RoundTable:
             logger.info(f"[RoundTable] Initialized with {len(agents)} agents (core agents disabled)")
 
     async def run(self, task: RoundTableTask) -> RoundTableResult:
-        """Execute the full 4-phase round table protocol."""
+        """Execute the full phased round table protocol."""
         start = datetime.now()
         result = RoundTableResult(task_id=task.id)
+
+        # Phase 0.5: Premise validation -- cheap parallel checks BEFORE any
+        # expensive phase. Skipped (not failed) without an LLM; Sentinel's
+        # per-agent screening remains the fail-closed backstop.
+        if self.config.premise_challenge_enabled and self.llm:
+            from .premise import phase_premise_validation
+
+            logger.info("[RoundTable] Phase 0.5: Premise validation")
+            pcr = await phase_premise_validation(
+                self.agents, task, self.llm,
+                refusal_threshold=self.config.refusal_threshold,
+            )
+            if pcr.premise_challenged:
+                result.premise_challenge = pcr
+                result.duration_seconds = (datetime.now() - start).total_seconds()
+                self._write_artifact(task.id, "phase0_5_premise_challenge", asdict(pcr))
+                logger.info(
+                    f"[RoundTable] Task refused at premise gate by "
+                    f"{len(pcr.challenge_reasons)} agents -- short-circuiting"
+                )
+                return result
 
         # Phase 0: Strategy
         if self.config.enable_strategy_phase and self.llm:
@@ -285,7 +310,10 @@ class RoundTable:
 
         # Phase 3: Synthesis + Voting
         logger.info("[RoundTable] Phase 3: Synthesis + voting")
-        result.synthesis = await self._phase_synthesis(task, result)
+        from .round_table_helpers import phase_synthesis
+        result.synthesis = await phase_synthesis(
+            result, self.llm, self._build_system_prompt()
+        )
         self._write_artifact(task.id, "phase3_synthesis", asdict(result.synthesis))
 
         result.votes = await self._phase_voting(task, result.synthesis)
@@ -403,69 +431,6 @@ class RoundTable:
                 continue
             challenges.append(r)
         return challenges
-
-    async def _phase_synthesis(
-        self, task: RoundTableTask, partial: RoundTableResult
-    ) -> SynthesisResult:
-        """Phase 3a: Synthesize analyses. CRITICAL: preserve ALL evidence fields."""
-        from ..llm import CacheablePrompt
-
-        if not self.llm:
-            return SynthesisResult(recommended_direction="No LLM available for synthesis")
-
-        try:
-            analyses_json = json.dumps(
-                [{"agent": a.agent_name, "domain": a.domain,
-                  "observations": a.observations, "recommendations": a.recommendations,
-                  "confidence": a.confidence} for a in partial.analyses],
-                indent=2, default=str,
-            )
-        except Exception as e:
-            logger.warning(f"[RoundTable] Analysis serialization failed: {e}")
-            analyses_json = json.dumps(
-                [{"agent": a.agent_name, "domain": a.domain}
-                 for a in partial.analyses], indent=2,
-            )
-
-        prompt = CacheablePrompt(
-            system=self._build_system_prompt(),
-            context=(
-                f"Analyses from {len(partial.analyses)} agents:\n{analyses_json}"
-            ),
-            user_message=(
-                "Synthesize these specialist analyses into a recommendation.\n\n"
-                'Return JSON: {"recommended_direction": "...", '
-                '"key_findings": [{"agent_name": ..., "finding": ..., "evidence": ...}], '
-                '"trade_offs": [...], "minority_views": [...]}'
-            ),
-        )
-        try:
-            from ..llm.json_parser import extract_json
-
-            response = await self.llm.call(prompt=prompt, role="synthesis", temperature=0.2)
-
-            if not response or not response.content:
-                logger.warning("[RoundTable] Synthesis returned empty response")
-                return SynthesisResult(recommended_direction="Synthesis returned empty response")
-
-            data = extract_json(response.content)
-            if data is None:
-                logger.warning("[RoundTable] Synthesis returned unparseable JSON")
-                return SynthesisResult(recommended_direction=response.content[:500])
-
-            if not isinstance(data, dict):
-                logger.warning("[RoundTable] Synthesis returned non-dict JSON")
-                return SynthesisResult(recommended_direction=str(data)[:500])
-
-            return SynthesisResult(
-                recommended_direction=data.get("recommended_direction", ""),
-                key_findings=data.get("key_findings", []),
-                trade_offs=data.get("trade_offs", []),
-                minority_views=data.get("minority_views", []),
-            )
-        except Exception as e:
-            logger.warning(f"[RoundTable] Synthesis failed: {e}")
-            return SynthesisResult(recommended_direction="Synthesis failed -- review individual analyses")
 
     async def _phase_voting(
         self, task: RoundTableTask, synthesis: SynthesisResult
