@@ -7,6 +7,9 @@ This documentation is for reviewers and builders evaluating the `roundtable` sca
 | Goal | Document |
 |------|----------|
 | Build and run a generated project | [TUTORIAL.md](TUTORIAL.md) |
+| Evaluate the security posture | [SECURITY_MODEL.md](SECURITY_MODEL.md) |
+| Report a vulnerability | [SECURITY.md](../SECURITY.md) |
+| Explore the full feature reference | [FEATURES.md](FEATURES.md) |
 | Understand the system design | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Understand the gated AI development workflow | [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md) |
 | Deploy as a multi-team platform | [PLATFORM_GUIDE.md](PLATFORM_GUIDE.md) |
