@@ -8,6 +8,7 @@ This documentation is for reviewers and builders evaluating the `roundtable` sca
 |------|----------|
 | Build and run a generated project | [TUTORIAL.md](TUTORIAL.md) |
 | Evaluate the security posture | [SECURITY_MODEL.md](SECURITY_MODEL.md) |
+| See the scaffold applied in another domain | [CASE_STUDY.md](CASE_STUDY.md) |
 | Report a vulnerability | [SECURITY.md](../SECURITY.md) |
 | Explore the full feature reference | [FEATURES.md](FEATURES.md) |
 | Understand the system design | [ARCHITECTURE.md](ARCHITECTURE.md) |
