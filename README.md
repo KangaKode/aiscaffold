@@ -89,8 +89,8 @@ Ready for regulated contexts (finance, healthcare, legal) without being limited 
 ## What's Inside
 
 - **Safety-first deliberation** -- every round table includes six adversarial safety agents by default: Skeptic, Quality, Evidence, FactChecker, Citation, and Sentinel (semantic injection guard, fails closed).
-- **Evidence discipline** -- claims carry explicit evidence levels (VERIFIED / CORROBORATED / INDICATED / POSSIBLE); an enforcement pipeline flags speculation-as-fact before agents challenge each other.
-- **Security controls** -- 3-layer prompt-injection defense, SSRF protection, per-agent JWT identity with rate limits and scope filtering, HMAC webhook verification, API-key auth with tenant-scoped isolation.
+- **Evidence discipline** -- claims carry explicit evidence levels (VERIFIED / CORROBORATED / INDICATED / POSSIBLE); a hallucination-resistance pipeline rejects unsupported confidence, phantom citations, and speculation-as-fact before synthesis.
+- **Security controls** -- agents are authenticated, least-privileged, monitored, and removable, like any other insider: per-agent JWT identity (hashed at rest) with rate limits and scope filtering, behavioral baselines, plus 3-layer prompt-injection defense, SSRF protection, HMAC webhook verification, and tenant-scoped isolation.
 - **Governance** -- graduated autonomy with approval gates, per-tenant cost budgets, PII redaction, tamper-evident audit trails, GDPR-style erasure, four-eyes correction approval. Full capability matrix with implementation and test mapping: [GOVERNANCE.md](template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md).
 - **Any-language agents** -- external agents implement 3 HTTP endpoints (`/analyze`, `/challenge`, `/vote`); the orchestrator treats them identically to local Python agents.
 - **Cost control** -- provider prompt caching (up to ~90% savings on cached content), per-call token tracking, budget enforcement, tiered model routing.
