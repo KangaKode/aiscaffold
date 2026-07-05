@@ -96,7 +96,7 @@ Each agent analyzes the task independently. The enforcement pipeline validates P
 
 ### Core Safety Agents
 
-Core agents are **meta-agents** -- they evaluate *how well* the analysis was done, not *what* was analyzed. They work alongside your domain specialists in every round table by default. Opt out with `include_core_agents=False` if you have a specific reason.
+Core agents are **meta-agents** -- they evaluate *how well* the analysis was done, not *what* was analyzed. They are the deliberation's built-in guardrails, working alongside your domain specialists in every round table by default. Opt out with `include_core_agents=False` if you have a specific reason.
 
 | Agent | Role |
 |-------|------|
@@ -171,6 +171,19 @@ Teaches your project to learn from user interactions:
 - **RAG** -- in-memory vector search for local development, with pgvector recommended for Postgres production deployments
 - **Graduation** -- Promotes stable patterns to global profile across projects
 
+Because learned corrections shape future behavior, writing one is a governed act, not a free write:
+
+```mermaid
+flowchart LR
+    Prop["Correction proposed"] --> Policy["Content policy screen"]
+    Policy --> Rev["Four-eyes review: approver must differ from proposer"]
+    Rev -->|"approved"| Act["Active: grounds /resolve and prompts"]
+    Rev -->|"rejected"| Rej["Rejected, retained for audit"]
+    Act --> Contra["Contradiction detection across approved corrections"]
+    Contra -->|"conflict"| Flagged["Integrity flag for human review"]
+    Act --> Ret["Retire or hard-delete (erasure)"]
+```
+
 ### Security (Baked In Everywhere)
 
 - SSRF protection on agent registration (blocks private IPs, non-http schemes, cloud metadata endpoints)
@@ -182,7 +195,21 @@ Teaches your project to learn from user interactions:
 - CORS restricted to configured origins (wildcard rejected)
 - DNS TOCTOU limitation documented on URL validation
 
-### Evidence Enforcement Pipeline
+### Evidence Enforcement Pipeline (Hallucination Resistance)
+
+This is the scaffold's hallucination-resistance layer: it does not claim to eliminate hallucination (no system can), it rejects the *shape* hallucination usually arrives in -- unsupported confidence, speculation stated as fact, citations that do not exist, and numbers that do not check out -- before any of it reaches synthesis.
+
+```mermaid
+flowchart LR
+    Claim["Agent claim"] --> FC["FactChecker: banned confidence patterns"]
+    FC --> ELE["EvidenceLevelEnforcer: tag format rules"]
+    ELE --> CV["CitationValidator: cited sources must exist"]
+    CV --> MV["MathVerifier: numeric claims vs ground truth"]
+    MV --> Log["Findings logged"] --> Challenge["Challenge phase sees the flags"]
+    Synth["Chat synthesis"] --> FC2["FactChecker"]
+    FC2 -->|"rejected"| Re["One corrective re-synthesis"]
+    Re -->|"rejected again"| Esc["Escalation suggested to caller"]
+```
 
 Every agent's output is validated before it enters the challenge phase. Four evidence levels, from strongest to weakest:
 

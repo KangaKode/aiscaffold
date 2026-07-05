@@ -6,6 +6,28 @@ The single source of truth for the control-by-control capability matrix (impleme
 
 ---
 
+## Defense in Depth: One Request's Journey
+
+Every control below is implemented and tested in the generated project. This is the path a single untrusted request takes:
+
+```mermaid
+flowchart TD
+    Req[Incoming request] --> Auth["API-key auth + per-IP rate limiting"]
+    Auth --> Tenant["Tenant scoping via AuthContext"]
+    Tenant --> L1["Injection defense layer 1: static pattern guard (jailbreak / override patterns)"]
+    L1 --> L2["Layer 2: Unicode normalization, invisible-char stripping, encoding-attack detection"]
+    L2 --> Wrap["Content wrapped in delimiters; fence-break tags neutralized"]
+    Wrap --> L3["Layer 3: Sentinel semantic screen - fails closed without an LLM"]
+    L3 --> Dispatch["Agent dispatch: JWT identity verified, capability scopes filter context"]
+    Dispatch --> Delib["Multi-agent deliberation"]
+    Delib --> Enforce["Evidence enforcement: unsupported-confidence claims rejected"]
+    Enforce --> Gate["Autonomy policy / human approval gate"]
+    Gate --> Sign["Output signing (HMAC attestation)"]
+    Sign --> Audit["Metadata-only audit trail + reasoning-chain hash"]
+```
+
+No single layer is trusted to be perfect; each assumes the one before it can be bypassed.
+
 ## Trust Boundaries
 
 Generated projects treat the following as **untrusted** at all times:
@@ -18,6 +40,33 @@ Generated projects treat the following as **untrusted** at all times:
 | MCP tool output | Injection via tool results | Sanitization + `MCP_DATA` boundary wrapping, per-tenant registry, `mcp:` scope gating, non-fatal failure handling |
 | Persisted state (registry, learning store) | Tampering with visibility/tenant metadata, poisoned corrections | Validation on load (invalid entries skipped, never widened), four-eyes correction approval, content policy screening, override/collusion/contradiction detectors |
 | The agents themselves | Misbehaving or compromised agents | Per-agent JWT identity verified at dispatch, per-agent rate limits, scope-filtered task context, suspension lifecycle, behavioral baselines and lockstep detection |
+
+## The Agents Are Inside the Perimeter
+
+The last row of that table deserves its own section, because it is the scaffold's least common design decision. Most agent frameworks treat agents as trusted extensions of the application. This scaffold treats them as insiders, the way a mature security program treats people with badges: authenticated, least-privileged, behaviorally monitored, and removable -- because an agent holds credentials, touches data, and acts at machine speed, and any of them can be compromised through the content they read.
+
+| Control | What it does | Where it lives |
+|---------|--------------|----------------|
+| Identity | Per-agent JWT verified at dispatch; tokens are SHA-256 hashed and only the hash is persisted -- the raw token is issued once and held in memory, and a reloaded agent must rotate credentials before it passes verification | `agents/identity.py`, `agents/registry_persistence.py` |
+| Least privilege | Capability scopes filter what each agent sees; out-of-scope findings are flagged | `agents/capability.py`, `orchestration/scope_filter.py` |
+| Behavioral baselines | Refusal rate, confidence, latency, and scope discipline compared against each agent's own history -- valid credentials with anomalous behavior still get flagged | `learning/activity.py` |
+| Multi-step patterns | Sequences of individually-benign actions that add up to extraction are detected across a window | `harness/sequence_detector.py` |
+| Collusion | Lockstep agreement between agents that should be independent is flagged (e.g. two agents defeating four-eyes review) | `learning/collusion.py` |
+| Containment | Suspension removes an agent from dispatch and listings without deleting its record | `agents/registry.py` |
+| Accountability | Reasoning-chain hashes make after-the-fact edits detectable; corrections that shape future behavior need two humans | `security/reasoning_chain_hash.py`, `learning/corrections.py` |
+
+The lifecycle, end to end:
+
+```mermaid
+flowchart LR
+    Reg["Agent registers"] --> Val["URL validated: SSRF checks block private IPs and metadata endpoints"]
+    Val --> Tok["JWT issued once - hash stored, raw token never persisted"]
+    Tok --> Disp["Scoped dispatch: identity verified, context filtered to granted scopes"]
+    Disp --> Mon["Monitoring: baselines, sequence detection, collusion detection"]
+    Mon -->|"anomaly"| Flag["Flagged for human review"]
+    Flag -->|"confirmed"| Susp["Suspended: excluded from dispatch, record retained"]
+    Mon --> AuditT["Tamper-evident audit trail"]
+```
 
 ## Posture Decisions
 
