@@ -162,6 +162,14 @@ class CheckInManager:
         finally:
             conn.close()
 
+    def get(self, checkin_id: str) -> CheckIn | None:
+        """Get a check-in by ID (any status)."""
+        conn = get_connection(self._db_path)
+        try:
+            return self._get_by_id(checkin_id, conn)
+        finally:
+            conn.close()
+
     def get_pending(self, project_id: str = "default") -> list[CheckIn]:
         """Get all pending (unresolved, non-expired) check-ins."""
         self._expire_old(project_id)
@@ -245,6 +253,16 @@ class CheckInManager:
     @staticmethod
     def _row_to_checkin(data: dict) -> CheckIn:
         """Convert a database row dict to a CheckIn."""
+        # Context is persisted in the context_json column; parse it back so
+        # consumers (e.g. graduation apply) see what create() stored.
+        context = data.get("context") or {}
+        if not context:
+            raw = data.get("context_json", "")
+            if raw:
+                try:
+                    context = json.loads(raw)
+                except (ValueError, TypeError):
+                    context = {}
         return CheckIn(
             id=data["id"],
             project_id=data.get("project_id", "default"),
@@ -253,7 +271,7 @@ class CheckInManager:
             suggested_action=data.get("suggested_action", ""),
             status=data.get("status", CheckInStatus.PENDING),
             response=data.get("response", ""),
-            context=data.get("context", {}),
+            context=context,
             created_at=data.get("created_at", ""),
             expires_at=data.get("expires_at", ""),
             resolved_at=data.get("resolved_at", ""),

@@ -90,23 +90,32 @@ async def submit_task(
             detail="No agents registered. Register at least one agent first.",
         )
 
+    # Agent selection is tenant-scoped: only agents visible to the caller's
+    # tenant (public, or registered by the same tenant) can participate.
+    # Cross-tenant agent_ids get the same "not found" as missing ones, so
+    # existence does not leak across tenants.
+    visible = {
+        entry.agent.name: entry.agent
+        for entry in registry.list_for_tenant(auth.tenant_id)
+    }
+    if not visible:
+        raise HTTPException(
+            status_code=400,
+            detail="No agents visible to your tenant. Register at least one agent first.",
+        )
+
     if task_request.agent_ids:
-        resolved_agents = {
-            aid: registry.get(aid)
-            for aid in task_request.agent_ids
-        }
         missing_agent_ids = [
-            aid for aid, agent in resolved_agents.items()
-            if agent is None
+            aid for aid in task_request.agent_ids if aid not in visible
         ]
         if missing_agent_ids:
             raise HTTPException(
                 status_code=400,
                 detail=f"Requested agents not found: {missing_agent_ids}",
             )
-        agents = [resolved_agents[aid] for aid in task_request.agent_ids]
+        agents = [visible[aid] for aid in task_request.agent_ids]
     else:
-        agents = registry.get_all()
+        agents = list(visible.values())
 
     if task_request.config_overrides:
         overrides = task_request.config_overrides
@@ -133,6 +142,29 @@ async def submit_task(
         context=task_request.context,
         constraints=task_request.constraints,
     )
+
+    # Institutional knowledge (best-effort): the same approved corrections
+    # and error schemas that ground /resolve are injected into the task
+    # context, so deliberating agents see what the platform already learned.
+    # Wrapped as untrusted content; scope filtering applies per agent.
+    try:
+        from ...learning.knowledge_context import build_knowledge_context
+        from ...security import wrap_user_content
+
+        corrections_manager = getattr(request.app.state, "corrections_manager", None)
+        knowledge = build_knowledge_context(
+            corrections_manager=corrections_manager,
+            learning_store=getattr(request.app.state, "learning_store", None)
+            or getattr(corrections_manager, "store", None),
+            tenant_id=auth.tenant_id,
+        )
+        if knowledge:
+            task.context = dict(task.context or {})
+            task.context["institutional_knowledge"] = wrap_user_content(
+                knowledge, label="INSTITUTIONAL_KNOWLEDGE"
+            )
+    except Exception as e:
+        logger.warning(f"[RoundTableAPI] Knowledge context failed (non-fatal): {e}")
 
     # MCP enrichment (best-effort): when participating agents declare mcp:*
     # scopes and a matching server is registered for this tenant, fetch its

@@ -211,13 +211,36 @@ async def approve_correction(
     request: Request,
     auth: AuthContext = Depends(verify_api_key),
 ) -> CorrectionResponse:
-    """Approve a proposed correction. Approver is the authenticated caller."""
+    """Approve a proposed correction. Approver is the authenticated caller.
+
+    Approval auto-triggers two maintenance passes over the tenant's approved
+    corrections (both best-effort, never failing the approval): error-schema
+    extraction (recurring corrections generalize into reusable warnings) and
+    a contradiction scan (conflicting corrections become integrity flags).
+    """
     manager = _get_manager(request)
     _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
-        return _to_response(manager.approve(correction_id, approved_by=auth.user_id))
+        approved = manager.approve(correction_id, approved_by=auth.user_id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+    store = getattr(request.app.state, "learning_store", None) or manager.store
+    if store is not None:
+        try:
+            from ...learning.error_schemata import extract_error_schemas
+
+            extract_error_schemas(store, tenant_id=auth.tenant_id)
+        except Exception as e:
+            logger.warning(f"[CorrectionsAPI] Schema extraction failed (non-fatal): {e}")
+        try:
+            from ...learning.contradiction import scan_corrections
+
+            scan_corrections(store, tenant_id=auth.tenant_id)
+        except Exception as e:
+            logger.warning(f"[CorrectionsAPI] Contradiction scan failed (non-fatal): {e}")
+
+    return _to_response(approved)
 
 
 @router.post("/corrections/{correction_id}/reject", response_model=CorrectionResponse)

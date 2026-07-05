@@ -114,26 +114,14 @@ async def resolve_single_shot(
     if llm is None:
         return _escalate("No LLM client configured", start)
 
-    context = ""
-    if corrections_manager is not None:
-        try:
-            context = corrections_manager.get_approved_for_context(
-                tenant_id=tenant_id, agent_id=agent_id
-            )
-        except Exception as exc:
-            logger.warning("[SingleShot] Corrections context failed: %s", exc)
+    from ..learning.knowledge_context import build_knowledge_context
 
-    if learning_store is not None:
-        try:
-            from ..learning.error_schemata import get_schemas_for_context
-
-            schema_block = get_schemas_for_context(
-                learning_store, tenant_id=tenant_id, agent_id=agent_id
-            )
-            if schema_block:
-                context = f"{context}\n\n{schema_block}" if context else schema_block
-        except Exception as exc:
-            logger.warning("[SingleShot] Error-schema context failed: %s", exc)
+    context = build_knowledge_context(
+        corrections_manager=corrections_manager,
+        learning_store=learning_store,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+    )
 
     if not context:
         return _escalate("No approved corrections to ground an answer", start)

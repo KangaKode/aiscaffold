@@ -88,6 +88,27 @@ def _session_key(session_id: str, auth: AuthContext) -> str:
     return f"{auth_scope_key(auth)}:{session_id}"
 
 
+def _with_knowledge_context(context: str, request: Request, tenant_id: str) -> str:
+    """Append the tenant's learned knowledge (approved corrections + error
+    schemas) to the synthesis context. Best-effort: failures return the
+    context unchanged."""
+    try:
+        from ...learning.knowledge_context import build_knowledge_context
+
+        corrections_manager = getattr(request.app.state, "corrections_manager", None)
+        knowledge = build_knowledge_context(
+            corrections_manager=corrections_manager,
+            learning_store=getattr(request.app.state, "learning_store", None)
+            or getattr(corrections_manager, "store", None),
+            tenant_id=tenant_id,
+        )
+        if knowledge:
+            return f"{context}\n\n{knowledge}" if context else knowledge
+    except Exception as e:
+        logger.warning(f"[ChatAPI] Knowledge context failed (non-fatal): {e}")
+    return context
+
+
 def _get_or_create_orchestrator(
     session_id: str, request: Request, auth: AuthContext | None = None
 ) -> ChatOrchestrator:
@@ -151,6 +172,7 @@ async def send_message(
     profile_mgr = getattr(request.app.state, "profile_manager", None)
     if profile_mgr and not profile_context:
         profile_context = profile_mgr.get_context_bundle(query=chat_request.message)
+    profile_context = _with_knowledge_context(profile_context, request, auth.tenant_id)
 
     chat_response: ChatResponse = await orchestrator.chat(
         message=chat_request.message,
@@ -216,6 +238,7 @@ async def send_message_stream(
     profile_mgr = getattr(request.app.state, "profile_manager", None)
     if profile_mgr and not profile_context:
         profile_context = profile_mgr.get_context_bundle(query=chat_request.message)
+    profile_context = _with_knowledge_context(profile_context, request, auth.tenant_id)
 
     async def event_generator():
         yield _sse_event("status", {"phase": "routing"})

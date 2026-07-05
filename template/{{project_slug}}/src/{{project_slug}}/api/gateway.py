@@ -44,6 +44,7 @@ from .routes import (
     checkins,
     corrections,
     feedback,
+    graduation,
     mcp,
     health,
     preferences,
@@ -271,6 +272,9 @@ def create_app(
     )
     application.include_router(
         checkins.router, prefix="/api/v1", tags=["Learning - Check-ins"]
+    )
+    application.include_router(
+        graduation.router, prefix="/api/v1", tags=["Learning - Graduation"]
     )
     application.include_router(
         activity.router, prefix="/api/v1", tags=["Activity"]

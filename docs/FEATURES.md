@@ -187,6 +187,7 @@ API route modules expose the core workflow over HTTP:
 - `POST /api/v1/mcp/servers` -- Register an MCP tool server (per-tenant, scope-gated, optional `[mcp]` extra)
 - `POST /api/v1/corrections` (+ `/approve`, `/reject`, `/retire`, `DELETE`) -- Four-eyes correction lifecycle, including hard-delete erasure
 - `GET  /api/v1/reflections` -- Deterministic lessons distilled from each deliberation
+- `GET/POST /api/v1/graduation/...` -- Candidates, propose (opens check-ins), apply (requires approved check-in)
 - `GET/PUT /api/v1/budgets/{tenant_id}` -- Read and set per-tenant spend budgets
 - `GET  /api/v1/audit/deliberations/{correlation_id}` -- Full audit trail for one deliberation, with reasoning-chain hash
 - `GET  /api/v1/activity/anomalies` -- Behavioral integrity flags (+ `POST .../resolve`)
@@ -230,8 +231,8 @@ flowchart TD
     Trust -->|"weights routing"| Route["Future questions favor agents you found reliable"]
     FB -->|"answer was wrong"| Corr["Correction proposed"]
     Corr --> Gov["Policy screen + four-eyes approval"]
-    Gov --> Ground["Approved corrections ground POST /resolve"]
-    Gov -->|"recurring mistakes"| Schema["Error schemas: generalized warnings, also fed to /resolve"]
+    Gov --> Ground["Approved corrections ground all tiers: /resolve, chat synthesis, round-table task context"]
+    Gov -->|"each approval auto-distills"| Schema["Error schemas: generalized warnings, served alongside corrections"]
     Ans -->|"each deliberation"| Refl["Reflections: deterministic lessons about how the deliberation went"]
     Ground --> Ans
     Schema --> Ans
@@ -242,13 +243,13 @@ The components, each independently usable:
 
 - **Feedback Tracker** -- Accept/reject/modify/rate signals per agent
 - **Agent Trust** -- EMA-based trust scores that weight agent routing in chat
-- **Corrections** -- Reviewed, approved knowledge that grounds the cheapest tier (`POST /resolve`); full lifecycle over the API
-- **Error Schemas** -- Recurring approved corrections distilled (via `extract_error_schemas`) into generalized warnings served alongside corrections
+- **Corrections** -- Reviewed, approved knowledge that grounds all three resolution tiers (`POST /resolve`, chat synthesis context, round-table task context); full lifecycle over the API
+- **Error Schemas** -- Recurring approved corrections auto-distilled into generalized warnings on each approval, served alongside corrections
 - **Reflections** -- Deterministic post-deliberation lessons, recorded automatically and readable via `GET /reflections`
 - **Check-in Manager** -- Never adapts silently; behavior changes require an explicit user check-in
 - **User Profile** -- Aggregates preferences into context bundles for LLM prompts
 - **RAG** -- in-memory vector search for local development, with pgvector recommended for Postgres production deployments
-- **Graduation** -- A rule engine that finds preferences stable across sessions and proposes promoting them to a cross-project global profile; proposals always go through a user check-in. Library-level today: invoke it from a maintenance job (no dedicated API route yet)
+- **Graduation** -- A rule engine that finds preferences stable across sessions and promotes them to a cross-project global profile, exposed at `GET /api/v1/graduation/candidates`, `POST .../propose`, and `POST .../apply`; applying requires an explicitly approved check-in, so nothing graduates without a human saying yes
 
 Because learned corrections shape future behavior, writing one is a governed act, not a free write:
 
@@ -256,9 +257,9 @@ Because learned corrections shape future behavior, writing one is a governed act
 flowchart LR
     Prop["Correction proposed"] --> Policy["Content policy screen"]
     Policy --> Rev["Four-eyes review: approver must differ from proposer"]
-    Rev -->|"approved"| Act["Active: grounds /resolve and prompts"]
+    Rev -->|"approved"| Act["Active: grounds /resolve, chat, and round-table context"]
     Rev -->|"rejected"| Rej["Rejected, retained for audit"]
-    Act --> Contra["Contradiction scan across approved corrections (run on demand)"]
+    Act --> Contra["Contradiction scan across approved corrections (auto-runs on each approval)"]
     Contra -->|"conflict"| Flagged["Integrity flag for human review"]
     Act --> Ret["Retire or hard-delete (erasure)"]
 ```
@@ -467,7 +468,7 @@ The scaffold itself is validated by a 16-check pipeline:
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
                          ruff lint, bandit security, import validation, red team,
-                         AI checks, agent review, pytest (588 tests, 83% coverage),
+                         AI checks, agent review, pytest (603 tests, 83% coverage),
                          file structure verification
 make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
 ```
@@ -499,6 +500,6 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 588 tests across 24 test files
+  tests/              # 603 tests across 25 test files
   evals/              # Eval infrastructure
 ```
