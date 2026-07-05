@@ -1,4 +1,4 @@
-# Case Study: The Writers Room
+# Case Study: A Manuscript Editing Platform
 
 The most useful test of a scaffold is whether it survives a domain it was never designed for. roundtable's deliberation, security, and governance patterns grew out of security and compliance work. This page is about what happened when I used them to build a manuscript editing platform for fiction authors.
 
@@ -6,7 +6,7 @@ The product is private while in active development, so this page reports what ha
 
 ## Why fiction editing, of all things
 
-My husband is an author. Watching him work through revision cycles, I kept seeing the same problem the scaffold was built to address: a single AI assistant gives you one confident opinion, and you have no idea whether to trust it. An editor persona will praise a chapter that a continuity reader would flag in seconds. What he actually needed was a room full of specialists who disagree with each other in useful ways.
+My husband is an author. He is open in his author circles about working with a team of AI agents, with a hard line he holds: nothing writes for him. He uses agents for editing feedback, brainstorming, and keeping his series bible straight. Watching him work through revision cycles, I kept seeing the same problem the scaffold was built to address: a single AI assistant gives you one confident opinion, and you have no idea whether to trust it. An editor persona will praise a chapter that a continuity reader would flag in seconds. What he actually needed was a room full of specialists who disagree with each other in useful ways.
 
 That made it a good stress test. Fiction editing is about as far from my professional background as a domain gets. There are no CVEs, no compliance requirements, no incident tickets. If the round table pattern only worked for security-shaped problems, this is where it would fall apart.
 
