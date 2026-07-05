@@ -6,22 +6,21 @@ How to deploy this scaffold as a shared AI platform where multiple teams connect
 
 ## Architecture Overview
 
+```mermaid
+flowchart LR
+    TeamA["Team A (private agents)"] --> Auth
+    TeamB["Team B (public agents)"] --> Auth
+    TeamC["Team C (sensitive, isolated)"] --> Auth
+    subgraph platform [Shared Platform]
+        Auth["API Gateway - AuthContext (tenant_id, role)"] --> Vis["Registry visibility filter: public / team / private"]
+        Vis --> RTEng["Round Table + Chat: only agents visible to the caller's tenant"]
+        Core["Core safety agents (join every tenant's deliberations)"] --> RTEng
+        RTEng --> Scoped["Sessions, results, transcripts keyed by tenant_id:user_id"]
+        RTEng --> Learn["Learning + budgets: per-tenant corrections, spend caps, MCP registry"]
+    end
 ```
-                        ┌─────────────────────────────────┐
-                        │      Shared Platform (you)       │
-                        │                                   │
-  Team A ──────────────▶│  API Gateway                     │
-  (3 private agents)    │    ├── AuthContext (tenant, role) │
-                        │    ├── Agent Registry             │
-  Team B ──────────────▶│    │    ├── Team A agents (private)│
-  (2 public agents)     │    │    ├── Team B agents (public) │
-                        │    │    └── Core safety agents     │
-  Team C ──────────────▶│    ├── Round Table Engine          │
-  (sensitive, isolated) │    ├── Chat Orchestrator           │
-                        │    ├── Evidence Enforcement        │
-                        │    └── Learning System             │
-                        └─────────────────────────────────┘
-```
+
+Every request carries an `AuthContext`; agent visibility, session state, learned corrections, budgets, and MCP servers are all partitioned by `tenant_id`, so Team C's agents and data never appear in Team A's deliberations.
 
 ---
 

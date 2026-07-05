@@ -28,6 +28,24 @@ flowchart TD
 
 No single layer is trusted to be perfect; each assumes the one before it can be bypassed.
 
+## Prompt Injection: The Three Layers, and Where Sentinel Sits
+
+Zooming into the injection-defense portion of that path -- each layer catches what the previous one cannot, and the Sentinel agent guards both directions:
+
+```mermaid
+flowchart TD
+    Input["Untrusted content (user input, agent responses, MCP tool output)"] --> L1["Layer 1 - Static pattern guard (security/prompt_guard.py)"]
+    L1 -->|"catches known jailbreaks: 'ignore previous instructions', role-override phrasings, system-prompt probes"| L2["Layer 2 - Normalization (security/injection_defense.py)"]
+    L2 -->|"catches evasion: Cyrillic homoglyphs, zero-width chars, base64/rot13-encoded payloads"| Wrap["Boundary wrapping (wrap_user_content): canary token + fence-break tag neutralization"]
+    Wrap --> L3["Layer 3 - Sentinel semantic screen (agents/core/sentinel.py)"]
+    L3 -->|"catches meaning: social engineering, methodology extraction, context poisoning, privilege probing"| Delib["Deliberation proceeds"]
+    L3 -.->|"no LLM available"| Closed["FAILS CLOSED: Sentinel refuses (sentinel_unavailable) instead of passing unscreened input"]
+    Delib --> OutGate["Sentinel OUTPUT gate (challenge phase): screens peer analyses for system-prompt leakage, architecture disclosure, methodology exposure"]
+    OutGate --> Vote["Sentinel votes DISSENT on any synthesis that leaks internals"]
+```
+
+Layers 1 and 2 are deterministic (regex + Unicode analysis, no LLM, free); the [README shows them catching real payloads](../README.md#see-it-run). Layer 3 is the only layer that understands intent, which is why it is an agent inside the deliberation rather than a filter in front of it: Sentinel screens the input as its Phase 1 analysis, screens the other agents' outputs for leaks as its Phase 2 challenge, and casts a binding dissent vote at synthesis. The adversarial harness attacks all three layers in CI.
+
 ## Trust Boundaries
 
 Generated projects treat the following as **untrusted** at all times:

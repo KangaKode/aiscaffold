@@ -81,6 +81,18 @@ Requests can be resolved at three escalating cost/rigor tiers:
 2. **Chat** (`orchestration/chat_orchestrator.py`, `POST /api/v1/chat`) -- interactive multi-agent consultation.
 3. **Round table** (`orchestration/round_table.py`, `POST /api/v1/round-table`) -- full adversarial deliberation.
 
+```mermaid
+flowchart TD
+    Req["Request"] --> T1["Tier 1: /resolve - one enforced call grounded in corrections"]
+    T1 --> Gate1{"Enforcement passed, citations present, confident?"}
+    Gate1 -->|"yes"| Done1["Answer (cheapest path)"]
+    Gate1 -->|"no"| T2["Tier 2: /chat - lead agent + 1-3 specialists, cross-checked"]
+    T2 --> Gate2{"Specialists agree above escalation threshold?"}
+    Gate2 -->|"yes"| Done2["Synthesized answer (FactChecker-verified)"]
+    Gate2 -->|"no"| T3["Tier 3: /round-table - full adversarial deliberation"]
+    T3 --> Done3["Consensus or preserved dissent"]
+```
+
 ### Round Table (`orchestration/round_table.py`)
 Full phased multi-agent deliberation protocol:
 - Phase 0.5: Premise validation -- cheap parallel checks; enough independent refusals short-circuit the run with what is wrong, what is missing, and a better question (skipped without an LLM; see `orchestration/premise.py`)
@@ -90,6 +102,34 @@ Full phased multi-agent deliberation protocol:
 - Phase 3: Synthesis + Voting -- consensus building with preserved minority views
 
 Hub-and-spoke: agents report to orchestrator, never to each other directly. All intermediate results written to `artifacts/` for auditability.
+
+```mermaid
+sequenceDiagram
+    participant Client as Client
+    participant Gateway as API Gateway
+    participant Engine as Round Table Engine
+    participant Agents as Agents (local + remote)
+    participant Audit as Audit Trail
+
+    Client->>Gateway: POST /api/v1/round-table/tasks (API key)
+    Gateway->>Gateway: Auth, rate limit, input validation, tenant scoping
+    Gateway->>Gateway: MCP enrichment (scope-gated, best-effort)
+    Gateway->>Engine: Run task
+    Engine->>Agents: Phase 0.5 - premise checks (cheap, parallel)
+    alt Enough agents refuse
+        Engine-->>Gateway: Refused (what is wrong + better question)
+        Gateway-->>Client: status "refused"
+    else Premise sound
+        Engine->>Engine: Phase 0 - strategy plan
+        Engine->>Agents: Phase 1 - dispatch gates (JWT verified, rate limits, scope-filtered context), parallel analysis
+        Engine->>Engine: Evidence enforcement (hallucination resistance)
+        Engine->>Agents: Phase 2 - cross-agent challenge (Sentinel screens outputs for leaks)
+        Engine->>Agents: Phase 3 - synthesis + voting
+        Engine->>Engine: Autonomy policy / human approval gate
+        Engine->>Audit: Metadata-only events + reasoning-chain hash
+        Gateway-->>Client: Result (consensus or preserved dissent, degraded flag if quorum missed)
+    end
+```
 
 Phase 1 dispatch runs each agent through integrity gates (`orchestration/dispatch_helpers.py`): identity token verification (`orchestration/identity_check.py`), per-agent rate limiting, and scope filtering of the task context to the agent's declared `access_scopes` (with an advisory audit of data sources cited in outputs). Gated or crashed agents are skipped, never fatal. When at least one agent was skipped or failed AND fewer successful domain-agent analyses than `RoundTableConfig.min_quorum` (default 2) remain, the result is flagged `degraded=True` with `failed_agent_count` set, so callers can distinguish a real consensus from a deliberation that limped through.
 
