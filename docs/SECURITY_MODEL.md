@@ -8,22 +8,20 @@ The single source of truth for the control-by-control capability matrix (impleme
 
 ## Defense in Depth: One Request's Journey
 
-Every control below is implemented and tested in the generated project. This is the path a single untrusted request takes:
+Every control below is implemented and tested in the generated project. The diagram shows where each control sits relative to one request. Two honest notes on wiring: injection layers 1-2 are applied at each surface where untrusted content is composed into a prompt (user messages, remote agent responses, MCP tool output) rather than as one ingress filter, and output signing is a primitive you invoke on results you emit downstream, not an automatic step.
 
 ```mermaid
 flowchart TD
     Req[Incoming request] --> Auth["API-key auth + per-IP rate limiting"]
-    Auth --> Tenant["Tenant scoping via AuthContext"]
-    Tenant --> L1["Injection defense layer 1: static pattern guard (jailbreak / override patterns)"]
-    L1 --> L2["Layer 2: Unicode normalization, invisible-char stripping, encoding-attack detection"]
-    L2 --> Wrap["Content wrapped in delimiters; fence-break tags neutralized"]
-    Wrap --> L3["Layer 3: Sentinel semantic screen - fails closed without an LLM"]
-    L3 --> Dispatch["Agent dispatch: JWT identity verified, capability scopes filter context"]
+    Auth --> Tenant["Tenant context via AuthContext (tenant_id on every route)"]
+    Tenant --> Inj["Injection defense at every untrusted-content surface:\nLayer 1 static pattern guard -> Layer 2 Unicode/encoding normalization -> delimiter wrapping with fence-break neutralization"]
+    Inj --> Dispatch["Agent dispatch gates: JWT identity verified, per-agent rate limits, capability scopes filter context"]
     Dispatch --> Delib["Multi-agent deliberation"]
-    Delib --> Enforce["Evidence enforcement: unsupported-confidence claims rejected"]
+    Delib --> L3["Layer 3 inside the deliberation: Sentinel semantic screen - fails closed without an LLM"]
+    L3 --> Enforce["Evidence enforcement: unsupported-confidence claims rejected"]
     Enforce --> Gate["Autonomy policy / human approval gate"]
-    Gate --> Sign["Output signing (HMAC attestation)"]
-    Sign --> Audit["Metadata-only audit trail + reasoning-chain hash"]
+    Gate --> Audit["Metadata-only audit trail + reasoning-chain hash"]
+    Audit -.-> Sign["Output signing (HMAC attestation primitive - invoke on results you forward)"]
 ```
 
 No single layer is trusted to be perfect; each assumes the one before it can be bypassed.
@@ -41,10 +39,10 @@ flowchart TD
     L3 -->|"catches meaning: social engineering, methodology extraction, context poisoning, privilege probing"| Delib["Deliberation proceeds"]
     L3 -.->|"no LLM available"| Closed["FAILS CLOSED: Sentinel refuses (sentinel_unavailable) instead of passing unscreened input"]
     Delib --> OutGate["Sentinel OUTPUT gate (challenge phase): screens peer analyses for system-prompt leakage, architecture disclosure, methodology exposure"]
-    OutGate --> Vote["Sentinel votes DISSENT on any synthesis that leaks internals"]
+    OutGate --> Vote["Sentinel casts a dissent vote when synthesis leaks internals - dissent is preserved in the result"]
 ```
 
-Layers 1 and 2 are deterministic (regex + Unicode analysis, no LLM, free); the [README shows them catching real payloads](../README.md#see-it-run). Layer 3 is the only layer that understands intent, which is why it is an agent inside the deliberation rather than a filter in front of it: Sentinel screens the input as its Phase 1 analysis, screens the other agents' outputs for leaks as its Phase 2 challenge, and casts a binding dissent vote at synthesis. The adversarial harness attacks all three layers in CI.
+Layers 1 and 2 are deterministic (regex + Unicode analysis, no LLM, free); the [README shows them catching real payloads](../README.md#see-it-run). Layer 3 is the only layer that understands intent, which is why it is an agent inside the deliberation rather than a filter in front of it: Sentinel screens the input as its Phase 1 analysis, screens the other agents' outputs for leaks as its Phase 2 challenge, and casts a dissent vote at synthesis that is preserved in the result rather than silenced. The adversarial harness attacks all three layers in CI.
 
 ## Trust Boundaries
 

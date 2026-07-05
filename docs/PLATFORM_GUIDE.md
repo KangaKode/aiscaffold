@@ -518,7 +518,7 @@ Define retention policies for each data store and document them for your legal/c
 | Capability | Status | Notes |
 |------------|--------|-------|
 | AuthContext with tenant_id | **Built** | Propagates across API routes |
-| Agent visibility (public/team/private) | **Built** | `list_for_tenant()` filters by rules |
+| Agent visibility (public/team/private) | **Built** | `list_for_tenant()` filters public/team; per-user `private` filtering is the documented `list_for_user` extension above |
 | Session isolation | **Built** | `{tenant_id}:{user_id}:{session_id}` |
 | Core safety agents | **Built** | Auto-included in every round table; evidence/skeptic/sentinel overlay joins every chat consultation |
 | Evidence enforcement | **Built** | Runs on Phase 1 round-table analyses; extend validators for challenge and vote paths as needed |

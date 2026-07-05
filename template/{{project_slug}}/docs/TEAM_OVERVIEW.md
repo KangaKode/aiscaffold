@@ -37,14 +37,22 @@ For simpler questions, the **chat orchestrator** selects 1-3 relevant agents, co
 | **Evidence discipline** | Agent prompts request citations and evidence levels. Validators check malformed tags when present, and stricter evidence requirements can be added for production workflows. |
 | **Challenge phase** | Agents check each other. Errors caught by peers before reaching users. |
 | **Voting + dissent** | Minority views are preserved, not silenced. Decision-makers see the full picture. |
-| **Prompt caching** | System instructions are cached across calls, cutting LLM costs by ~90% on repeated interactions. |
+| **Prompt caching** | System instructions are cached across calls, cutting input-token costs by up to ~90% on cached content (provider-dependent). |
 | **Trust scores** | User feedback adjusts which agents get consulted. The system learns who you trust over time. |
+
+---
+
+## It Gets Better With Use
+
+When your team uses the learning features, the platform accumulates institutional knowledge instead of starting from zero every session. When you accept or reject an answer, the responsible agent's trust score moves, and future questions route toward the agents you have found reliable. When an answer was wrong, a reviewer can record the correct one as a **correction** -- a second person must approve it before it takes effect -- and from then on the cheapest answer tier is grounded in those approved corrections. Recurring mistakes can be distilled into reusable "error schemas" so the same class of mistake is warned against up front.
+
+Two guardrails keep this trustworthy: nothing adapts silently (behavior changes go through an explicit check-in you approve or dismiss), and learned knowledge is governed (corrections are policy-screened, four-eyes approved, auditable, and erasable).
 
 ---
 
 ## Safety Properties
 
-- **Input validation** -- All user input is checked for size limits, injection attempts, and unsafe URLs before reaching any AI.
+- **Input validation** -- User input is size-limited and validated at the API, and untrusted content is screened for injection patterns and wrapped in neutralized delimiters wherever it is composed into an AI prompt.
 - **Prompt guard** -- A sanitization layer detects and neutralizes prompt injection attacks.
 - **Rate limiting** -- Per-IP request limits prevent abuse; automatic cleanup prevents memory exhaustion.
 - **API authentication** -- Bearer token auth on all data endpoints. Required in production; optional in development.

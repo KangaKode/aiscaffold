@@ -185,6 +185,13 @@ API route modules expose the core workflow over HTTP:
 - `GET  /api/v1/preferences/search?q=` -- Semantic preference search
 - `GET  /api/v1/checkins` -- List pending check-ins
 - `POST /api/v1/mcp/servers` -- Register an MCP tool server (per-tenant, scope-gated, optional `[mcp]` extra)
+- `POST /api/v1/corrections` (+ `/approve`, `/reject`, `/retire`, `DELETE`) -- Four-eyes correction lifecycle, including hard-delete erasure
+- `GET  /api/v1/reflections` -- Deterministic lessons distilled from each deliberation
+- `GET/PUT /api/v1/budgets/{tenant_id}` -- Read and set per-tenant spend budgets
+- `GET  /api/v1/audit/deliberations/{correlation_id}` -- Full audit trail for one deliberation, with reasoning-chain hash
+- `GET  /api/v1/activity/anomalies` -- Behavioral integrity flags (+ `POST .../resolve`)
+- `POST /api/v1/sessions` -- Session lifecycle (turns, retrieval, listing)
+- `POST /api/v1/webhooks/agents/{agent_id}` -- HMAC-verified async agent callbacks
 - `GET  /health` -- Liveness
 - `GET  /health/ready` -- Readiness
 - `GET  /metrics` -- Basic operational metrics
@@ -212,16 +219,36 @@ Provider-agnostic client (Anthropic, OpenAI, Google) with automatic prompt cachi
 - Budget enforcement with configurable spending limits
 - Auto-retry with exponential backoff
 
-### Adaptive Learning System (opt-in)
+### Compounding Institutional Knowledge (learning system)
 
-Teaches your project to learn from user interactions:
+Most agent deployments answer every question from zero. This platform closes the loop: every interaction can leave something behind that makes the next one better. The learning modules ship in every generated project (the `include_learning` copier flag tailors optional RAG dependencies and docs); nothing adapts until your team records feedback or corrections, and behavior changes are check-in gated.
+
+```mermaid
+flowchart TD
+    Ans["Platform answers"] --> FB["User feedback: accept / reject / modify / rate"]
+    FB --> Trust["Agent trust scores (EMA)"]
+    Trust -->|"weights routing"| Route["Future questions favor agents you found reliable"]
+    FB -->|"answer was wrong"| Corr["Correction proposed"]
+    Corr --> Gov["Policy screen + four-eyes approval"]
+    Gov --> Ground["Approved corrections ground POST /resolve"]
+    Gov -->|"recurring mistakes"| Schema["Error schemas: generalized warnings, also fed to /resolve"]
+    Ans -->|"each deliberation"| Refl["Reflections: deterministic lessons about how the deliberation went"]
+    Ground --> Ans
+    Schema --> Ans
+    Route --> Ans
+```
+
+The components, each independently usable:
 
 - **Feedback Tracker** -- Accept/reject/modify/rate signals per agent
-- **Agent Trust** -- EMA-based trust scores that influence agent routing
-- **Check-in Manager** -- Never adapts silently; asks permission first
+- **Agent Trust** -- EMA-based trust scores that weight agent routing in chat
+- **Corrections** -- Reviewed, approved knowledge that grounds the cheapest tier (`POST /resolve`); full lifecycle over the API
+- **Error Schemas** -- Recurring approved corrections distilled (via `extract_error_schemas`) into generalized warnings served alongside corrections
+- **Reflections** -- Deterministic post-deliberation lessons, recorded automatically and readable via `GET /reflections`
+- **Check-in Manager** -- Never adapts silently; behavior changes require an explicit user check-in
 - **User Profile** -- Aggregates preferences into context bundles for LLM prompts
 - **RAG** -- in-memory vector search for local development, with pgvector recommended for Postgres production deployments
-- **Graduation** -- Promotes stable patterns to global profile across projects
+- **Graduation** -- A rule engine that finds preferences stable across sessions and proposes promoting them to a cross-project global profile; proposals always go through a user check-in. Library-level today: invoke it from a maintenance job (no dedicated API route yet)
 
 Because learned corrections shape future behavior, writing one is a governed act, not a free write:
 
@@ -231,12 +258,12 @@ flowchart LR
     Policy --> Rev["Four-eyes review: approver must differ from proposer"]
     Rev -->|"approved"| Act["Active: grounds /resolve and prompts"]
     Rev -->|"rejected"| Rej["Rejected, retained for audit"]
-    Act --> Contra["Contradiction detection across approved corrections"]
+    Act --> Contra["Contradiction scan across approved corrections (run on demand)"]
     Contra -->|"conflict"| Flagged["Integrity flag for human review"]
     Act --> Ret["Retire or hard-delete (erasure)"]
 ```
 
-Everything the extended learning system persists lives in eight tables (single source of truth: `learning/tables.py`, allowlist-validated SQL, forward-only migrations, SQLite or Postgres). Every table is tenant-partitioned:
+Everything the extended learning system persists lives in eight tables (single source of truth: `learning/tables.py`, allowlist-validated SQL, forward-only migrations, SQLite or Postgres). Every table is tenant-partitioned; the diagram shows key columns, not full schemas:
 
 ```mermaid
 erDiagram
@@ -303,7 +330,7 @@ erDiagram
 
 - SSRF protection on agent registration (blocks private IPs, non-http schemes, cloud metadata endpoints)
 - 3-layer prompt injection defense: static pattern detection (`prompt_guard`), homoglyph normalization / invisible-character stripping / encoding-attack detection (`injection_defense`), and semantic screening by the Sentinel agent
-- Input size limits on every endpoint
+- Input size limits on user-facing content endpoints (chat, tasks, sessions, feedback)
 - Rate limiting per client IP with stale-IP eviction and 10K IP hard cap
 - HMAC-SHA256 webhook signature verification for async agents
 - API key auth with production enforcement (`AuthContext` with multi-tenancy structural prep)
@@ -356,9 +383,9 @@ flowchart LR
 ```
 
 - `AuthContext` propagates `tenant_id` and `user_id` to all routes
-- Agent visibility controls: `public` (all tenants), `team` (same tenant), `private`
-- Session isolation: `{tenant_id}:{user_id}:{session_id}`
-- Data layer already has `project_id` in all tables (maps to tenant isolation)
+- Agent visibility controls: `public` (all tenants), `team` / `private` (same tenant; per-user private filtering is a documented extension in the platform guide)
+- Session isolation: session keys are scoped by tenant + user + session id
+- Legacy learning tables carry `project_id` (maps to tenant isolation); the extended learning tables are keyed by `tenant_id` directly
 - Single-tenant deployments use defaults transparently
 
 ### Deployment Infrastructure
@@ -406,7 +433,7 @@ Cursor IDE agent definitions that assist during development (not runtime agents)
 | `include_llm_client` | `true` | LLM client with prompt caching |
 | `include_api_gateway` | `true` | FastAPI gateway + external agent support |
 | `include_deployment` | `true` | Dockerfile, docker-compose, K8s manifests |
-| `include_learning` | `false` | Learning system (feedback, trust, preferences, RAG) |
+| `include_learning` | `false` | Optional RAG dependencies + learning docs (the learning modules themselves ship in every project) |
 
 ---
 
