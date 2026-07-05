@@ -3,7 +3,7 @@
 [![Validate Scaffold](https://github.com/KangaKode/roundtable/actions/workflows/validate.yml/badge.svg)](https://github.com/KangaKode/roundtable/actions/workflows/validate.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**A scaffold for AI agent systems in security-sensitive environments.** Multi-agent deliberation with security controls wired in on day one -- each control mapped to the code that implements it and the tests that prove it, with [documented non-claims](template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md#known-limitations--non-claims) about what it does *not* guarantee.
+**A security-first scaffold for multi-agent AI systems, whatever your domain.** Multi-agent deliberation with security controls wired in on day one -- each control mapped to the code that implements it and the tests that prove it, with [documented non-claims](template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md#known-limitations--non-claims) about what it does *not* guarantee.
 
 One `copier` command generates a complete project: round-table deliberation with six adversarial safety agents, evidence-graded claims, 3-layer prompt-injection defense, tenant-aware isolation, audit trails, human approval gates, and Docker/Kubernetes deployment -- validated by 541 generated tests at 83% coverage.
 
@@ -80,7 +80,7 @@ The round table, safety agents, and learning system stay out of your way until y
 
 **Use roundtable when the starting point has to survive a security review.** Generated projects begin with injection defense, SSRF protection, tenant-aware isolation, agent identity and rate limits, evidence-graded claims, metadata-only audit trails, human approval gates, and cost budgets already wired in and tested -- the parts that framework tutorials leave for later and security reviews flag first. You bring the domain expertise: your agents, your data sources, your use case.
 
-Designed with regulated contexts in mind (finance, healthcare, legal, security): evidence grading, adversarial review, audit trails, and human-in-the-loop gates make agent output inspectable. See the [security model](docs/SECURITY_MODEL.md) for what is and is not claimed.
+Ready for regulated contexts (finance, healthcare, legal) without being limited to them: evidence grading, adversarial review, audit trails, and human-in-the-loop gates make agent output inspectable in any domain. See the [security model](docs/SECURITY_MODEL.md) for what is and is not claimed.
 
 ---
 
