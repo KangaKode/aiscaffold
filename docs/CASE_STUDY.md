@@ -8,7 +8,7 @@ The product is private while in active development, so this page reports what ha
 
 My husband is an author. He is open in his author circles about working with a team of AI agents, with a hard line he holds: nothing writes for him. He uses agents for editing feedback, brainstorming, and keeping his series bible straight. Watching him work through revision cycles, I kept seeing the same problem the scaffold was built to address: a single AI assistant gives you one confident opinion, and you have no idea whether to trust it. An editor persona will praise a chapter that a continuity reader would flag in seconds. What he actually needed was a room full of specialists who disagree with each other in useful ways.
 
-That made it a good stress test. Fiction editing is about as far from my professional background as a domain gets. There are no CVEs, no compliance requirements, no incident tickets. If the round table pattern only worked for security-shaped problems, this is where it would fall apart.
+That made it a good stress test. I'm a security engineer by trade, and fiction editing is about as far from that as a domain gets. There are no CVEs, no compliance requirements, no incident tickets. If the round table pattern only worked for security-shaped problems, this is where it would fall apart.
 
 ## What transferred without a fight
 
