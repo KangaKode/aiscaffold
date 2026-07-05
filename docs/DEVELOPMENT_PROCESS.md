@@ -1,6 +1,6 @@
 # Development Process
 
-`roundtable` uses a gated AI-assisted development workflow. The goal is to make agent-written code reviewable, maintainable, and safe to operate in security-sensitive systems.
+`roundtable` uses a gated AI-assisted development workflow. The goal is to make agent-written code reviewable, maintainable, and safe to operate in production systems.
 
 This is a governance scaffold, not a replacement for human accountability. The process makes risks explicit, creates durable design artifacts, and gives reviewers clear checkpoints before implementation and release.
 
@@ -67,4 +67,4 @@ AI assistants can write code quickly, but speed without review creates fragile s
 - adversarial review before commit or release
 - automated checks that make quality repeatable
 
-For investigation and security workflows, those gates matter because unsupported claims, leaked context, unsafe automation, or weak access boundaries can create real operational risk.
+Wherever unsupported claims, leaked context, unsafe automation, or weak access boundaries can create real operational risk, those gates matter.
