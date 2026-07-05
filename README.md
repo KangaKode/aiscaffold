@@ -9,6 +9,8 @@ One `copier` command generates a complete project: round-table deliberation with
 
 The scaffold red-teams itself: its own review process caught a tenant-isolation bug where remote agents silently reverted to public visibility after a restart -- [here is the fix](https://github.com/KangaKode/roundtable/commit/9168334ac050e22022ab2787b7b3ff3ce06796cc), tests included. An [adversarial harness](template/%7B%7Bproject_slug%7D%7D/tests/adversarial_agents.py.jinja) of six hostile agents attacks every generated project in CI.
 
+**Tested in a second domain.** A manuscript-editing platform for fiction authors runs on this scaffold, deployed and in daily use: the same deliberation protocol and safety agents behind thirteen editorial specialist seats, 2,200+ backend tests, and 95+ releases. [The case study](docs/CASE_STUDY.md) covers what transferred cleanly, what the domain forced to change, and which hardening flowed back.
+
 ---
 
 ## See It Run
