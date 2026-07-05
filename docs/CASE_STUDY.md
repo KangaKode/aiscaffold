@@ -1,6 +1,6 @@
 # Case Study: A Manuscript Editing Platform
 
-The most useful test of a scaffold is whether it survives a domain it was never designed for. roundtable's deliberation, security, and governance patterns grew out of security and compliance work. This page is about what happened when I used them to build a manuscript editing platform for fiction authors.
+The most useful test of a scaffold is whether it survives a domain it was never designed for. roundtable's deliberation, defense, and governance patterns grew out of security and compliance work. This page is about what happened when I used them to build a manuscript editing platform for fiction authors.
 
 The product is private while in active development, so this page reports what happened rather than linking to code. Numbers are self-reported as of July 2026 and stated conservatively.
 
@@ -31,7 +31,7 @@ A scaffold that survives contact with a real domain should come back with scars.
 
 ## What a disagreement actually looks like
 
-The claim that specialists "disagree in useful ways" should not be taken on faith, so here is one exchange from a real full-room review of a chapter, captured from a production session in July 2026: thirteen specialist analyses, thirty-four challenges, forty-eight concessions, about two minutes of wall time and $4.28 in model spend. Character names, manuscript quotes, and identifying plot details are redacted in brackets; the agents' reasoning is otherwise verbatim.
+The claim that specialists "disagree in useful ways" should not be taken on faith, so here is one exchange from a real full-room review of a chapter, captured from a production session in July 2026: thirteen specialist analyses, thirty-four challenges, and forty-eight concessions (a concession is a seat explicitly accepting a peer's finding, so they routinely outnumber challenges), in about two minutes of wall time and $4.28 in model spend. Character names, manuscript quotes, and identifying plot details are redacted in brackets; the agents' reasoning is otherwise verbatim.
 
 In the independent-analysis phase, the character psychologist flagged the chapter's ending:
 
@@ -41,7 +41,7 @@ In the independent-analysis phase, the character psychologist flagged the chapte
 
 In the challenge phase, where peer findings arrive anonymized, the Skeptic pushed back:
 
-> This is a sharp read of [the protagonist]'s abrupt pivot to eagerness. But is it "plot-summoned" or the chapter's own stated thesis paying off? She just told us she performs wellness and that faking becomes truth -- leaping up to be useful at an emergency IS the performance, and possibly the escape from a conversation she's been dodging all scene. The finding treats her stated psychology as if it doesn't apply to the very last beat. Isn't the eagerness exactly the mask the chapter told us to watch for?
+> This is a sharp read of [the protagonist]'s abrupt pivot to eagerness. But is it "plot-summoned" or the chapter's own stated thesis paying off? She just told us [that performing wellness is how she copes] -- leaping up to be useful at an emergency IS the performance, and possibly the escape from a conversation she's been dodging all scene. The finding treats her stated psychology as if it doesn't apply to the very last beat. Isn't the eagerness exactly the mask the chapter told us to watch for?
 >
 > Evidence level: INDICATED. What would resolve it: whether the pivot reads as motivated once tied to her established performance-as-coping and desire to feel useful (both textually present), versus a genuinely unmotivated energy reversal.
 
@@ -49,7 +49,7 @@ And the tension-and-pacing seat conceded the original finding, but for its own r
 
 > This is also a pacing seam. The final tension spike jumps two levels in a single line with no transitional beat -- no hesitation, no body-check against her aching joints, no glance at [a domestic detail planted earlier in the scene]. The pulse jumps from resting to racing without the connective beat that would make the acceleration feel earned.
 
-Three seats, three genuinely different positions, every one of them anchored to the text. That is the behavior the whole architecture exists to produce.
+Three agents, three genuinely different positions, every one of them anchored to the text.
 
 The same session also showed the fail-closed posture carrying over: the moderator's synthesis failed to parse on that run, and instead of inventing a summary, the room returned the specialists' complete findings and preserved all thirty-four challenges as recorded dissent. In the platform's lighter "ask the room" flow, non-unanimity goes straight to the author -- the interface banner from another turn that day reads, verbatim: "the room isn't unanimous. Agreement ~85%. Both reads are above; consider the full room to weigh them."
 
