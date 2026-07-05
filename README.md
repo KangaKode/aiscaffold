@@ -92,6 +92,7 @@ Ready for regulated contexts (finance, healthcare, legal) without being limited 
 - **Evidence discipline** -- claims carry explicit evidence levels (VERIFIED / CORROBORATED / INDICATED / POSSIBLE); a hallucination-resistance pipeline rejects unsupported confidence, phantom citations, and speculation-as-fact before synthesis.
 - **Security controls** -- agents are authenticated, least-privileged, monitored, and removable, like any other insider: per-agent JWT identity (hashed at rest) with rate limits and scope filtering, behavioral baselines, plus 3-layer prompt-injection defense, SSRF protection, HMAC webhook verification, and tenant-scoped isolation.
 - **Governance** -- graduated autonomy with approval gates, per-tenant cost budgets, PII redaction, tamper-evident audit trails, GDPR-style erasure, four-eyes correction approval. Full capability matrix with implementation and test mapping: [GOVERNANCE.md](template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md).
+- **Compounding knowledge** -- feedback becomes trust scores that steer agent routing; rejected answers become four-eyes-approved corrections that ground the cheapest tier; recurring corrections can be distilled into reusable error schemas. The platform gets more accurate with use, and never adapts without asking first.
 - **Cost control** -- provider prompt caching (up to ~90% savings on cached content), per-call token tracking, budget enforcement, tiered model routing.
 - **Deployment** -- Dockerfile, docker-compose, Kubernetes manifests (HPA, security context, secrets).
 
@@ -125,7 +126,7 @@ The complete feature reference, API listing, architecture diagrams, and configur
 
 ## Design Principles
 
-- **Validation gates:** every generated project ships with quick checks, red-team scans, architecture tests, CI, and a 16-step validation pipeline before merge.
+- **Validation gates:** every generated project ships with quick checks, red-team scans, architecture tests, CI, and a 16-check validation pipeline before merge.
 - **Evidence discipline:** claim strength is explicit and enforced, not assumed.
 - **Adversarial safety by default:** six safety agents challenge every round table; injection defense and approval gates are first-class, not add-ons.
 - **Fail closed:** when a control cannot run (no LLM, invalid metadata, failed identity check), the system flags or blocks -- it never silently passes.

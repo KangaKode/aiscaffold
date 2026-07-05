@@ -29,6 +29,22 @@ sequenceDiagram
 
 ---
 
+## What Your Agent Gets for Free
+
+You write three endpoints; the platform supplies the production plumbing around them:
+
+- **A seat at the table** -- the `RemoteAgent` adapter makes your agent indistinguishable from a local Python agent: same deliberation phases, same voting weight, same appearance in results and audit trails.
+- **Identity and least privilege** -- a per-agent JWT is issued once at registration (only its SHA-256 hash is stored), verified before every dispatch, and revocable by rotating the token. Scope filtering controls what context your agent is allowed to see.
+- **Abuse protection you didn't write** -- registration URLs are SSRF-validated, dispatches are per-agent rate limited, and every response is sanitized (null bytes stripped, size-capped, scanned for injection patterns) before other agents see it.
+- **Failure isolation** -- if your agent times out or errors, it is excluded from that phase and the round table continues; a single bad agent never takes down a deliberation.
+- **Monitoring** -- health checks on demand, per-dispatch stats (latency, refusals, scope violations), and behavioral detectors that flag override pressure and collusion patterns for human review.
+- **Tenant-aware visibility** -- register the agent as `public`, `team`, or `private` and the registry enforces who can see and dispatch it.
+- **A reputation that compounds (when learning is enabled)** -- user feedback on deliberations moves your agent's trust score, which weights future routing; its findings pass through the same evidence validators as everyone else's, so its output carries the same enforceable evidence grades.
+
+None of this requires code changes on your side -- it is applied by the platform between your endpoints and the deliberation.
+
+---
+
 ## POST /analyze
 
 The platform sends your agent a task to analyze independently.
@@ -216,7 +232,7 @@ If you didn't set an API key during registration, no Authorization header is sen
 
 ## Timeouts
 
-The platform waits **120 seconds** (configurable) for each endpoint. If your agent doesn't respond in time, it's marked as failed for that phase and excluded from the round table result.
+The platform waits **120 seconds** for each endpoint (the default; a different timeout can be set when registering agents in code via `register_remote(..., timeout=...)`). If your agent doesn't respond in time, it's marked as failed for that phase and excluded from the round table result.
 
 ## Response Size Limits
 
@@ -229,11 +245,11 @@ The platform waits **120 seconds** (configurable) for each endpoint. If your age
 | Your response | Platform behavior |
 |---------------|-------------------|
 | 200 with valid JSON | Used in deliberation |
-| 200 with invalid JSON | Logged as warning, agent excluded from this phase |
-| 4xx or 5xx | Logged as error, agent excluded from this phase |
-| Timeout (>120s) | Agent marked unhealthy, excluded |
+| 200 with invalid JSON | Logged, agent excluded from this phase |
+| 4xx or 5xx | Logged, agent excluded from this phase |
+| Timeout (>120s) | Excluded from this phase; health status updates on the next health check |
 
-The platform never crashes because of a single agent failure. Other agents continue the deliberation.
+Agent failures are contained per call: the dispatch layer catches them, and the other agents continue the deliberation.
 
 ## Response Sanitization
 

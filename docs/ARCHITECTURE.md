@@ -84,7 +84,7 @@ sequenceDiagram
     participant Audit as Audit Trail
 
     Client->>Gateway: POST /api/v1/round-table/tasks (API key)
-    Gateway->>Gateway: Auth, rate limit, input validation, tenant scoping
+    Gateway->>Gateway: Auth, rate limit, input validation, tenant context (AuthContext)
     Gateway->>Gateway: MCP enrichment (scope-gated, best-effort)
     Gateway->>Engine: Run task
     Engine->>Agents: Phase 0.5 - premise checks (cheap, parallel)
