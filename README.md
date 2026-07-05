@@ -28,7 +28,7 @@ One-command scaffold ([copier](https://copier.readthedocs.io/)) for AI agent pro
 
 **Designed for regulated industries** -- evidence grading, adversarial review, speculation checks, audit trails, and human-in-the-loop gates make AI agent output easier to inspect in finance, healthcare, legal, and security contexts.
 
-*243 tests · 79% coverage · 16-check validation pipeline (ruff, bandit, red team, AI checks, pytest)*
+*541 tests · 83% coverage · 16-check validation pipeline (ruff, bandit, red team, AI checks, pytest)*
 
 ---
 
@@ -259,7 +259,7 @@ make serve      # Start the API gateway
 
 ## What You Get
 
-Every scaffolded project includes **53+ Python source files** across 8 modules:
+Every scaffolded project includes **100+ Python source files** across 9 modules:
 
 ### Two Interaction Modes
 
@@ -374,7 +374,7 @@ flowchart LR
 
 ### Development Subagents (`.cursor/agents/`)
 
-Cursor IDE agent definitions that assist during development (not runtime agents). Generated projects include 12 always-on development agents plus up to 3 conditional specialists depending on project type and persistence choices. These prompts are portable to any agent framework including Claude Code.
+Cursor IDE agent definitions that assist during development (not runtime agents). Generated projects include 15 always-on development agents plus up to 3 conditional specialists depending on project type and persistence choices. These prompts are portable to any agent framework including Claude Code.
 
 | Agent | Role |
 |-------|------|
@@ -389,6 +389,10 @@ Cursor IDE agent definitions that assist during development (not runtime agents)
 | **test-architect** | Test strategy, eval design, coverage analysis |
 | **debugger** | Systematic root cause analysis |
 | **project-curator** | Directory structure and root cleanliness |
+| **design-doc-author** | Produces required design docs before implementation |
+| **agent-security-specialist** | Reviews agent definitions and orchestration for safety gaps |
+| **sast-reviewer** | Static-analysis-style security review of changed code |
+| **delivery-planner** | Breaks approved designs into phased, dependency-ordered work |
 | **ai-engineer** | Conditional: multi-agent architecture and orchestration |
 | **sql-pro** | Conditional: database optimization when persistence is enabled |
 | **ux-researcher** | Conditional: user workflow optimization for web apps |
@@ -441,7 +445,7 @@ The scaffold itself is validated by a 16-check pipeline:
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
                          ruff lint, bandit security, import validation, red team,
-                         AI checks, agent review, pytest (243 tests, 79% coverage),
+                         AI checks, agent review, pytest (541 tests, 83% coverage),
                          file structure verification
 make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
 ```
@@ -462,16 +466,18 @@ template/{{project_slug}}/
       routes/         # API route modules
       middleware/      # Auth (AuthContext), rate limiting
       models/         # Request/response schemas
-    harness/          # Session lifecycle (Item/Turn/Thread)
-    llm/              # LLM client with prompt caching
+    connectors/       # MCP tool client + per-tenant server registry
+    enforcement/      # Output signing (HMAC attestation)
+    harness/          # Session lifecycle (Item/Turn/Thread) + sequence detector
+    llm/              # LLM client with prompt caching + model router
     orchestration/    # Round Table + Chat Orchestrator + Agent Router
     security/         # Prompt guard, injection defense, validators, SSRF protection
-    learning/         # Feedback, trust, preferences, RAG, graduation
+    learning/         # Feedback, trust, preferences, RAG, corrections, reflections
       rag/            # VectorStore, embeddings, transcript search
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 243 tests across 12 test files
+  tests/              # 541 tests across 23 test files
   evals/              # Eval infrastructure
 ```
 
