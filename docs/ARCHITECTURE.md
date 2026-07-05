@@ -20,6 +20,8 @@ The root repository is optimized for three jobs:
 - Generate a complete project with one Copier command.
 - Validate that generated projects keep architecture, security, and documentation guarantees intact.
 
+A note on file names inside `template/`: files ending in `.jinja` (for example `ARCHITECTURE.md.jinja`) contain Copier template variables, so GitHub shows them as raw text. At generation time Copier substitutes the variables and strips the suffix, so a generated project gets a clean, fully rendered `ARCHITECTURE.md` with working diagrams and tables. This `docs/` directory holds the reviewer-facing, already-rendered documentation.
+
 Development work follows a gated AI-assisted workflow: architecture and data-flow design first, expert review next, tests before production logic, then code review, red-team review, and CI. See [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md) for the full process.
 
 ## Generated Project Architecture
@@ -59,14 +61,47 @@ flowchart TD
 
 The chat orchestrator handles normal real-time requests. It routes to the most relevant specialists and escalates to the full round table when confidence is low or agents disagree. Routing is tenant-scoped (only agents visible to the caller's tenant are candidates, including LLM-suggested ones), and the evidence, skeptic, and sentinel safety agents join every consultation. Each synthesis is checked by the FactChecker; a rejected synthesis is re-generated once with a correction note, and a repeat rejection triggers an escalation suggestion.
 
-The round table engine handles complex decisions through four phases:
+The round table engine handles complex decisions through a phased protocol:
 
-1. Strategy: the orchestrator plans how to divide the task.
-2. Independent analysis: agents produce separate evidence-backed findings.
-3. Challenge: agents question each other's assumptions and evidence.
-4. Synthesis and voting: recommendations are merged while preserving dissent.
+1. Premise gate (Phase 0.5): agents may collectively refuse a flawed task before any expensive phase runs.
+2. Strategy: the orchestrator plans how to divide the task.
+3. Independent analysis: agents produce separate evidence-backed findings.
+4. Challenge: agents question each other's assumptions and evidence.
+5. Synthesis and voting: recommendations are merged while preserving dissent.
 
 Before any agent is dispatched, it passes integrity gates: its platform-issued JWT identity token is verified (suspended agents and remote agents without valid credentials are blocked), a per-agent rate limit is checked, and the task context is filtered to the agent's declared access scopes. Skipped or crashed agents never abort the deliberation, but when too few domain agents produce analyses (below the configured quorum), the result is explicitly flagged as degraded so a thin deliberation is never mistaken for a real consensus.
+
+## One Request, End to End
+
+The full lifecycle of a round-table task, with every gate it passes:
+
+```mermaid
+sequenceDiagram
+    participant Client as Client
+    participant Gateway as API Gateway
+    participant Engine as Round Table Engine
+    participant Agents as Agents (local + remote)
+    participant Audit as Audit Trail
+
+    Client->>Gateway: POST /api/v1/round-table/tasks (API key)
+    Gateway->>Gateway: Auth, rate limit, input validation, tenant scoping
+    Gateway->>Gateway: MCP enrichment (scope-gated, best-effort)
+    Gateway->>Engine: Run task
+    Engine->>Agents: Phase 0.5 - premise checks (cheap, parallel)
+    alt Enough agents refuse
+        Engine-->>Gateway: Refused (what is wrong + better question)
+        Gateway-->>Client: status "refused"
+    else Premise sound
+        Engine->>Engine: Phase 0 - strategy plan
+        Engine->>Agents: Phase 1 - dispatch gates (JWT verified, rate limits, scope-filtered context), parallel analysis
+        Engine->>Engine: Evidence enforcement (hallucination resistance)
+        Engine->>Agents: Phase 2 - cross-agent challenge (Sentinel screens outputs for leaks)
+        Engine->>Agents: Phase 3 - synthesis + voting
+        Engine->>Engine: Autonomy policy / human approval gate
+        Engine->>Audit: Metadata-only events + reasoning-chain hash
+        Gateway-->>Client: Result (consensus or preserved dissent, degraded flag if quorum missed)
+    end
+```
 
 ## Safety Agents
 

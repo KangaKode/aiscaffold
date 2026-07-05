@@ -118,12 +118,59 @@ Core agents are **meta-agents** -- they evaluate *how well* the analysis was don
 
 Every scaffolded project includes **100+ Python source files** across 9 modules:
 
-### Two Interaction Modes
+### Three Cost Tiers, One Quality Bar
+
+Every tier runs FactChecker enforcement; escalation is a routing decision, never a quality bypass:
+
+```mermaid
+flowchart TD
+    Req["Request"] --> T1["Tier 1: POST /resolve - one LLM call grounded in learned corrections + error schemas"]
+    T1 --> Gate1{"Enforcement passed, citations present, confident?"}
+    Gate1 -->|"yes"| Done1["Answer (cheapest path)"]
+    Gate1 -->|"no"| T2["Tier 2: POST /chat - lead agent consults 1-3 specialists, cross-checks"]
+    T2 --> Gate2{"Specialists agree above escalation threshold?"}
+    Gate2 -->|"yes"| Done2["Synthesized answer (FactChecker-verified)"]
+    Gate2 -->|"no"| T3["Tier 3: POST /round-table/tasks - full adversarial deliberation"]
+    T3 --> Done3["Consensus or preserved dissent"]
+```
 
 - **Round Table** -- Full phased multi-agent deliberation (Premise Gate, Strategy, Independent Analysis, Challenge, Synthesis + Voting). For complex decisions needing all perspectives. Agents can collectively refuse a flawed task before any expensive phase runs. Six core safety agents participate automatically. Evidence enforcement pipeline runs between Phase 1 and Phase 2.
 - **Chat Orchestrator** -- Lightweight real-time chat. A lead agent selectively consults 1-3 specialists, cross-checks for agreement, and escalates to the round table when needed.
 
 ### API Gateway (FastAPI)
+
+The platform is API-first: everything a client, a custom agent, or an external tool needs is an HTTP endpoint.
+
+```mermaid
+flowchart LR
+    subgraph clients [Your Clients]
+        C1["UI / CLI / service"]
+    end
+    subgraph platform [Generated Platform]
+        Resolve["POST /resolve (tier 1: one enforced call)"]
+        Chat["POST /chat (tier 2: lead + specialists)"]
+        RT["POST /round-table/tasks (tier 3: full deliberation)"]
+        Reg["POST /agents (register, SSRF-validated)"]
+        MCPR["POST /mcp/servers (per-tenant registry)"]
+    end
+    subgraph yours [Your Agents - Any Language]
+        A1["POST /analyze"]
+        A2["POST /challenge"]
+        A3["POST /vote"]
+    end
+    subgraph tools [External AI Tools]
+        T1["MCP tool servers"]
+    end
+    C1 --> Resolve
+    C1 --> Chat
+    C1 --> RT
+    Reg -->|"JWT issued, hash stored"| yours
+    RT -->|"scoped dispatch"| A1
+    RT --> A2
+    RT --> A3
+    MCPR --> T1
+    T1 -->|"sanitized, MCP_DATA-wrapped, scope-gated"| RT
+```
 
 API route modules expose the core workflow over HTTP:
 
@@ -187,6 +234,69 @@ flowchart LR
     Act --> Contra["Contradiction detection across approved corrections"]
     Contra -->|"conflict"| Flagged["Integrity flag for human review"]
     Act --> Ret["Retire or hard-delete (erasure)"]
+```
+
+Everything the extended learning system persists lives in eight tables (single source of truth: `learning/tables.py`, allowlist-validated SQL, forward-only migrations, SQLite or Postgres). Every table is tenant-partitioned:
+
+```mermaid
+erDiagram
+    corrections {
+        string id PK
+        string tenant_id
+        string agent_id
+        string status "proposed / approved / rejected / retired"
+        string created_by
+        string approved_by "four-eyes: must differ"
+    }
+    error_schemas {
+        string id PK
+        string tenant_id
+        string agent_id
+        string source_correction_ids_json
+        string status
+    }
+    integrity_flags {
+        string id PK
+        string flag_type "override / collusion / contradiction / policy"
+        string subject_id
+        string severity
+        int resolved
+    }
+    audit_events {
+        string id PK
+        string correlation_id "one deliberation run"
+        string event_type
+        string outcome
+        string detail_json "metadata only, no free text"
+    }
+    agent_dispatch_stats {
+        string id PK
+        string agent_id
+        real duration_seconds
+        int refused
+        int scope_violations
+    }
+    activity_events {
+        string id PK
+        string user_id
+        string route
+        int status_code
+    }
+    budget_spend {
+        string id PK
+        string tenant_id
+        real amount_usd
+        string model
+    }
+    reflections {
+        string id PK
+        string source_task_id
+        string reflection_type
+        string detail
+    }
+    corrections ||--o{ error_schemas : "3+ approved corrections generalize into"
+    corrections ||--o{ integrity_flags : "screening failures flag"
+    agent_dispatch_stats ||--o{ integrity_flags : "behavioral anomalies flag"
 ```
 
 ### Security (Baked In Everywhere)

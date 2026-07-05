@@ -92,9 +92,16 @@ Ready for regulated contexts (finance, healthcare, legal) without being limited 
 - **Evidence discipline** -- claims carry explicit evidence levels (VERIFIED / CORROBORATED / INDICATED / POSSIBLE); a hallucination-resistance pipeline rejects unsupported confidence, phantom citations, and speculation-as-fact before synthesis.
 - **Security controls** -- agents are authenticated, least-privileged, monitored, and removable, like any other insider: per-agent JWT identity (hashed at rest) with rate limits and scope filtering, behavioral baselines, plus 3-layer prompt-injection defense, SSRF protection, HMAC webhook verification, and tenant-scoped isolation.
 - **Governance** -- graduated autonomy with approval gates, per-tenant cost budgets, PII redaction, tamper-evident audit trails, GDPR-style erasure, four-eyes correction approval. Full capability matrix with implementation and test mapping: [GOVERNANCE.md](template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md).
-- **Any-language agents** -- external agents implement 3 HTTP endpoints (`/analyze`, `/challenge`, `/vote`); the orchestrator treats them identically to local Python agents.
 - **Cost control** -- provider prompt caching (up to ~90% savings on cached content), per-call token tracking, budget enforcement, tiered model routing.
 - **Deployment** -- Dockerfile, docker-compose, Kubernetes manifests (HPA, security context, secrets).
+
+### Connect Anything (API-First)
+
+Every capability is an HTTP endpoint, so the platform integrates with whatever you already run:
+
+- **Bring your own agents, in any language** -- an external agent is just 3 HTTP endpoints (`/analyze`, `/challenge`, `/vote`); register it with one `curl` and the orchestrator treats it identically to a local Python agent. Contract and examples: [AGENT_PROTOCOL.md](docs/AGENT_PROTOCOL.md).
+- **Plug in external AI tools via MCP** -- Model Context Protocol connectors feed external tool data into deliberations through a per-tenant registry, scope-gated so only agents with the matching `mcp:` scope see it.
+- **Pick your cost tier per request** -- `POST /api/v1/resolve` (one enforced LLM call), `POST /api/v1/chat` (lead agent + specialists), or `POST /api/v1/round-table/tasks` (full adversarial deliberation).
 
 The complete feature reference, API listing, architecture diagrams, and configuration options: [docs/FEATURES.md](docs/FEATURES.md).
 
