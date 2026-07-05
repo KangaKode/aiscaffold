@@ -105,6 +105,43 @@ class TestAgentRegistry:
         assert agent is not None
         assert agent._headers()["Authorization"] == "Bearer agent-secret"
 
+    def test_load_remote_agents_skips_invalid_visibility_metadata(self, tmp_path):
+        """A tampered persistence file must not widen an agent's audience:
+        entries with invalid visibility/tenant metadata are skipped entirely."""
+        persist_path = tmp_path / "agents.json"
+        persist_path.write_text(json.dumps({
+            "remote_agents": [
+                {
+                    "name": "safe_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.com",
+                    "visibility": "team",
+                    "tenant_id": "acme",
+                },
+                {
+                    "name": "invalid_visibility_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.org",
+                    "visibility": "everyone",
+                    "tenant_id": "acme",
+                },
+                {
+                    "name": "invalid_tenant_agent",
+                    "domain": "testing",
+                    "base_url": "https://example.net",
+                    "visibility": "team",
+                    "tenant_id": 123,
+                },
+            ],
+        }))
+
+        registry = AgentRegistry(persist_path=persist_path)
+
+        assert registry.get("safe_agent") is not None
+        assert registry.get("invalid_visibility_agent") is None
+        assert registry.get("invalid_tenant_agent") is None
+        assert registry.remote_count == 1
+
     def test_unregister_removes(self, mock_agent, tmp_path):
         registry = AgentRegistry(persist_path=tmp_path / "agents.json")
         registry.register_local(mock_agent)
@@ -163,6 +200,44 @@ class TestAgentVisibility:
         )
         visible = registry.list_for_tenant("other_corp")
         assert len(visible) == 0
+
+    def test_register_remote_accepts_visibility_and_tenant(self, tmp_path):
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        registry.register_remote(
+            "tenant_agent", "testing", "https://example.com",
+            visibility="team", tenant_id="acme",
+        )
+        entry = registry.get_entry("tenant_agent")
+        assert entry.visibility == "team"
+        assert entry.tenant_id == "acme"
+
+    def test_register_remote_rejects_invalid_visibility(self, tmp_path):
+        from {{project_slug}}.security import ValidationError
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        with pytest.raises(ValidationError):
+            registry.register_remote(
+                "bad_agent", "testing", "https://example.com",
+                visibility="everyone",
+            )
+
+    def test_remote_agent_visibility_survives_persistence_round_trip(self, tmp_path):
+        """Restart must not silently reset team/private agents to public."""
+        persist_path = tmp_path / "agents.json"
+        registry = AgentRegistry(persist_path=persist_path)
+        registry.register_remote(
+            "tenant_agent", "testing", "https://example.com",
+            visibility="team", tenant_id="acme",
+        )
+
+        reloaded = AgentRegistry(persist_path=persist_path)
+
+        reloaded_entry = reloaded.get_entry("tenant_agent")
+        assert reloaded_entry.visibility == "team"
+        assert reloaded_entry.tenant_id == "acme"
+        assert reloaded.list_for_tenant("other_corp") == []
+        assert [entry.agent.name for entry in reloaded.list_for_tenant("acme")] == [
+            "tenant_agent",
+        ]
 
 
 class TestRemoteAgent:

@@ -110,6 +110,11 @@ class AgentRegistration(BaseModel):
     is_meta_agent: bool = Field(
         False, description="Meta-agents also receive the peer_analyses context key"
     )
+    visibility: str = Field(
+        "public",
+        description="Who can see this agent: 'public' (all tenants), "
+        "'team' (registering tenant only), or 'private'",
+    )
     mode: str = Field(
         "sync", description="Communication mode: 'sync' (wait) or 'async' (webhook)"
     )
