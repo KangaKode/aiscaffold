@@ -14,7 +14,7 @@ That made it a good stress test. I'm a security engineer by trade, and fiction e
 
 More than expected. The inheritance is structural rather than cosmetic.
 
-- **The deliberation protocol.** The same phase sequence (independent analysis, then challenge, then synthesis with voting and preserved dissent) drives every full-room editing session. Thirteen editorial seats replaced the security analysts: a story architect, a character psychologist, a dialogue coach, a lore keeper for canon and continuity, a sensitivity reader, a tension and pacing analyst, and so on.
+- **The deliberation protocol.** The same phase sequence (independent analysis, then challenge, then a synthesis that must preserve dissent) drives every full-room editing session. Thirteen editorial seats replaced the security analysts: a story architect, a character psychologist, a dialogue coach, a lore keeper for canon and continuity, a sensitivity reader, a tension and pacing analyst, and so on. One protocol change: the platform swaps the scaffold's per-seat vote for a moderated synthesis, since an author wants weighed perspectives rather than a verdict.
 - **The safety agents.** Skeptic, Quality, Evidence, FactChecker, and Citation carried over almost unchanged. It turns out a Skeptic is just as useful when the overconfident claim is "this chapter's pacing works" as when it is "this alert is a false positive."
 - **Evidence discipline.** Editing suggestions must cite the manuscript. A claim about a character contradicting her earlier motivation has to point at the actual passages, which is the same grounding rule the scaffold enforces on analytical claims, wearing a different outfit.
 - **The security layer.** Prompt injection defense, SSRF-validated integrations, tenant-scoped auth, and spend ceilings all moved over. Authors upload untrusted documents all day, so the hostile-input assumption earned its keep immediately.
@@ -28,6 +28,30 @@ A scaffold that survives contact with a real domain should come back with scars.
 - **Challenges became anonymous.** Peer findings are stripped of attribution before the challenge round, because named specialists deferred to high-trust colleagues instead of arguing. Identity bias exists in agent rooms too.
 - **Personas matter in consumer domains.** Authors respond to "Dr. Sage, the character psychologist" in a way no one responds to "analyst_b". Each seat carries a persona, a sample question, and explicit boundaries, including instructions to hand off rather than freelance outside its domain.
 - **New defenses came back upstream.** Real authors type things that look exactly like fence-break attacks, because manuscripts contain dialogue about anything. The platform added fence neutralization to the prompt guard (defanging boundary tags typed inside user content) and deterministic attribution gates that verify a quoted span actually belongs to the claimed character before an agent may cite it. The fence neutralization has since been folded back into this scaffold ([PR #60](https://github.com/KangaKode/roundtable/pull/60)), so hardening born from production use in one domain now protects every project generated from the template.
+
+## What a disagreement actually looks like
+
+The claim that specialists "disagree in useful ways" should not be taken on faith, so here is one exchange from a real full-room review of a chapter, captured from a production session in July 2026: thirteen specialist analyses, thirty-four challenges, forty-eight concessions, about two minutes of wall time and $4.28 in model spend. Character names, manuscript quotes, and identifying plot details are redacted in brackets; the agents' reasoning is otherwise verbatim.
+
+In the independent-analysis phase, the character psychologist flagged the chapter's ending:
+
+> The pivot to eagerness at news of [an emergency in town] is abrupt for a character who, moments earlier, was low-voiced and unfocused, and who has spent the chapter conserving energy against aching joints and emotional exhaustion. It reads as plot-summoned enthusiasm rather than a motivated choice. What does she want from going -- distraction, proof of usefulness, escape from the conversation? The reader can guess, but the text doesn't say, and her body has been telling us the opposite story all chapter.
+>
+> [CORROBORATED: two manuscript lines cited, redacted]
+
+In the challenge phase, where peer findings arrive anonymized, the Skeptic pushed back:
+
+> This is a sharp read of [the protagonist]'s abrupt pivot to eagerness. But is it "plot-summoned" or the chapter's own stated thesis paying off? She just told us she performs wellness and that faking becomes truth -- leaping up to be useful at an emergency IS the performance, and possibly the escape from a conversation she's been dodging all scene. The finding treats her stated psychology as if it doesn't apply to the very last beat. Isn't the eagerness exactly the mask the chapter told us to watch for?
+>
+> Evidence level: INDICATED. What would resolve it: whether the pivot reads as motivated once tied to her established performance-as-coping and desire to feel useful (both textually present), versus a genuinely unmotivated energy reversal.
+
+And the tension-and-pacing seat conceded the original finding, but for its own reasons:
+
+> This is also a pacing seam. The final tension spike jumps two levels in a single line with no transitional beat -- no hesitation, no body-check against her aching joints, no glance at [a domestic detail planted earlier in the scene]. The pulse jumps from resting to racing without the connective beat that would make the acceleration feel earned.
+
+Three seats, three genuinely different positions, every one of them anchored to the text. That is the behavior the whole architecture exists to produce.
+
+The same session also showed the fail-closed posture carrying over: the moderator's synthesis failed to parse on that run, and instead of inventing a summary, the room returned the specialists' complete findings and preserved all thirty-four challenges as recorded dissent. In the platform's lighter "ask the room" flow, non-unanimity goes straight to the author -- the interface banner from another turn that day reads, verbatim: "the room isn't unanimous. Agreement ~85%. Both reads are above; consider the full room to weigh them."
 
 ## Where it stands
 
