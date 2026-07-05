@@ -19,6 +19,7 @@ from .checkin_manager import CheckInManager  # noqa: F401
 from .user_profile import UserProfileManager  # noqa: F401
 from .global_profile import GlobalProfileManager  # noqa: F401
 from .graduation import GraduationEngine, GraduationRule, GraduationCandidate  # noqa: F401
+from .knowledge_context import build_knowledge_context  # noqa: F401
 from .store import (  # noqa: F401
     LearningStore,
     SqliteLearningStore,
@@ -62,6 +63,7 @@ __all__ = [
     "GraduationEngine",
     "GraduationRule",
     "GraduationCandidate",
+    "build_knowledge_context",
     "LearningStore",
     "SqliteLearningStore",
     "PostgresLearningStore",

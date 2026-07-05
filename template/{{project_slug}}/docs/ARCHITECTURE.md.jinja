@@ -112,7 +112,8 @@ sequenceDiagram
     participant Audit as Audit Trail
 
     Client->>Gateway: POST /api/v1/round-table/tasks (API key)
-    Gateway->>Gateway: Auth, rate limit, input validation, tenant context (AuthContext)
+    Gateway->>Gateway: Auth, rate limit, input validation, tenant-scoped agent selection
+    Gateway->>Gateway: Institutional knowledge injected (approved corrections + error schemas)
     Gateway->>Gateway: MCP enrichment (scope-gated, best-effort)
     Gateway->>Engine: Run task
     Engine->>Agents: Phase 0.5 - premise checks (cheap, parallel)
@@ -210,7 +211,7 @@ Prompt injection is defended in 3 layers: static pattern matching in `prompt_gua
 - `checkin_manager.py` -- Permission-based adaptation (never adapts silently)
 - `user_profile.py` -- Aggregates preferences + trust into context bundles
 - `global_profile.py` -- Cross-project identity at `~/.aiscaffold/`
-- `graduation.py` -- Rule engine proposing stable patterns for global promotion (pluggable rules, check-in gated; invoked explicitly)
+- `graduation.py` -- Rule engine proposing stable patterns for global promotion (pluggable rules, check-in gated; exposed at `/api/v1/graduation/*`)
 - `store.py` -- Pluggable `LearningStore` protocol (6 methods) with SQLite (default) and Postgres reference backends (`LEARNING_BACKEND`); table definitions in `tables.py`
 - `corrections.py` -- Correction lifecycle (proposed -> approved -> retired) with four-eyes approval and budgeted, sanitized prompt rendering
 - `override_detector.py` -- Screens proposed corrections for injection, safety-agent targeting, and evidence-level inflation

@@ -1,0 +1,342 @@
+"""Tests for learning wiring: the shared knowledge context that grounds all
+three resolution tiers, tenant-scoped round-table agent selection, approval
+auto-triggers (schema extraction + contradiction scan), and the
+check-in-gated graduation API."""
+
+from types import SimpleNamespace
+
+import pytest
+
+from {{project_slug}}.learning.contradiction import FLAG_TYPE_CONTRADICTION
+from {{project_slug}}.learning.corrections import CorrectionsManager
+from {{project_slug}}.learning.error_schemata import extract_error_schemas
+from {{project_slug}}.learning.knowledge_context import build_knowledge_context
+from {{project_slug}}.learning.store import SqliteLearningStore
+from {{project_slug}}.orchestration.round_table import (
+    AgentAnalysis,
+    AgentChallenge,
+    AgentVote,
+)
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
+
+
+@pytest.fixture
+def manager(store):
+    return CorrectionsManager(store)
+
+
+def _approved(manager, original="rate limit is 100", corrected="rate limit is 60",
+              created_by="alice", approved_by="bob", agent_id="analyst",
+              reason="vendor docs", evidence_level="documented"):
+    c = manager.propose(agent_id=agent_id, original_claim=original,
+                        corrected_claim=corrected, reason=reason,
+                        evidence_level=evidence_level, created_by=created_by)
+    return manager.approve(c.id, approved_by=approved_by)
+
+
+# --- Shared knowledge context ------------------------------------------------
+
+
+class TestBuildKnowledgeContext:
+    def test_combines_corrections_and_schemas(self, store, manager):
+        pairs = [("alice", "bob"), ("bob", "carol"), ("carol", "dave")]
+        for i, (creator, approver) in enumerate(pairs):
+            _approved(manager, original=f"claim {i} about limits",
+                      corrected=f"corrected claim {i} about request limits",
+                      created_by=creator, approved_by=approver)
+        extract_error_schemas(store, tenant_id="default")
+
+        context = build_knowledge_context(
+            corrections_manager=manager, learning_store=store
+        )
+        assert "Approved corrections" in context
+        assert "Known error patterns" in context
+
+    def test_empty_without_sources(self):
+        assert build_knowledge_context() == ""
+
+    def test_broken_source_degrades_not_fails(self, store, manager):
+        _approved(manager)
+
+        class BrokenStore:
+            def query(self, *args, **kwargs):
+                raise RuntimeError("store down")
+
+        context = build_knowledge_context(
+            corrections_manager=manager, learning_store=BrokenStore()
+        )
+        assert "Approved corrections" in context
+
+        class BrokenManager:
+            def get_approved_for_context(self, **kwargs):
+                raise RuntimeError("manager down")
+
+        assert build_knowledge_context(
+            corrections_manager=BrokenManager(), learning_store=None
+        ) == ""
+
+
+class TestChatKnowledgeHelper:
+    def test_appends_knowledge_to_context(self, store, manager):
+        from {{project_slug}}.api.routes.chat import _with_knowledge_context
+
+        _approved(manager)
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+            corrections_manager=manager, learning_store=store,
+        )))
+        out = _with_knowledge_context("user prefers brevity", request, "default")
+        assert out.startswith("user prefers brevity")
+        assert "Approved corrections" in out
+
+    def test_without_managers_context_unchanged(self):
+        from {{project_slug}}.api.routes.chat import _with_knowledge_context
+
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+        assert _with_knowledge_context("ctx", request, "default") == "ctx"
+
+
+# --- API-level wiring ---------------------------------------------------------
+
+
+class CaptureAgent:
+    """Local agent that records the task context it was dispatched with."""
+
+    def __init__(self):
+        self.seen_context = None
+
+    @property
+    def name(self) -> str:
+        return "capture_agent"
+
+    @property
+    def domain(self) -> str:
+        return "general analysis"
+
+    async def analyze(self, task) -> AgentAnalysis:
+        self.seen_context = dict(task.context or {})
+        return AgentAnalysis(
+            agent_name=self.name,
+            domain=self.domain,
+            observations=[{"finding": "ok", "evidence": "[INDICATED: input]",
+                           "severity": "info", "confidence": 0.5}],
+        )
+
+    async def challenge(self, task, other_analyses) -> AgentChallenge:
+        return AgentChallenge(agent_name=self.name)
+
+    async def vote(self, task, synthesis) -> AgentVote:
+        return AgentVote(agent_name=self.name, approve=True)
+
+
+@pytest.fixture
+async def api(tmp_path, monkeypatch):
+    """HTTP client + app against a gateway with learning wired.
+
+    chdir into tmp_path so the gateway's default SQLite learning store and
+    check-in database land in the test sandbox, not the repo.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from {{project_slug}}.agents.registry import AgentRegistry
+    from {{project_slug}}.api.gateway import create_app
+
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.setenv("ACTIVITY_TRACKING_ENABLED", "false")
+    monkeypatch.chdir(tmp_path)
+
+    app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, app
+
+
+class TestRoundTableTenantScoping:
+    async def test_cross_tenant_agent_ids_read_as_not_found(self, api):
+        client, app = api
+        app.state.registry.register_local(CaptureAgent())  # public, visible
+        app.state.registry.register_remote(
+            name="team_b_agent", domain="internal analysis",
+            base_url="http://agents.example.com",
+            visibility="team", tenant_id="team_b",
+        )
+
+        r = await client.post("/api/v1/round-table/tasks", json={
+            "content": "Analyze this", "agent_ids": ["team_b_agent"],
+        })
+        assert r.status_code == 400
+        assert "not found" in r.json()["detail"]
+
+    async def test_team_agents_excluded_from_default_dispatch(self, api):
+        client, app = api
+        capture = CaptureAgent()
+        app.state.registry.register_local(capture)
+        app.state.registry.register_remote(
+            name="team_b_agent", domain="internal analysis",
+            base_url="http://agents.example.com",
+            visibility="team", tenant_id="team_b",
+        )
+        from {{project_slug}}.llm.mock import MockLLMClient
+
+        app.state.llm_client = MockLLMClient()
+
+        r = await client.post("/api/v1/round-table/tasks", json={
+            "content": "Analyze this task",
+        })
+        assert r.status_code == 200
+        consulted = {a["agent_name"] for a in r.json()["analyses"]}
+        assert "team_b_agent" not in consulted
+        assert "capture_agent" in consulted
+
+
+class TestRoundTableKnowledgeInjection:
+    async def test_task_context_carries_approved_knowledge(self, api):
+        client, app = api
+        capture = CaptureAgent()
+        app.state.registry.register_local(capture)
+        from {{project_slug}}.llm.mock import MockLLMClient
+
+        app.state.llm_client = MockLLMClient()
+
+        manager = app.state.corrections_manager
+        c = manager.propose(
+            agent_id="analyst", original_claim="rate limit is 100",
+            corrected_claim="the vendor rate limit is 60 per minute",
+            reason="vendor docs", evidence_level="documented",
+            created_by="alice",
+        )
+        manager.approve(c.id, approved_by="bob")
+
+        r = await client.post("/api/v1/round-table/tasks", json={
+            "content": "What is the vendor rate limit?",
+        })
+        assert r.status_code == 200
+        knowledge = str(capture.seen_context.get("institutional_knowledge", ""))
+        assert "INSTITUTIONAL_KNOWLEDGE" in knowledge
+        assert "60 per minute" in knowledge
+
+
+class TestApprovalAutoTriggers:
+    async def test_approval_extracts_error_schemas(self, api):
+        client, app = api
+        manager = app.state.corrections_manager
+        store = manager.store
+
+        creators = ["alice", "bob", "carol"]
+        ids = []
+        for i, creator in enumerate(creators):
+            c = manager.propose(
+                agent_id="analyst",
+                original_claim=f"claim {i} about limits",
+                corrected_claim=f"corrected claim {i} about request limits",
+                reason="vendor docs", evidence_level="documented",
+                created_by=creator,
+            )
+            ids.append(c.id)
+
+        for cid in ids:
+            r = await client.post(f"/api/v1/corrections/{cid}/approve")
+            assert r.status_code == 200
+
+        schemas = store.query("error_schemas", {"tenant_id": "default"})
+        assert len(schemas) >= 1
+
+    async def test_approval_scans_for_contradictions(self, api):
+        client, app = api
+        manager = app.state.corrections_manager
+        store = manager.store
+
+        first = manager.propose(
+            agent_id="analyst", original_claim="deploys can go out on Fridays",
+            corrected_claim="always use the blue deploy pipeline for releases",
+            reason="pipeline standard", evidence_level="documented",
+            created_by="alice",
+        )
+        second = manager.propose(
+            agent_id="analyst", original_claim="deploys can go out on Fridays",
+            corrected_claim="stop using the blue deploy pipeline for releases",
+            reason="pipeline deprecated", evidence_level="documented",
+            created_by="carol",
+        )
+
+        for cid in (first.id, second.id):
+            r = await client.post(f"/api/v1/corrections/{cid}/approve")
+            assert r.status_code == 200
+
+        flags = store.query(
+            "integrity_flags", {"flag_type": FLAG_TYPE_CONTRADICTION}
+        )
+        assert len(flags) == 1
+
+
+class TestGraduationAPI:
+    async def test_candidates_empty_on_fresh_project(self, api):
+        client, _ = api
+        r = await client.get("/api/v1/graduation/candidates")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    async def test_propose_with_no_candidates_returns_empty(self, api):
+        client, _ = api
+        r = await client.post("/api/v1/graduation/propose")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    async def test_apply_unknown_checkin_404(self, api):
+        client, _ = api
+        r = await client.post("/api/v1/graduation/apply",
+                              json={"checkin_id": "no-such-checkin"})
+        assert r.status_code == 404
+
+    async def test_apply_gated_on_checkin_approval(self, api, tmp_path, monkeypatch):
+        client, app = api
+
+        from {{project_slug}}.learning import graduation as graduation_module
+        from {{project_slug}}.learning.global_profile import GlobalProfileManager
+
+        monkeypatch.setattr(
+            graduation_module, "GlobalProfileManager",
+            lambda: GlobalProfileManager(db_path=tmp_path / "global_profile.db"),
+        )
+
+        mgr = app.state.checkin_manager
+        checkin = mgr.create(
+            checkin_type="graduation",
+            prompt="Graduate 'tone = concise' to your global profile?",
+            suggested_action="Add to global profile: tone = concise",
+            project_id="default",
+            context={"candidate_key": "tone", "candidate_value": "concise",
+                     "rule": "consistency", "confidence": 0.8,
+                     "evidence": "stable across sessions"},
+        )
+
+        # Pending check-in: apply refused.
+        r = await client.post("/api/v1/graduation/apply",
+                              json={"checkin_id": checkin.id})
+        assert r.status_code == 409
+
+        # Approve via the check-ins flow, then apply succeeds.
+        mgr.respond(checkin.id, approved=True)
+        r = await client.post("/api/v1/graduation/apply",
+                              json={"checkin_id": checkin.id})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["applied"] is True
+        assert body["key"] == "tone"
+        assert body["value"] == "concise"
+
+    async def test_apply_rejects_non_graduation_checkin(self, api):
+        client, app = api
+        mgr = app.state.checkin_manager
+        checkin = mgr.create(
+            checkin_type="threshold", prompt="Adapt?",
+            suggested_action="adapt", project_id="default",
+        )
+        mgr.respond(checkin.id, approved=True)
+        r = await client.post("/api/v1/graduation/apply",
+                              json={"checkin_id": checkin.id})
+        assert r.status_code == 404

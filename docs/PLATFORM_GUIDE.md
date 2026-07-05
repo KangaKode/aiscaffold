@@ -258,13 +258,7 @@ check-in trackers.
 
 ### Agent isolation
 
-Set `visibility="private"` or `"team"` on all of Team C's agents. Update the round table to only include agents visible to the requesting tenant:
-
-```python
-# In the submit_task route, before creating the RoundTable:
-visible_agents = registry.list_for_tenant(auth.tenant_id)
-agents = [e.agent for e in visible_agents if e.healthy]
-```
+Set `visibility="private"` or `"team"` on all of Team C's agents. Round-table agent selection is already tenant-scoped: `submit_task` only considers agents visible to the caller's tenant (`registry.list_for_tenant(auth.tenant_id)`), and cross-tenant `agent_ids` return the same 400 as missing agents, so existence does not leak. Chat routing applies the same visibility filter.
 
 ### LLM isolation (optional)
 
@@ -524,6 +518,7 @@ Define retention policies for each data store and document them for your legal/c
 | Evidence enforcement | **Built** | Runs on Phase 1 round-table analyses; extend validators for challenge and vote paths as needed |
 | Chat synthesis enforcement | **Built** | FactChecker checks every chat synthesis, with one corrective re-synthesis on rejection |
 | Tenant-aware chat routing | **Built** | Routing and LLM agent suggestions are validated against the tenant-visible agent set |
+| Tenant-aware round-table dispatch | **Built** | `submit_task` selects only tenant-visible agents; cross-tenant `agent_ids` read as not found |
 | Agent integrity (identity tokens, rate limits, scopes, suspension, quorum) | **Built** | Set `AGENT_IDENTITY_SIGNING_KEY` in production; rotate/revoke/suspend via API |
 | Learning persistence (SQLite default, Postgres opt-in) | **Built** | `LearningStore` protocol -- bring your own backend via 5 methods |
 | Learning integrity (corrections four-eyes, override screening, collusion/drift, activity baselines) | **Built** | Findings surface at `GET /api/v1/activity/anomalies`; humans resolve |
