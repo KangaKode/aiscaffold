@@ -19,7 +19,7 @@ Before configuring anything, watch the round table protocol in action with mock 
 make demo
 ```
 
-**What you'll see:** Three mock agents (analyst, reviewer, fact-checker) deliberate on a sample task through 4 phases:
+**What you'll see:** Three mock agents (analyst, reviewer, fact-checker) deliberate on a sample task through the phased protocol (a premise gate first checks the task is sound, then):
 
 1. **Strategy** -- The orchestrator plans how to divide the work
 2. **Independent Analysis** -- Each agent analyzes the task separately (in parallel)
@@ -302,7 +302,7 @@ curl -X POST http://localhost:8000/api/v1/round-table/tasks \
   -d '{"content": "Review the pros and cons of microservices vs monolith architecture"}'
 ```
 
-This runs the full 4-phase protocol. The response includes each agent's analysis, challenges, the synthesis, and voting results.
+This runs the full phased protocol. The response includes each agent's analysis, challenges, the synthesis, and voting results. If the agents collectively refuse the task's premise, the response instead has `status: "refused"` with what is wrong and a better question.
 
 {% else -%}
 ## Part 4: See Your Agent in Action (5 min)

@@ -169,7 +169,7 @@ def _result_phases(result) -> list[tuple[str, object]]:
     given recorded run regardless of which optional phases ran.
     """
     phases: list[tuple[str, object]] = []
-    for name in ("strategy", "analyses", "challenges", "synthesis", "votes"):
+    for name in ("premise_challenge", "strategy", "analyses", "challenges", "synthesis", "votes"):
         value = getattr(result, name, None)
         if value:
             phases.append((name, _to_jsonable(value)))
@@ -222,6 +222,8 @@ async def audited_round_table(
 
     consensus = getattr(result, "consensus_reached", None)
     outcome = "consensus" if consensus else "no_consensus"
+    if getattr(result, "premise_challenge", None) is not None:
+        outcome = "premise_refused"
     chain_digest, chain_status = auditor.chain_digest(result)
     auditor.event(
         correlation_id,

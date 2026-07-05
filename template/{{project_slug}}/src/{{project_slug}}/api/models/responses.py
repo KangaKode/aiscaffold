@@ -54,11 +54,27 @@ class SynthesisResponse(BaseModel):
     minority_views: list[dict] = Field(default_factory=list)
 
 
+class PremiseChallengeResponse(BaseModel):
+    """Phase 0.5 refusal gate outcome: the agents declined the task."""
+
+    premise_challenged: bool = True
+    what_is_wrong: str = ""
+    what_is_missing: str = ""
+    better_question: str = ""
+    refusing_agents: list[str] = Field(default_factory=list)
+    agents_who_would_proceed: list[str] = Field(default_factory=list)
+
+
 class RoundTableResultResponse(BaseModel):
-    """Complete round table output returned to the client."""
+    """Complete round table output returned to the client.
+
+    status is "refused" (with premise_challenge populated) when the
+    Phase 0.5 gate short-circuited the deliberation.
+    """
 
     task_id: str
     status: str = "completed"
+    premise_challenge: PremiseChallengeResponse | None = None
     consensus_reached: bool = False
     approval_rate: float = 0.0
     analyses: list[AnalysisResponse] = Field(default_factory=list)

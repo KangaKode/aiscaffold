@@ -15,12 +15,13 @@ Think of it like a review board: each member brings a different perspective, the
 
 ## How Does It Work?
 
-### The Round Table Protocol (4 phases)
+### The Round Table Protocol
 
-1. **Strategy** (optional) -- A planning phase where the system decides how to approach the task.
-2. **Independent Analysis** -- Each agent analyzes the task separately, without seeing other agents' work. Agent prompts request evidence-backed findings.
-3. **Challenge** -- Agents review each other's analyses and raise objections or concessions. This catches blind spots.
-4. **Synthesis + Voting** -- Findings are merged into a recommendation. Each agent votes approve or dissent with reasons.
+1. **Premise Gate** -- Before spending anything, each agent quickly checks whether the task's premise is sound. If enough agents independently refuse, the system declines the task and explains what is wrong and how to reframe it.
+2. **Strategy** (optional) -- A planning phase where the system decides how to approach the task.
+3. **Independent Analysis** -- Each agent analyzes the task separately, without seeing other agents' work. Agent prompts request evidence-backed findings.
+4. **Challenge** -- Agents review each other's analyses and raise objections or concessions. This catches blind spots.
+5. **Synthesis + Voting** -- Findings are merged into a recommendation. Each agent votes approve or dissent with reasons.
 
 ### Quick Chat Mode
 

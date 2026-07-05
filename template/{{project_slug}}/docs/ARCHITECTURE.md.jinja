@@ -82,7 +82,8 @@ Requests can be resolved at three escalating cost/rigor tiers:
 3. **Round table** (`orchestration/round_table.py`, `POST /api/v1/round-table`) -- full adversarial deliberation.
 
 ### Round Table (`orchestration/round_table.py`)
-Full 4-phase multi-agent deliberation protocol:
+Full phased multi-agent deliberation protocol:
+- Phase 0.5: Premise validation -- cheap parallel checks; enough independent refusals short-circuit the run with what is wrong, what is missing, and a better question (skipped without an LLM; see `orchestration/premise.py`)
 - Phase 0: Strategy -- orchestrator plans before dispatching
 - Phase 1: Independent -- agents analyze in parallel (separate context windows)
 - Phase 2: Challenge -- cross-agent questioning with counter-evidence

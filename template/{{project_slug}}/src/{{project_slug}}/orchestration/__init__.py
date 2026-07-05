@@ -2,7 +2,7 @@
 Multi-agent orchestration.
 
 Two interaction modes:
-  - RoundTable: Full 4-phase deliberation (all agents, evidence-based consensus)
+  - RoundTable: Full phased deliberation (premise gate, all agents, evidence-based consensus)
   - ChatOrchestrator: Lightweight real-time chat (1-3 agents, cross-checked)
 """
 from .round_table import RoundTable, RoundTableConfig, AgentProtocol  # noqa: F401

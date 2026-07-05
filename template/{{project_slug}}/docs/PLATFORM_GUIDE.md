@@ -399,6 +399,10 @@ curl -X POST https://platform.example.com/api/v1/agents \
 
 A round table where most agents were skipped (suspended, rate limited, bad credentials) or crashed can quietly produce a one-agent "consensus". `RoundTableConfig.min_quorum` (default 2) guards this: when at least one agent failed or was gated AND fewer successful domain-agent analyses than `min_quorum` remain, the result is marked `degraded=True` with `failed_agent_count` set. Surface this flag to users -- a degraded deliberation is a signal to retry, not a verdict.
 
+### Premise refusal gate (Phase 0.5)
+
+Before any expensive phase, each agent gets one cheap, low-temperature LLM call judging whether the task's premise is sound (`orchestration/premise.py`). When at least `RoundTableConfig.refusal_threshold` agents independently refuse, the run short-circuits: the API returns `status="refused"` with what is wrong, what is missing, and a better question. The threshold is clamped to a floor of 2 (a single compromised agent can never veto a room alone) and a ceiling of half the room. The gate fails open -- a parse failure or LLM error counts as "proceed", and with no LLM configured the gate is skipped; the Sentinel's fail-closed screening remains the backstop for hostile input. Disable with `premise_challenge_enabled=False`.
+
 ---
 
 ## Agentic Governance
