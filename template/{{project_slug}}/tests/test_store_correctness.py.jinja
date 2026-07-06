@@ -409,37 +409,80 @@ class TestConcurrentUsageAccounting:
     """_track_usage and the in-memory spend fallback run in
     asyncio.to_thread workers, so their read-modify-write on shared
     accumulators must be lock-guarded or concurrent calls lose updates
-    -- undercounting the _max_cost_usd circuit breaker."""
+    -- undercounting the _max_cost_usd circuit breaker.
+
+    A plain thread-pool hammer cannot catch this on GIL CPython (the
+    race window between LOAD_ATTR and STORE_ATTR is a few bytecodes),
+    so these tests instrument the shared object to sleep inside the
+    read half of the read-modify-write: threads then pile into the
+    widened window and an unlocked implementation reliably loses
+    nearly every update, while the locked one serializes correctly."""
+
+    N_THREADS = 8
+    N_ITERATIONS = 5
 
     def test_concurrent_track_usage_does_not_lose_updates(self):
+        import threading
+        import time as time_module
         from concurrent.futures import ThreadPoolExecutor
 
         from {{project_slug}}.llm.client import LLMClient, TokenUsage
 
+        class SlowReadUsage(TokenUsage):
+            def __getattribute__(self, name):
+                value = super().__getattribute__(name)
+                if name == "estimated_cost_usd":
+                    time_module.sleep(0.002)  # widen read->write window
+                return value
+
         client = LLMClient(provider="anthropic", api_key="test-key")
+        client._total_usage = SlowReadUsage()
         usage = TokenUsage(
             input_tokens=10, output_tokens=5, cached_input_tokens=1,
             estimated_cost_usd=0.001,
         )
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(lambda _: client._track_usage(usage), range(200)))
+        barrier = threading.Barrier(self.N_THREADS)
 
+        def hammer(_):
+            barrier.wait()  # maximize overlap
+            for _ in range(self.N_ITERATIONS):
+                client._track_usage(usage)
+
+        with ThreadPoolExecutor(max_workers=self.N_THREADS) as pool:
+            list(pool.map(hammer, range(self.N_THREADS)))
+
+        calls = self.N_THREADS * self.N_ITERATIONS
         total = client.total_usage
-        assert total.input_tokens == 2000
-        assert total.output_tokens == 1000
-        assert total.cached_input_tokens == 200
-        assert total.estimated_cost_usd == pytest.approx(0.2)
+        assert total.input_tokens == calls * 10
+        assert total.output_tokens == calls * 5
+        assert total.cached_input_tokens == calls
+        assert total.estimated_cost_usd == pytest.approx(calls * 0.001)
 
     def test_concurrent_memory_spend_does_not_lose_updates(self):
+        import threading
+        import time as time_module
         from concurrent.futures import ThreadPoolExecutor
 
+        class SlowReadDict(dict):
+            def get(self, key, default=None):
+                value = super().get(key, default)
+                time_module.sleep(0.002)  # widen read->write window
+                return value
+
         manager = BudgetManager()  # store-less: in-memory fallback path
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(
-                lambda _: manager.record_spend("acme", 0.01, model="m"),
-                range(200),
-            ))
-        assert manager.current_spend("acme") == pytest.approx(2.0)
+        manager._memory_spend = SlowReadDict()
+        barrier = threading.Barrier(self.N_THREADS)
+
+        def hammer(_):
+            barrier.wait()  # maximize overlap
+            for _ in range(self.N_ITERATIONS):
+                manager.record_spend("acme", 0.01, model="m")
+
+        with ThreadPoolExecutor(max_workers=self.N_THREADS) as pool:
+            list(pool.map(hammer, range(self.N_THREADS)))
+
+        expected = self.N_THREADS * self.N_ITERATIONS * 0.01
+        assert manager.current_spend("acme") == pytest.approx(expected)
 
 
 class TestSumAggregate:
