@@ -77,41 +77,31 @@ async def _analyze_with_duration(agent: Any, task: Any) -> tuple[Any, float]:
     return result, time.monotonic() - start
 
 
-async def dispatch_with_gates(
+def gate_agents(
     agents: list,
     task: Any,
     registry: Any,
     rate_limiter: AgentRateLimiter | None,
     component: str,
-    baseline_tracker: Any = None,
-) -> tuple[list[Any], int, int]:
-    """Run analyze() on all agents in parallel with per-agent dispatch gates.
+) -> tuple[list[tuple[Any, Any, AgentCapability | None]], int]:
+    """Run the per-agent dispatch gates and scope-filter the task.
 
-    Before each agent's analyze():
-      1. Identity verification (suspended / tokenless-remote / invalid token
-         agents are skipped, never fatal).
+    The single gate sequence shared by every deliberation phase
+    (analyze, challenge, vote):
+      1. Identity verification (suspended / tokenless-remote / invalid
+         token agents are skipped, never fatal).
       2. Rate limit check against the agent's capability.
       3. Scope filtering of the task's ``context`` dict (agents with a
-         capability declaring non-empty access_scopes see only those keys;
-         ``agent_focus_areas`` is orchestrator metadata and always passes).
+         capability declaring non-empty access_scopes see only those
+         keys; ``agent_focus_areas`` is orchestrator metadata and
+         always passes).
 
-    After analyze(), findings citing data sources outside the agent's
-    scopes are logged (analysis is kept -- flags are advisory).
-
-    baseline_tracker: optional AgentBaselineTracker. When provided, each
-    successful dispatch records stats (duration, refused = premise_valid
-    is False, confidence attr when present, scope violation count) --
-    best-effort, never fatal. Callers that don't pass it are unaffected.
-
-    Returns (analyses, skipped_count, failed_count) where skipped_count is
-    agents blocked by a gate and failed_count is agents whose analyze()
-    raised. Works with registry=None (all gates pass; no filtering by
-    registry capability).
+    Returns ([(agent, scope_filtered_task, capability), ...], skipped)
+    where skipped counts agents blocked by a gate. Works with
+    registry=None (all gates pass; no capability filtering).
     """
     scope_filter = ScopeFilter()
-    coros = []
-    dispatched: list[Any] = []
-    capabilities: list[AgentCapability | None] = []
+    gated: list[tuple[Any, Any, AgentCapability | None]] = []
     skipped = 0
     for agent in agents:
         if not verify_agent_identity(agent, registry, component):
@@ -132,9 +122,44 @@ async def dispatch_with_gates(
                 filtered = {**filtered, "agent_focus_areas": context["agent_focus_areas"]}
             agent_task = replace(task, context=filtered)
 
-        dispatched.append(agent)
-        capabilities.append(capability)
-        coros.append(_analyze_with_duration(agent, agent_task))
+        gated.append((agent, agent_task, capability))
+    return gated, skipped
+
+
+async def dispatch_with_gates(
+    agents: list,
+    task: Any,
+    registry: Any,
+    rate_limiter: AgentRateLimiter | None,
+    component: str,
+    baseline_tracker: Any = None,
+) -> tuple[list[Any], int, int]:
+    """Run analyze() on all agents in parallel with per-agent dispatch gates.
+
+    Each agent passes the shared gate sequence (see ``gate_agents``)
+    before its analyze() is dispatched with the scope-filtered task.
+
+    After analyze(), findings citing data sources outside the agent's
+    scopes are logged (analysis is kept -- flags are advisory).
+
+    baseline_tracker: optional AgentBaselineTracker. When provided, each
+    successful dispatch records stats (duration, refused = premise_valid
+    is False, confidence attr when present, scope violation count) --
+    best-effort, never fatal. Callers that don't pass it are unaffected.
+
+    Returns (analyses, skipped_count, failed_count) where skipped_count is
+    agents blocked by a gate and failed_count is agents whose analyze()
+    raised. Works with registry=None (all gates pass; no filtering by
+    registry capability).
+    """
+    scope_filter = ScopeFilter()
+    gated, skipped = gate_agents(agents, task, registry, rate_limiter, component)
+    dispatched = [agent for agent, _, _ in gated]
+    capabilities = [capability for _, _, capability in gated]
+    coros = [
+        _analyze_with_duration(agent, agent_task)
+        for agent, agent_task, _ in gated
+    ]
 
     results = await asyncio.gather(*coros, return_exceptions=True)
     analyses = []

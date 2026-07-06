@@ -416,18 +416,42 @@ class RoundTable:
 
         return analyses, skipped + failed
 
+    def _gate_agents(self, task: RoundTableTask) -> list[tuple[Any, RoundTableTask]]:
+        """Run the shared dispatch gates (identity/suspension, rate limit,
+        scope filtering) for one phase, exactly as Phase 1 does.
+
+        Gates are re-checked per phase, so an agent suspended mid-run is
+        excluded from every later phase.
+        """
+        from .dispatch_helpers import gate_agents
+
+        rate_limiter = getattr(self._registry, "rate_limiter", None)
+        gated, skipped = gate_agents(
+            self.agents, task, self._registry, rate_limiter, "RoundTable"
+        )
+        if skipped:
+            logger.warning(
+                f"[RoundTable] {skipped} agent(s) blocked by dispatch gates this phase"
+            )
+        return [(agent, agent_task) for agent, agent_task, _ in gated]
+
     async def _phase_challenge(
         self, task: RoundTableTask, analyses: list[AgentAnalysis]
     ) -> list[AgentChallenge]:
-        """Phase 2: Agents challenge each other (mediated hub-and-spoke)."""
+        """Phase 2: Agents challenge each other (mediated hub-and-spoke).
+
+        Dispatch passes the same gates as Phase 1 (identity/suspension,
+        rate limit, scope-filtered task).
+        """
+        gated = self._gate_agents(task)
         results = await asyncio.gather(
-            *[agent.challenge(task, analyses) for agent in self.agents],
+            *[agent.challenge(agent_task, analyses) for agent, agent_task in gated],
             return_exceptions=True,
         )
         challenges = []
         for i, r in enumerate(results):
             if isinstance(r, Exception):
-                logger.error(f"[RoundTable] {self.agents[i].name} challenge failed: {r}")
+                logger.error(f"[RoundTable] {gated[i][0].name} challenge failed: {r}")
                 continue
             challenges.append(r)
         return challenges
@@ -435,16 +459,23 @@ class RoundTable:
     async def _phase_voting(
         self, task: RoundTableTask, synthesis: SynthesisResult
     ) -> list[AgentVote]:
-        """Phase 3b: Agents vote on synthesis. Dissent is valuable."""
+        """Phase 3b: Agents vote on synthesis. Dissent is valuable.
+
+        Dispatch passes the same gates as Phase 1 (identity/suspension,
+        rate limit, scope-filtered task). Gated agents cast no vote, so
+        consensus is computed over the votes actually returned -- the
+        approval rate never divides by the original agent count.
+        """
+        gated = self._gate_agents(task)
         results = await asyncio.gather(
-            *[agent.vote(task, synthesis) for agent in self.agents],
+            *[agent.vote(agent_task, synthesis) for agent, agent_task in gated],
             return_exceptions=True,
         )
         votes = []
         for i, r in enumerate(results):
             if isinstance(r, Exception):
-                logger.error(f"[RoundTable] {self.agents[i].name} vote failed: {r}")
-                votes.append(AgentVote(agent_name=self.agents[i].name, dissent_reason=str(r)))
+                logger.error(f"[RoundTable] {gated[i][0].name} vote failed: {r}")
+                votes.append(AgentVote(agent_name=gated[i][0].name, dissent_reason=str(r)))
                 continue
             votes.append(r)
         return votes
