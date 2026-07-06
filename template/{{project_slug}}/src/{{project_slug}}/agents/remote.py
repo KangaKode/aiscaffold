@@ -75,7 +75,6 @@ class RemoteAgent:
         base_url: str,
         api_key: str = "",
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
-        mode: str = "sync",
         allow_private_endpoint: bool = False,
     ):
         """allow_private_endpoint skips the connect-time DNS re-check for
@@ -87,7 +86,6 @@ class RemoteAgent:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
-        self._mode = mode
         self._allow_private_endpoint = allow_private_endpoint
         self._interaction_count = 0
 
@@ -303,6 +301,5 @@ class RemoteAgent:
             "base_url": self._base_url,
             "api_key_env": api_key_env,
             "timeout": self._timeout,
-            "mode": self._mode,
             "agent_type": "remote",
         }

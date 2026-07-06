@@ -140,7 +140,6 @@ Apply `require_role` to every route. Here's the recommended minimum:
 | `/preferences` | GET | viewer | Read-only |
 | `/checkins` | GET | viewer | Read-only |
 | `/checkins/{id}/respond` | POST | member | Approves/rejects |
-| `/webhooks/agents/{id}` | POST | member | Receives agent results |
 | `/reports/governance` | GET | admin | Aggregated oversight data (counts only, but org-wide) |
 | `/health` | GET | (public) | K8s probes, no auth |
 | `/health/ready` | GET | (public) | K8s probes, no auth |
@@ -296,14 +295,13 @@ See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the full HTTP contract with JSON 
 - **Response sanitization**: All agent responses are sanitized for prompt injection and size-limited (5MB body, 50K per field)
 - **Evidence enforcement**: The enforcement pipeline validates the agent's analysis before it enters the challenge phase
 - **Rate limiting**: Per-IP rate limits on all endpoints (per-tenant when you add tenant-based keying)
-- **HMAC webhooks**: For async agents, webhook payloads are signed with HMAC-SHA256
 
-> **SECURITY: HMAC Webhook Verification**
-> - Set `WEBHOOK_SECRET` in production. Without it, signature verification is skipped entirely.
-> - The platform signs the raw request body with `hmac.new(secret, body, sha256)` and sends the signature in `X-Webhook-Signature: sha256=<hex>`.
-> - Agents should verify the signature before processing the payload.
-> - For replay protection, include a timestamp in the payload and reject requests older than 5 minutes.
-> - Rotate `WEBHOOK_SECRET` periodically. When rotating, accept both old and new secrets during the transition window.
+Agent calls are synchronous: the orchestrator dispatches `/analyze`,
+`/challenge`, and `/vote` over HTTP and waits (with timeout and retries)
+for each response. There is no async callback path -- an earlier webhook
+receiver was removed because nothing ever consumed its results; if your
+agents need long-running work, poll or queue inside your agent behind
+the synchronous endpoint contract.
 
 ### Onboarding checklist for a new team
 

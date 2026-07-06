@@ -93,7 +93,6 @@ def _entry_kwargs_from_dict(entry: dict) -> dict[str, Any]:
         base_url=base_url,
         api_key=api_key,
         timeout=entry.get("timeout", 120),
-        mode=entry.get("mode", "sync"),
     )
     capability = None
     cap_data = entry.get("capability")

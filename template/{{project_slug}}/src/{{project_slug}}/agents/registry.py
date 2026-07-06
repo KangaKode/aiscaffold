@@ -143,7 +143,6 @@ class AgentEntry:
         }
         if self.agent_type == "remote" and hasattr(self.agent, "_base_url"):
             base["base_url"] = self.agent._base_url
-            base["mode"] = getattr(self.agent, "_mode", "sync")
         if hasattr(self.agent, "interaction_count"):
             base["interaction_count"] = self.agent.interaction_count
         return base
@@ -232,7 +231,6 @@ class AgentRegistry:
         base_url: str,
         api_key: str = "",
         capabilities: list[str] | None = None,
-        mode: str = "sync",
         timeout: float = 120,
         access_scopes: list[str] | None = None,
         max_calls_per_hour: int | None = None,
@@ -258,7 +256,6 @@ class AgentRegistry:
             base_url=base_url,
             api_key=api_key,
             timeout=timeout,
-            mode=mode,
         )
         capability = None
         if access_scopes or max_calls_per_hour is not None or is_meta_agent:
