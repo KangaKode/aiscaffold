@@ -5,14 +5,18 @@
 #   Default: web-app anthropic sqlite
 #
 # Steps:
-#   1. Generate a test project via copier (non-interactive)
-#   2. Run ruff (linting)
-#   3. Run bandit (security)
-#   4. Run architecture tests
-#   5. Run red team checks
-#   6. Run AI-specific checks
-#   7. Run automated agent review
-#   8. Clean up
+#   0.   Quick checks on templates (no generation)
+#   1.   Generate a test project via copier (non-interactive)
+#   1.5  Unrendered template check (no leftover jinja in generated .py)
+#   2.   Run ruff (linting)
+#   3.   Run bandit (security)
+#   4.   Python syntax check on all generated modules
+#   5.   Run red team checks
+#   6.   Run AI-specific checks
+#   7.   Run automated agent review
+#   8.   Unit tests (pytest on the generated project)
+#   9.   Injection-defense golden set
+#   10.  File structure check
 #
 # Exit code 0 = all passed, non-zero = failures found.
 
@@ -221,6 +225,51 @@ fi
 
 GEN_SRC="$GENERATED_DIR/src/$PROJECT_SLUG"
 GEN_ROOT="$GENERATED_DIR"
+
+# =========================================================================
+# Step 1.5: Unrendered Template Check
+# =========================================================================
+# A template file with {{ ... }} placeholders but no .jinja suffix ships
+# UNRENDERED into generated projects (broken imports, pytest collection
+# errors). Scan every generated .py file for leftover copier variables and
+# jinja block tags. Docs (.md) are excluded: they legitimately discuss
+# jinja syntax. Literal doubled braces in Python (f-strings, regexes like
+# {{3}}) are NOT flagged -- only known copier variable names and jinja
+# keywords count.
+section "Step 1.5: Unrendered Template Check"
+UNRENDERED=$(python3 - "$REPO_ROOT/copier.yml" "$GENERATED_DIR" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+copier_yml, generated_root = Path(sys.argv[1]), Path(sys.argv[2])
+
+# Top-level keys in copier.yml are the template variables (plus _settings).
+variables = re.findall(r"^([a-z][a-z0-9_]*):", copier_yml.read_text(), re.MULTILINE)
+var_re = re.compile(r"\{\{-?\s*(" + "|".join(variables) + r")\b")
+block_re = re.compile(
+    r"\{%-?\s*(if|elif|else|endif|for|endfor|set|include|macro|endmacro"
+    r"|block|endblock|raw|endraw)\b"
+)
+
+for path in sorted(generated_root.rglob("*.py")):
+    if "__pycache__" in path.parts:
+        continue
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        continue
+    for line_no, line in enumerate(text.splitlines(), 1):
+        if var_re.search(line) or block_re.search(line):
+            print(f"{path.relative_to(generated_root)}:{line_no}: {line.strip()[:100]}")
+PY
+)
+if [ -z "$UNRENDERED" ]; then
+    pass "No unrendered jinja placeholders in generated .py files"
+else
+    fail "Unrendered jinja placeholders found (missing .jinja suffix on template?):"
+    echo "$UNRENDERED" | sed 's/^/    /'
+fi
 
 # =========================================================================
 # Step 2: Ruff Linting

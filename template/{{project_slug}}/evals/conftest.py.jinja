@@ -1,21 +1,19 @@
-"""Eval test fixtures -- mock LLM, eval config, temp workspace."""
+"""Eval test fixtures -- mock LLM, sample round table task."""
 
 import pytest
-from unittest.mock import AsyncMock
 
 
 @pytest.fixture
 def mock_llm():
-    """Mock LLM client that returns configurable responses without API calls."""
-    client = AsyncMock()
-    client.call.return_value = AsyncMock(
-        content='{"observations": [], "recommendations": []}',
-        model="mock-model",
-        input_tokens=100,
-        output_tokens=50,
-        cost_usd=0.001,
-    )
-    return client
+    """Deterministic mock LLM client -- no API calls, no keys needed.
+
+    Duck-typed against LLMClient (call / total_usage / provider / model).
+    Pass script=[...] or response="..." to MockLLMClient directly when a
+    test needs exact canned content instead of the role-keyed defaults.
+    """
+    from {{ project_slug }}.llm.mock import MockLLMClient
+
+    return MockLLMClient()
 
 
 @pytest.fixture
