@@ -39,6 +39,12 @@ from ...learning.corrections import (
     CorrectionsManager,
 )
 from ...learning.erasure import ErasureCapExceededError, erase_correction
+from ...learning.extraction_guard import (
+    MODE_CAPPED,
+    enforcement_enabled,
+    evaluate_extraction_mode,
+    retry_after_seconds,
+)
 from ...security import ValidationError, validate_identifier, validate_in_choices
 from ..middleware.auth import AuthContext, verify_api_key
 
@@ -187,8 +193,38 @@ async def list_corrections(
     limit: int = 100,
     auth: AuthContext = Depends(verify_api_key),
 ) -> list[CorrectionResponse]:
-    """List this tenant's corrections, newest first."""
+    """List this tenant's corrections, newest first.
+
+    The extraction guard evaluates knowledge-read volume on every call
+    (detection-only: elevated/capped write integrity flags). The ONLY
+    enforcement is opt-in: with EXTRACTION_GUARD_ENFORCE=true a capped
+    caller gets 429 + Retry-After. The listing is never silently
+    truncated -- callers get everything or an explicit 429.
+    """
     manager = _get_manager(request)
+    guard_mode = ""
+    try:
+        guard = evaluate_extraction_mode(
+            getattr(request.app.state, "learning_store", None),
+            user_id=auth.user_id,
+            tenant_id=auth.tenant_id,
+            # The middleware records this request only after the response,
+            # so count the in-flight read here -- otherwise the request
+            # that first crosses the cap would still get a full listing.
+            include_current=True,
+        )
+        guard_mode = guard["mode"]
+    except Exception as e:
+        logger.warning(f"[CorrectionsAPI] Extraction guard failed (non-fatal): {e}")
+    if guard_mode == MODE_CAPPED and enforcement_enabled():
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Knowledge-read volume is capped for this window "
+                "(extraction guard). Retry later."
+            ),
+            headers={"Retry-After": str(retry_after_seconds())},
+        )
     try:
         if status:
             validate_in_choices(status, VALID_STATUSES, "status")
@@ -213,10 +249,13 @@ async def approve_correction(
 ) -> CorrectionResponse:
     """Approve a proposed correction. Approver is the authenticated caller.
 
-    Approval auto-triggers two maintenance passes over the tenant's approved
-    corrections (both best-effort, never failing the approval): error-schema
-    extraction (recurring corrections generalize into reusable warnings) and
-    a contradiction scan (conflicting corrections become integrity flags).
+    Approval auto-triggers three maintenance passes over the tenant's
+    approved corrections (all best-effort, never failing the approval):
+    error-schema extraction (recurring corrections generalize into
+    reusable warnings), a contradiction scan (conflicting corrections
+    become integrity flags), and a proposer->approver pair check
+    (directed pairs that dominate recent approvals become integrity
+    flags).
     """
     manager = _get_manager(request)
     _get_tenant_correction(manager, correction_id, auth.tenant_id)
@@ -239,6 +278,12 @@ async def approve_correction(
             scan_corrections(store, tenant_id=auth.tenant_id)
         except Exception as e:
             logger.warning(f"[CorrectionsAPI] Contradiction scan failed (non-fatal): {e}")
+        try:
+            from ...learning.approval_patterns import check_pair_dominance
+
+            check_pair_dominance(store, tenant_id=auth.tenant_id)
+        except Exception as e:
+            logger.warning(f"[CorrectionsAPI] Pair check failed (non-fatal): {e}")
 
     return _to_response(approved)
 

@@ -247,6 +247,7 @@ The components, each independently usable:
 - **Error Schemas** -- Recurring approved corrections auto-distilled into generalized warnings on each approval, served alongside corrections
 - **Reflections** -- Deterministic post-deliberation lessons, recorded automatically and readable via `GET /reflections`
 - **Check-in Manager** -- Never adapts silently; behavior changes require an explicit user check-in
+- **Extraction Defense** -- Timing-regularity, knowledge-read volume, and approval-pair detectors watch for insiders bulk-copying or steering the learned knowledge; detection-only by default (integrity flags for human review)
 - **User Profile** -- Aggregates preferences into context bundles for LLM prompts
 - **RAG** -- in-memory vector search for local development, with pgvector recommended for Postgres production deployments
 - **Graduation** -- A rule engine that finds preferences stable across sessions and promotes them to a cross-project global profile, exposed at `GET /api/v1/graduation/candidates`, `POST .../propose`, and `POST .../apply`; applying requires an explicitly approved check-in, so nothing graduates without a human saying yes
@@ -337,6 +338,7 @@ erDiagram
 - API key auth with production enforcement (`AuthContext` with multi-tenancy structural prep)
 - CORS restricted to configured origins (wildcard rejected)
 - DNS TOCTOU limitation documented on URL validation
+- Extraction defense (detection-first): timing-regularity detection (low CV over inter-request intervals = machine-like cadence, checked every Nth request from the activity middleware), a knowledge-read volume guard (per-user + tenant-wide counts mapped to normal/elevated/capped; detection-only by default, opt-in `EXTRACTION_GUARD_ENFORCE` returns 429 + Retry-After on `GET /corrections` while capped), and directed proposer→approver pair escalation over approved corrections -- all findings persist as integrity flags for human review
 
 ### Evidence Enforcement Pipeline (Hallucination Resistance)
 
@@ -468,7 +470,7 @@ The scaffold itself is validated by a 16-check pipeline:
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
                          ruff lint, bandit security, import validation, red team,
-                         AI checks, agent review, pytest (603 tests, 83% coverage),
+                         AI checks, agent review, pytest (643 tests, 85% coverage),
                          file structure verification
 make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
 ```
@@ -500,6 +502,6 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 603 tests across 25 test files
+  tests/              # 643 tests across 26 test files
   evals/              # Eval infrastructure
 ```

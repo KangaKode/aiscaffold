@@ -1,0 +1,457 @@
+"""Tests for extraction defense: timing-regularity CV detection, the
+knowledge-read extraction guard (detection-only by default, opt-in 429),
+and directed proposer->approver pair escalation over approved
+corrections."""
+
+import uuid
+from datetime import datetime, timedelta
+
+import pytest
+
+from {{project_slug}}.learning.activity import FLAG_TYPE_USER_ANOMALY, ActivityTracker
+from {{project_slug}}.learning.approval_patterns import (
+    FLAG_TYPE_PAIR,
+    check_pair_dominance,
+)
+from {{project_slug}}.learning.flags import insert_flag_once
+from {{project_slug}}.learning.extraction_guard import (
+    FLAG_TYPE_EXTRACTION,
+    MODE_CAPPED,
+    MODE_ELEVATED,
+    MODE_NORMAL,
+    evaluate_extraction_mode,
+)
+from {{project_slug}}.learning.store import SqliteLearningStore
+from {{project_slug}}.learning.timing_analysis import (
+    FLAG_TYPE_TIMING,
+    check_timing_regularity,
+    compute_interval_cv,
+)
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
+
+
+def seed_events(store, timestamps, user_id="user1", tenant_id="default",
+                route="/api/v1/chat", method="POST", status_code=200):
+    for ts in timestamps:
+        store.insert("activity_events", {
+            "id": str(uuid.uuid4())[:12],
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "route": route,
+            "method": method,
+            "status_code": status_code,
+            "created_at": ts.isoformat(),
+        })
+
+
+def regular_times(n, step_seconds=5.0, end=None):
+    """n timestamps at a perfectly regular cadence, ending near `end`."""
+    end = end or datetime.now()
+    start = end - timedelta(seconds=(n - 1) * step_seconds)
+    return [start + timedelta(seconds=i * step_seconds) for i in range(n)]
+
+
+def flags_of_type(store, flag_type, tenant_id="default"):
+    return store.query("integrity_flags",
+                       {"flag_type": flag_type, "tenant_id": tenant_id})
+
+
+# --- Timing-regularity CV math -----------------------------------------------
+
+
+class TestTimingCV:
+    def test_regular_cadence_flags(self, store):
+        seed_events(store, regular_times(30))
+        finding = check_timing_regularity(store, "user1")
+        assert finding is not None
+        assert finding["cv"] < 0.1
+        assert len(flags_of_type(store, FLAG_TYPE_TIMING)) == 1
+
+    def test_random_cadence_does_not_flag(self, store):
+        steps = [1, 9, 2, 15, 3, 27, 4, 11] * 4  # highly irregular
+        now = datetime.now()
+        times, offset = [], 0.0
+        for step in steps:
+            offset += step
+            times.append(now - timedelta(seconds=1000) + timedelta(seconds=offset))
+        seed_events(store, times)
+        assert check_timing_regularity(store, "user1") is None
+        assert flags_of_type(store, FLAG_TYPE_TIMING) == []
+
+    def test_below_min_samples_no_verdict(self, store):
+        seed_events(store, regular_times(10))  # 9 intervals < 20
+        assert check_timing_regularity(store, "user1") is None
+
+    def test_zero_intervals_tolerated(self, store):
+        # Concurrent requests: pairs of identical timestamps 10s apart.
+        base_times = regular_times(15, step_seconds=10.0)
+        seed_events(store, [t for t in base_times for _ in range(2)])
+        # Alternating ~0s / ~10s intervals -> high CV, no crash, no flag.
+        assert check_timing_regularity(store, "user1") is None
+
+    def test_all_concurrent_no_divide_by_zero(self, store):
+        now = datetime.now()
+        seed_events(store, [now] * 25)  # all intervals zero -> mean ~0
+        assert check_timing_regularity(store, "user1") is None
+
+    def test_near_zero_mean_returns_none(self):
+        assert compute_interval_cv([0.0] * 25) is None
+        assert compute_interval_cv([]) is None
+
+    def test_excluded_routes_not_in_series(self, store):
+        seed_events(store, regular_times(30), route="/health", method="GET")
+        assert check_timing_regularity(store, "user1") is None
+
+
+class TestTimingFlagCooldown:
+    def test_second_evaluation_does_not_duplicate(self, store):
+        seed_events(store, regular_times(30))
+        assert check_timing_regularity(store, "user1") is not None
+        assert check_timing_regularity(store, "user1") is not None
+        assert len(flags_of_type(store, FLAG_TYPE_TIMING)) == 1
+
+    def test_resolving_the_flag_rearms_detection(self, store):
+        seed_events(store, regular_times(30))
+        check_timing_regularity(store, "user1")
+        flag = flags_of_type(store, FLAG_TYPE_TIMING)[0]
+        store.update("integrity_flags", flag["id"], {"resolved": 1})
+        check_timing_regularity(store, "user1")
+        assert len(flags_of_type(store, FLAG_TYPE_TIMING)) == 2
+
+
+class TestTimingWindow:
+    def test_old_irregular_history_does_not_dilute_recent_regular(self, store):
+        # Irregular traffic 3 hours ago (outside TIMING_WINDOW_MINUTES=60)
+        # must not rescue a machine-regular cadence inside the window.
+        old_base = datetime.now() - timedelta(hours=3)
+        offset, irregular = 0.0, []
+        for step in [1, 9, 2, 15, 3, 27, 4, 11] * 4:
+            offset += step
+            irregular.append(old_base + timedelta(seconds=offset))
+        seed_events(store, irregular)
+        seed_events(store, regular_times(25))
+
+        finding = check_timing_regularity(store, "user1")
+        assert finding is not None
+        assert finding["intervals"] == 24  # only the in-window events
+
+
+class TestSeverityEscalation:
+    def test_capped_after_elevated_inserts_error_flag(self, store, guard_env):
+        seed_reads(store, 6)  # elevated -> warning flag
+        assert evaluate_extraction_mode(store, user_id="user1")["mode"] == MODE_ELEVATED
+        seed_reads(store, 5)  # now 11 -> capped -> escalation must surface
+        assert evaluate_extraction_mode(store, user_id="user1")["mode"] == MODE_CAPPED
+
+        flags = flags_of_type(store, FLAG_TYPE_EXTRACTION)
+        assert sorted(f["severity"] for f in flags) == ["error", "warning"]
+
+    def test_lower_severity_skipped_when_error_unresolved(self, store):
+        assert insert_flag_once(store, "extraction_volume_anomaly", "user1",
+                                "default", {"mode": "capped"}, severity="error")
+        assert not insert_flag_once(store, "extraction_volume_anomaly", "user1",
+                                    "default", {"mode": "elevated"},
+                                    severity="warning")
+        assert len(flags_of_type(store, FLAG_TYPE_EXTRACTION)) == 1
+
+
+class TestActivityThresholdCooldown:
+    def test_sustained_burst_inserts_exactly_one_flag(self, store):
+        tracker = ActivityTracker(store)
+        for _ in range(6):
+            tracker.record("/api/v1/chat", "POST", 200, user_id="user1")
+
+        limits = {"requests_per_hour": 5}
+        assert tracker.check_thresholds("user1", thresholds=limits)
+        assert tracker.check_thresholds("user1", thresholds=limits)
+        assert len(flags_of_type(store, FLAG_TYPE_USER_ANOMALY)) == 1
+
+
+# --- Extraction guard ---------------------------------------------------------
+
+
+@pytest.fixture
+def guard_env(monkeypatch):
+    monkeypatch.setenv("EXTRACTION_USER_THRESHOLD", "5")
+    monkeypatch.setenv("EXTRACTION_TENANT_THRESHOLD", "10")
+    monkeypatch.delenv("ACTIVITY_TRACKING_ENABLED", raising=False)
+
+
+def seed_reads(store, n, user_id="user1", route="/api/v1/corrections",
+               method="GET", minutes_ago=1):
+    ts = datetime.now() - timedelta(minutes=minutes_ago)
+    seed_events(store, [ts] * n, user_id=user_id, route=route, method=method)
+
+
+class TestExtractionGuardModes:
+    def test_below_thresholds_is_normal(self, store, guard_env):
+        seed_reads(store, 3)
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_NORMAL
+        assert flags_of_type(store, FLAG_TYPE_EXTRACTION) == []
+
+    def test_user_threshold_elevates(self, store, guard_env):
+        seed_reads(store, 6)  # > 5, <= 10
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_ELEVATED
+        assert result["user_count"] == 6
+
+    def test_double_threshold_caps(self, store, guard_env):
+        seed_reads(store, 11)  # > 2 * 5
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_CAPPED
+
+    def test_tenant_aggregate_elevates_even_when_users_quiet(self, store, guard_env):
+        for i in range(11):  # 11 users, 1 read each: tenant 11 > 10
+            seed_reads(store, 1, user_id=f"user{i}")
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_ELEVATED
+        assert result["user_count"] == 1
+        assert result["tenant_count"] == 11
+
+    def test_empty_user_id_counts_tenant_scope_only(self, store, guard_env):
+        seed_reads(store, 6)
+        result = evaluate_extraction_mode(store, user_id="")
+        assert result["user_count"] == 0
+        assert result["tenant_count"] == 6
+        assert result["mode"] == MODE_NORMAL  # tenant 6 <= 10
+
+    def test_old_events_outside_window_ignored(self, store, guard_env):
+        seed_reads(store, 20, minutes_ago=120)  # window default 60m
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_NORMAL
+
+    def test_non_get_and_non_knowledge_routes_not_counted(self, store, guard_env):
+        seed_reads(store, 20, method="POST")
+        seed_reads(store, 20, route="/api/v1/chat")
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_NORMAL
+
+    def test_flag_written_with_cooldown(self, store, guard_env):
+        seed_reads(store, 6)
+        evaluate_extraction_mode(store, user_id="user1")
+        evaluate_extraction_mode(store, user_id="user1")
+        assert len(flags_of_type(store, FLAG_TYPE_EXTRACTION)) == 1
+
+    def test_capped_flag_has_error_severity(self, store, guard_env):
+        seed_reads(store, 11)
+        evaluate_extraction_mode(store, user_id="user1")
+        flags = flags_of_type(store, FLAG_TYPE_EXTRACTION)
+        assert len(flags) == 1
+        assert flags[0]["severity"] == "error"
+
+    def test_include_current_counts_the_inflight_request(self, store, guard_env):
+        seed_reads(store, 10)  # exactly at the 2x cap boundary
+        at_rest = evaluate_extraction_mode(store, user_id="user1")
+        assert at_rest["mode"] == MODE_ELEVATED  # 10 is not > 10
+        in_flight = evaluate_extraction_mode(store, user_id="user1",
+                                             include_current=True)
+        assert in_flight["mode"] == MODE_CAPPED  # 11 > 10
+        assert in_flight["user_count"] == 11
+        assert in_flight["tenant_count"] == 11
+
+    def test_noise_traffic_cannot_evict_knowledge_reads(self, store, guard_env):
+        seed_reads(store, 6)
+        # Newer cheap noise to another route (more rows than the fetch
+        # cap) must not push the knowledge reads out of the fetched rows
+        # (the guard queries each exact knowledge route separately).
+        seed_reads(store, 2100, route="/api/v1/chat", method="POST",
+                   minutes_ago=0)
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_ELEVATED
+        assert result["user_count"] == 6
+
+
+class TestExtractionGuardDegradation:
+    def test_normal_when_tracking_disabled(self, store, guard_env, monkeypatch):
+        monkeypatch.setenv("ACTIVITY_TRACKING_ENABLED", "false")
+        seed_reads(store, 50)
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_NORMAL
+        assert flags_of_type(store, FLAG_TYPE_EXTRACTION) == []
+
+    def test_normal_without_store(self, guard_env):
+        result = evaluate_extraction_mode(None, user_id="user1")
+        assert result["mode"] == MODE_NORMAL
+
+
+# --- Directed pair escalation --------------------------------------------------
+
+
+def seed_approved(store, creator, approver, n=1, tenant_id="default"):
+    now = datetime.now().isoformat()
+    for _ in range(n):
+        store.insert("corrections", {
+            "id": str(uuid.uuid4())[:12],
+            "tenant_id": tenant_id,
+            "agent_id": "analyst",
+            "session_id": "",
+            "original_claim": "old claim",
+            "corrected_claim": "new claim",
+            "reason": "",
+            "evidence_level": "",
+            "status": "approved",
+            "created_by": creator,
+            "approved_by": approver,
+            "created_at": now,
+            "updated_at": now,
+            "metadata_json": "{}",
+        })
+
+
+class TestPairEscalation:
+    def test_directed_pairs_counted_separately(self, store):
+        seed_approved(store, "alice", "bob", n=6)
+        seed_approved(store, "bob", "alice", n=3)  # reverse direction, under
+        findings = check_pair_dominance(store, threshold=5)
+        assert len(findings) == 1
+        assert findings[0]["proposer"] == "alice"
+        assert findings[0]["approver"] == "bob"
+        flags = flags_of_type(store, FLAG_TYPE_PAIR)
+        assert len(flags) == 1
+        assert flags[0]["subject_id"] == "alice->bob"
+
+    def test_both_directions_flag_independently(self, store):
+        seed_approved(store, "alice", "bob", n=6)
+        seed_approved(store, "bob", "alice", n=6)
+        findings = check_pair_dominance(store, threshold=5)
+        assert len(findings) == 2
+        subjects = {f["subject_id"] for f in flags_of_type(store, FLAG_TYPE_PAIR)}
+        assert subjects == {"alice->bob", "bob->alice"}
+
+    def test_self_pairs_skipped(self, store):
+        seed_approved(store, "alice", "alice", n=10)
+        assert check_pair_dominance(store, threshold=5) == []
+
+    def test_missing_identities_skipped(self, store):
+        seed_approved(store, "", "bob", n=10)
+        seed_approved(store, "alice", "", n=10)
+        assert check_pair_dominance(store, threshold=5) == []
+
+    def test_at_threshold_does_not_flag(self, store):
+        seed_approved(store, "alice", "bob", n=5)
+        assert check_pair_dominance(store, threshold=5) == []
+
+    def test_cooldown_prevents_duplicate_flags(self, store):
+        seed_approved(store, "alice", "bob", n=6)
+        check_pair_dominance(store, threshold=5)
+        check_pair_dominance(store, threshold=5)
+        assert len(flags_of_type(store, FLAG_TYPE_PAIR)) == 1
+
+    def test_sustained_pair_escalates_severity(self, store):
+        seed_approved(store, "alice", "bob", n=11)  # > 2 * 5
+        findings = check_pair_dominance(store, threshold=5)
+        assert findings[0]["severity"] == "error"
+        assert flags_of_type(store, FLAG_TYPE_PAIR)[0]["severity"] == "error"
+
+    def test_env_threshold_used(self, store, monkeypatch):
+        monkeypatch.setenv("PAIR_APPROVAL_THRESHOLD", "2")
+        seed_approved(store, "alice", "bob", n=3)
+        assert len(check_pair_dominance(store)) == 1
+
+
+# --- API-level wiring -----------------------------------------------------------
+
+
+@pytest.fixture
+async def api(tmp_path, monkeypatch):
+    """HTTP client + app with activity tracking enabled and low guard
+    thresholds. chdir into tmp_path so the default SQLite stores land in
+    the test sandbox."""
+    from httpx import ASGITransport, AsyncClient
+
+    from {{project_slug}}.agents.registry import AgentRegistry
+    from {{project_slug}}.api.gateway import create_app
+
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.setenv("ACTIVITY_TRACKING_ENABLED", "true")
+    monkeypatch.setenv("EXTRACTION_USER_THRESHOLD", "5")
+    monkeypatch.setenv("EXTRACTION_TENANT_THRESHOLD", "10")
+    monkeypatch.chdir(tmp_path)
+
+    app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, app
+
+
+class TestExtractionEnforcementHTTP:
+    async def test_detection_only_default_never_blocks(self, api, monkeypatch):
+        client, app = api
+        monkeypatch.delenv("EXTRACTION_GUARD_ENFORCE", raising=False)
+        # Keyless dev mode: every caller is "anon" -- seed it past 2x cap.
+        seed_reads(app.state.learning_store, 20, user_id="anon")
+        r = await client.get("/api/v1/corrections")
+        assert r.status_code == 200  # capped, but enforce is off
+        # Detection still happened: the volume flag exists.
+        flags = flags_of_type(app.state.learning_store, FLAG_TYPE_EXTRACTION)
+        assert len(flags) == 1
+
+    async def test_enforce_true_and_capped_returns_429(self, api, monkeypatch):
+        client, app = api
+        monkeypatch.setenv("EXTRACTION_GUARD_ENFORCE", "true")
+        seed_reads(app.state.learning_store, 20, user_id="anon")
+        r = await client.get("/api/v1/corrections")
+        assert r.status_code == 429
+        assert "Retry-After" in r.headers
+        assert int(r.headers["Retry-After"]) > 0
+
+    async def test_enforce_true_but_uncapped_serves_normally(self, api, monkeypatch):
+        client, _ = api
+        monkeypatch.setenv("EXTRACTION_GUARD_ENFORCE", "true")
+        r = await client.get("/api/v1/corrections")
+        assert r.status_code == 200
+
+    async def test_request_crossing_cap_boundary_gets_429(self, api, monkeypatch):
+        client, app = api
+        monkeypatch.setenv("EXTRACTION_GUARD_ENFORCE", "true")
+        # Exactly at the 2x cap: the in-flight request itself must be
+        # counted, so THIS request crosses the cap and is refused.
+        seed_reads(app.state.learning_store, 10, user_id="anon")
+        r = await client.get("/api/v1/corrections")
+        assert r.status_code == 429
+        assert "Retry-After" in r.headers
+
+
+class TestMiddlewareSampledChecks:
+    async def test_nth_request_runs_timing_check(self, api, monkeypatch):
+        client, app = api
+        monkeypatch.setenv("ACTIVITY_CHECK_SAMPLE_N", "1")
+        # Machine-regular history for the shared dev identity. The probe
+        # request below hits /health, which is excluded from the interval
+        # series, so the seeded cadence is what gets evaluated.
+        seed_events(app.state.learning_store, regular_times(30), user_id="anon")
+        r = await client.get("/health")
+        assert r.status_code == 200
+        flags = flags_of_type(app.state.learning_store, FLAG_TYPE_TIMING)
+        assert len(flags) == 1
+
+
+class TestPairCheckWiredIntoApproval:
+    async def test_approval_triggers_pair_check(self, api, monkeypatch):
+        client, app = api
+        monkeypatch.setenv("PAIR_APPROVAL_THRESHOLD", "5")
+        manager = app.state.corrections_manager
+        ids = []
+        for i in range(6):
+            c = manager.propose(
+                agent_id="analyst",
+                original_claim=f"claim {i} about limits",
+                corrected_claim=f"corrected claim {i} about limits",
+                reason="vendor docs", evidence_level="documented",
+                created_by="alice",
+            )
+            ids.append(c.id)
+        # Keyless dev mode: the API approver is "anon" != "alice".
+        for cid in ids:
+            r = await client.post(f"/api/v1/corrections/{cid}/approve")
+            assert r.status_code == 200
+
+        flags = flags_of_type(app.state.learning_store, FLAG_TYPE_PAIR)
+        assert len(flags) == 1
+        assert flags[0]["subject_id"] == "alice->anon"

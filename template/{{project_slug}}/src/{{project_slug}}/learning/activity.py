@@ -29,10 +29,11 @@ GET /api/v1/activity/anomalies -- never acted on automatically.
 Keep this file under 350 lines.
 """
 
-import json
 import logging
 import uuid
 from datetime import datetime, timedelta
+
+from .flags import insert_flag_once
 
 logger = logging.getLogger(__name__)
 
@@ -54,27 +55,6 @@ AUTH_FAILURE_CODES = (401, 403)
 
 def _now_iso() -> str:
     return datetime.now().isoformat()
-
-
-def _insert_flag(store, flag_type: str, subject_id: str, tenant_id: str,
-                 detail: dict, severity: str = "warning") -> None:
-    """Best-effort integrity flag insert (logged, never raised)."""
-    try:
-        store.insert(
-            "integrity_flags",
-            {
-                "id": str(uuid.uuid4())[:12],
-                "flag_type": flag_type,
-                "subject_id": subject_id,
-                "tenant_id": tenant_id,
-                "severity": severity,
-                "detail_json": json.dumps(detail, default=str),
-                "created_at": _now_iso(),
-                "resolved": 0,
-            },
-        )
-    except Exception as exc:
-        logger.error(f"[Activity] Failed to persist {flag_type} flag: {exc}")
 
 
 class ActivityTracker:
@@ -134,8 +114,10 @@ class ActivityTracker:
         docstring for the tradeoff).
 
         Breaches are persisted as integrity_flags
-        (flag_type="user_activity_anomaly", subject_id=user_id) and
-        returned as human-readable strings.
+        (flag_type="user_activity_anomaly", subject_id=user_id) with a
+        cooldown -- a sustained burst yields one unresolved flag, not one
+        per check (see learning/flags.py) -- and returned as
+        human-readable strings.
         """
         limits = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
         try:
@@ -182,7 +164,7 @@ class ActivityTracker:
             logger.warning(
                 f"[Activity] User '{user_id}' anomaly: {flags}"
             )
-            _insert_flag(
+            insert_flag_once(
                 self._store,
                 FLAG_TYPE_USER_ANOMALY,
                 subject_id=user_id,
@@ -292,7 +274,7 @@ class AgentBaselineTracker:
 
         if flags:
             logger.warning(f"[Activity] Agent '{agent_id}' behavior drift: {flags}")
-            _insert_flag(
+            insert_flag_once(
                 self._store,
                 FLAG_TYPE_AGENT_ANOMALY,
                 subject_id=agent_id,
