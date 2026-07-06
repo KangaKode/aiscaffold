@@ -125,7 +125,7 @@ def _get_python_files(directory: str) -> list[str]:
 def _get_imports(filepath: str) -> list[tuple[str, int]]:
     imports = []
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, encoding="utf-8") as f:
             tree = ast.parse(f.read(), filename=filepath)
     except SyntaxError:
         return imports
@@ -140,7 +140,7 @@ def _get_imports(filepath: str) -> list[tuple[str, int]]:
 
 def _count_lines(filepath: str) -> int:
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, encoding="utf-8") as f:
             return sum(1 for _ in f)
     except Exception:
         return 0
@@ -151,7 +151,7 @@ def _src_module_imports(filepath: str, package_modules: set[str]) -> set[str]:
     including imports inside function bodies -- lazy imports still create
     the dependency)."""
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, encoding="utf-8") as f:
             tree = ast.parse(f.read(), filename=filepath)
     except SyntaxError:
         return set()

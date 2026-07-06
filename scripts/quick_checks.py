@@ -224,7 +224,7 @@ def check_src_layout_install_instructions():
 
 
 def main():
-    print(f"Scanning template files...")
+    print("Scanning template files...")
 
     py_count = scan_directory(TEMPLATE_SRC, extensions=(".py",))
     jinja_count = scan_directory(TEMPLATE_DIR, extensions=(".jinja",))
@@ -268,7 +268,7 @@ def main():
         for f in findings:
             print(f)
         print()
-        print(f"\033[31m✗ Quick checks FAILED\033[0m")
+        print("\033[31m✗ Quick checks FAILED\033[0m")
         sys.exit(1)
     else:
         print(f"\033[32m✓ {total} files checked, 0 failures, {len(warnings)} warnings\033[0m")
