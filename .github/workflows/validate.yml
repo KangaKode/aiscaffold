@@ -5,10 +5,12 @@
 # Three stages:
 #   1. Quick checks (templates only)
 #   2. Matrix validation: the web-app cell runs every generation profile
-#      (full / gateway-off / minimal / defaults -- the profile-varying
-#      checks are independent of project_type); the other cells vary
-#      project_type/llm/persistence and run the full profile only, so no
-#      cell repeats another's work.
+#      (full / gateway-off / minimal / defaults); the other cells vary
+#      project_type/llm/persistence and run the full profile only.
+#      Accepted trade-off: gateway-off/minimal DO honor the passed config,
+#      so combos like gateway-off+postgres are deliberately not exercised
+#      -- the toggle exclusions in copier.yml key only on the include_*
+#      answers, and one cell per profile keeps CI cheap.
 #   3. Summary
 
 name: Validate Scaffold
@@ -44,9 +46,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # All generation profiles once (gateway-off/minimal/defaults
-          # ignore or fix the project_type, so running them in every cell
-          # would just repeat identical work).
+          # All generation profiles once, on the default config. Only the
+          # defaults profile pins its own config; gateway-off/minimal
+          # would honor other configs (e.g. gateway-off+postgres), but
+          # that cross product is skipped as a deliberate cost trade-off:
+          # the conditional _exclude/gating logic keys only on include_*
+          # answers, not on project_type/llm/persistence.
           - project_type: web-app
             llm_provider: anthropic
             persistence: sqlite
