@@ -205,7 +205,7 @@ FastAPI application with route modules:
 - `validators.py` -- Input length, URL (anti-SSRF), identifier, list/dict size validation
 - `pii.py` -- Pattern-based PII redaction (emails, SSNs, Luhn-verified cards, IPs, phones, names-in-context) with Unicode normalization; idempotent `[REDACTED:CATEGORY]` tokens
 
-Prompt injection is defended in 3 layers: static pattern matching in `prompt_guard.py` (Layer 1), advanced normalization and detection in `injection_defense.py` (Layer 2), and semantic screening by the Sentinel core agent (Layer 3). Coverage differs by surface at runtime: user messages are sanitized and boundary-wrapped (no pattern scan); remote-agent and MCP content gets the Layer 1 scan without Layer 2 decoding; knowledge writes get the full Layer 1+2 scan; and the Sentinel screens the deliberation path semantically. The per-surface breakdown is a stated Non-Claim in GOVERNANCE.md.
+Prompt injection is defended in 3 layers: static pattern matching in `prompt_guard.py` (Layer 1), advanced normalization and detection in `injection_defense.py` (Layer 2), and semantic screening by the Sentinel core agent (Layer 3). Coverage differs by surface at runtime: user messages are boundary-wrapped on the resolve and premise paths but embedded unwrapped in chat synthesis and round-table agent prompts, and are never pattern-scanned; remote-agent and MCP content is sanitized and gets the Layer 1 scan without Layer 2 decoding; knowledge writes get the full Layer 1+2 scan; and the Sentinel screens the deliberation path semantically. The per-surface breakdown is a stated Non-Claim in GOVERNANCE.md.
 
 {% if include_learning -%}
 ### Learning System (`learning/`)

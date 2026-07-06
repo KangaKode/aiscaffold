@@ -8,13 +8,13 @@ The single source of truth for the control-by-control capability matrix (impleme
 
 ## Defense in Depth: One Request's Journey
 
-Every control below is implemented and tested in the generated project. The diagram shows where each control sits relative to one request. Three honest notes on wiring: injection defense is applied per surface rather than as one ingress filter, and coverage differs by surface -- user messages get sanitization plus boundary wrapping (no pattern scan at runtime), remote-agent responses and MCP tool output get the Layer 1 pattern scan without Layer 2 decoding, and knowledge writes get the full Layer 1+2 scan (the per-surface breakdown is a stated Non-Claim in the generated GOVERNANCE.md). Output signing is a primitive you invoke on results you emit downstream, not an automatic step.
+Every control below is implemented and tested in the generated project. The diagram shows where each control sits relative to one request. Two honest notes on wiring. First, injection defense is applied per surface rather than as one ingress filter, and coverage differs by surface: user messages are boundary-wrapped with fence-break neutralization on the resolve and premise paths (and by Sentinel for its own screening prompt) but embedded unwrapped in chat synthesis and round-table agent prompts, with no pattern scan on any user path; remote-agent responses and MCP tool output are sanitized and get the Layer 1 pattern scan without Layer 2 decoding; knowledge writes get the full Layer 1+2 scan (the per-surface breakdown is a stated Non-Claim in the generated GOVERNANCE.md). Second, output signing is a primitive you invoke on results you emit downstream, not an automatic step.
 
 ```mermaid
 flowchart TD
     Req[Incoming request] --> Auth["API-key auth + per-IP rate limiting"]
     Auth --> Tenant["Tenant context via AuthContext (tenant_id on every route)"]
-    Tenant --> Inj["Injection defense, per surface:\nuser messages: sanitization + delimiter wrapping with fence-break neutralization\nremote-agent / MCP output: + Layer 1 static pattern scan\nknowledge writes: + Layer 2 Unicode/encoding normalization"]
+    Tenant --> Inj["Injection defense, per surface:<br/>user messages: delimiter wrapping with fence-break neutralization (resolve + premise paths; chat and round-table prompts embed content unwrapped)<br/>remote-agent / MCP output: sanitization + Layer 1 static pattern scan<br/>knowledge writes: + Layer 2 Unicode/encoding normalization"]
     Inj --> Dispatch["Agent dispatch gates: JWT identity verified, per-agent rate limits, capability scopes filter context"]
     Dispatch --> Delib["Multi-agent deliberation"]
     Delib --> L3["Layer 3 inside the deliberation: Sentinel semantic screen - fails closed without an LLM"]
@@ -32,17 +32,17 @@ Zooming into the injection-defense portion of that path -- each layer catches wh
 
 ```mermaid
 flowchart TD
-    Input["Untrusted content"] --> L1["Layer 1 - Static pattern guard (security/prompt_guard.py)\nruns on: remote-agent responses, MCP tool output, knowledge writes"]
-    L1 -->|"catches known jailbreaks: 'ignore previous instructions', role-override phrasings, system-prompt probes"| L2["Layer 2 - Normalization (security/injection_defense.py)\nruns on: knowledge writes (advanced=True scan)"]
-    L2 -->|"catches evasion: Cyrillic homoglyphs, zero-width chars, base64/rot13-encoded payloads"| Wrap["Boundary wrapping (wrap_user_content): canary token + fence-break tag neutralization\nruns on: user messages entering any prompt"]
-    Wrap --> L3["Layer 3 - Sentinel semantic screen (agents/core/sentinel.py)\nruns on: every deliberation, as a participating agent"]
+    Input["Untrusted content"] --> L1["Layer 1 - Static pattern guard (security/prompt_guard.py)<br/>runs on: remote-agent responses, MCP tool output, knowledge writes"]
+    L1 -->|"catches known jailbreaks: 'ignore previous instructions', role-override phrasings, system-prompt probes"| L2["Layer 2 - Normalization (security/injection_defense.py)<br/>runs on: knowledge writes (advanced=True scan)"]
+    L2 -->|"catches evasion: Cyrillic homoglyphs, zero-width chars, base64/rot13-encoded payloads"| Wrap["Boundary wrapping (wrap_user_content): canary token + fence-break tag neutralization<br/>runs on: user content in resolve and premise prompts, and Sentinel's screening prompt"]
+    Wrap --> L3["Layer 3 - Sentinel semantic screen (agents/core/sentinel.py)<br/>runs on: every deliberation, as a participating agent"]
     L3 -->|"catches meaning: social engineering, methodology extraction, context poisoning, privilege probing"| Delib["Deliberation proceeds"]
     L3 -.->|"no LLM available"| Closed["FAILS CLOSED: Sentinel refuses (sentinel_unavailable) instead of passing unscreened input"]
     Delib --> OutGate["Sentinel OUTPUT gate (challenge phase): screens peer analyses for system-prompt leakage, architecture disclosure, methodology exposure"]
     OutGate --> Vote["Sentinel casts a dissent vote when synthesis leaks internals - dissent is preserved in the result"]
 ```
 
-Layers 1 and 2 are deterministic (regex + Unicode analysis, no LLM, free); the [README shows them catching real payloads](../README.md#see-it-run). Not every surface passes through every layer at runtime -- the diagram annotates where each layer actually runs today: user messages are sanitized and boundary-wrapped but not pattern-scanned; remote-agent and MCP content is pattern-scanned without the Layer 2 decoding pass; knowledge writes get the full scan. Layer 3 is the only layer that understands intent, which is why it is an agent inside the deliberation rather than a filter in front of it: Sentinel screens the input as its Phase 1 analysis, screens the other agents' outputs for leaks as its Phase 2 challenge, and casts a dissent vote at synthesis that is preserved in the result rather than silenced. The adversarial harness attacks the deterministic layers and the dispatch/scope gates in CI; it runs with core agents disabled, so Layer 3's behavior is covered by unit tests rather than adversarial pressure.
+Layers 1 and 2 are deterministic (regex + Unicode analysis, no LLM, free); the [README shows them catching real payloads](../README.md#see-it-run). Not every surface passes through every layer at runtime -- the diagram annotates where each layer actually runs today: user messages are boundary-wrapped on the resolve and premise paths but embedded unwrapped in chat synthesis and round-table agent prompts, and are never pattern-scanned; remote-agent and MCP content is sanitized and pattern-scanned without the Layer 2 decoding pass; knowledge writes get the full scan. Layer 3 is the only layer that understands intent, which is why it is an agent inside the deliberation rather than a filter in front of it: Sentinel screens the input as its Phase 1 analysis, screens the other agents' outputs for leaks as its Phase 2 challenge, and casts a dissent vote at synthesis that is preserved in the result rather than silenced. The adversarial harness attacks the deterministic layers and the dispatch/scope gates in CI; it runs with core agents disabled, so Layer 3's behavior is covered by unit tests rather than adversarial pressure.
 
 ## Trust Boundaries
 
@@ -50,7 +50,7 @@ Generated projects treat the following as **untrusted** at all times:
 
 | Boundary | Attack surface | Primary controls |
 |----------|----------------|------------------|
-| User input (chat, tasks, API bodies) | Prompt injection, encoding attacks, oversized payloads | Sanitization + boundary wrapping with fence-break neutralization at every prompt-composition site, semantic Sentinel screening (Layer 3) inside the deliberation, input size limits, input validation on every mutating route. The Layer 1 pattern scan does not run on user messages at runtime (stated Non-Claim) |
+| User input (chat, tasks, API bodies) | Prompt injection, encoding attacks, oversized payloads | Boundary wrapping with fence-break neutralization on the resolve and premise paths (chat and round-table prompts embed content unwrapped), semantic Sentinel screening (Layer 3) inside the deliberation, input size limits, input validation on every mutating route. No user-message path runs the Layer 1 pattern scan or sanitization at runtime (stated Non-Claim) |
 | Remote agent registration | SSRF, private-IP and metadata-endpoint access, credential exfiltration | URL validation (scheme, private ranges, cloud metadata IPs), API keys resolved from environment only, identity token hashes only on disk |
 | Remote agent responses | Injection via analysis/challenge/vote fields, oversized responses | Response sanitization + Layer 1 pattern scan (without Layer 2 decoding), size limits, adversarial harness coverage |
 | MCP tool output | Injection via tool results | Sanitization + Layer 1 pattern scan (without Layer 2 decoding) + `MCP_DATA` boundary wrapping, per-tenant registry, `mcp:` scope gating, non-fatal failure handling |
@@ -98,8 +98,8 @@ flowchart LR
 
 Stating what a control does *not* do is part of the control. The authoritative list lives in [GOVERNANCE.md -- Known Limitations / Non-Claims](../template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md#known-limitations--non-claims). Highlights:
 
-- Several shipped detectors (behavioral baselines, collusion, correction drift, sequence monitoring, response-side canary checking, model routing) are tested libraries the default runtime does not invoke -- they detect nothing until you wire them.
-- Layer 1-2 injection scanning coverage varies by surface: user messages are wrapped but not pattern-scanned; remote/MCP content is scanned without Layer 2 decoding.
+- Several shipped detectors (behavioral baselines, collusion, correction drift, sequence monitoring, response-side canary checking) are tested libraries the default runtime does not invoke -- they detect nothing until you wire them. The model router is likewise initialized but not consulted by the LLM client until you wire it.
+- Layer 1-2 injection scanning coverage varies by surface: user messages are wrapped only on the resolve and premise paths and never pattern-scanned; remote/MCP content is scanned without Layer 2 decoding.
 - Heuristic classifiers (content policy, override detection) are regex/keyword based -- they reduce risk, they do not eliminate it.
 - The audit trail is tamper-evident within a run, not tamper-proof; output signing is symmetric HMAC, not third-party non-repudiation.
 - PII redaction is a harm-reduction layer, not a GDPR/CCPA compliance guarantee.
