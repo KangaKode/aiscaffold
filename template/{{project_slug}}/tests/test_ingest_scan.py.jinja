@@ -111,6 +111,35 @@ class TestFlagVolumeSignal:
         # Default threshold is 10: three hits stay at warning.
         assert _scan_flags(flag_store)[0]["severity"] == "warning"
 
+    def test_hit_survives_losing_the_insert_race(self, flag_store, monkeypatch):
+        """Regression: when a concurrent scan created the flag between
+        record_flag_hit's read and its insert (whose cooldown then
+        returned False), the losing hit vanished -- no counter bump, no
+        last_seen refresh, no escalation progress. The loser must
+        re-read and land its hit as an update."""
+        from {{project_slug}}.learning import flags as flags_module
+
+        real_insert = flags_module.insert_flag_once
+
+        def losing_insert(store, flag_type, subject_id, tenant_id,
+                          detail, severity="warning"):
+            # Another scanner wins the first insert...
+            real_insert(store, flag_type, subject_id, tenant_id,
+                        {"hits": 1, "last_seen": "earlier"}, severity)
+            # ...so this call's own cooldown suppresses it.
+            return False
+
+        monkeypatch.setattr(flags_module, "insert_flag_once", losing_insert)
+        inserted = flags_module.record_flag_hit(
+            flag_store, "user_message_injection", "chat", "default",
+            {"patterns": ["system_role"]},
+        )
+        assert inserted is False
+        flags = _scan_flags(flag_store)
+        assert len(flags) == 1
+        detail = json.loads(flags[0]["detail_json"])
+        assert detail["hits"] == 2  # the losing hit still landed
+
 
 class TestScanLoopResponsiveness:
     async def test_timer_ticks_while_flag_store_is_slow(

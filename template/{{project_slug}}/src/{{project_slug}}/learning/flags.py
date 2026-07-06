@@ -129,8 +129,8 @@ def record_flag_hit(
     insert_flag_once: storage errors are logged, never raised.
     Returns True when a new row was inserted.
     """
-    try:
-        rows = store.query(
+    def _unresolved_rows():
+        return store.query(
             "integrity_flags",
             {
                 "flag_type": flag_type,
@@ -139,6 +139,9 @@ def record_flag_hit(
                 "resolved": 0,
             },
         )
+
+    try:
+        rows = _unresolved_rows()
     except Exception as exc:
         # Fail toward "already flagged" so a broken store cannot cause
         # unbounded duplicate inserts (same posture as the cooldown).
@@ -147,10 +150,23 @@ def record_flag_hit(
 
     now = datetime.now().isoformat()
     if not rows:
-        return insert_flag_once(
+        if insert_flag_once(
             store, flag_type, subject_id, tenant_id,
             {**detail, "hits": 1, "last_seen": now}, severity,
-        )
+        ):
+            return True
+        # Lost the insert race: a concurrent scan created the flag
+        # between our read and the insert's own cooldown check. Re-read
+        # and fall through to the update path so this hit still lands
+        # in the counter instead of being silently dropped.
+        try:
+            rows = _unresolved_rows()
+        except Exception as exc:
+            logger.warning(f"[Flags] Hit-record re-read failed: {exc}")
+            return False
+        if not rows:
+            # Not a race -- the insert itself failed (already logged).
+            return False
 
     row = max(rows, key=lambda r: r.get("created_at") or "")
     try:
