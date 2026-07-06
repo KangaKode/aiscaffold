@@ -116,7 +116,7 @@ Core agents are **meta-agents** -- they evaluate *how well* the analysis was don
 
 ## What You Get
 
-Every scaffolded project includes **100+ Python source files** across 9 modules:
+Every scaffolded project includes **100+ Python source files** across 10 modules:
 
 ### Three Cost Tiers, One Quality Bar
 
@@ -196,7 +196,8 @@ API route modules expose the core workflow over HTTP:
 - `POST /api/v1/webhooks/agents/{agent_id}` -- HMAC-verified async agent callbacks
 - `GET  /health` -- Liveness
 - `GET  /health/ready` -- Readiness
-- `GET  /metrics` -- Basic operational metrics
+- `GET  /metrics` -- Basic operational metrics (JSON)
+- `GET  /metrics/prometheus` -- Prometheus exposition (optional `[metrics]` extra; 501 with an install hint without it)
 
 ### External Agent Protocol (Any Language)
 
@@ -398,7 +399,20 @@ flowchart LR
 
 - **Dockerfile** -- Multi-stage build, non-root user, health check
 - **docker-compose.yml** -- App + Postgres, one command to run
+- **docker-compose.load.yml** -- Delta-only override for load runs (mock LLM, relaxed rate limit, activity tracking off)
 - **Kubernetes manifests** -- Deployment (security context, replaceable image tag), Service, HPA (auto-scale 2-10 pods), ConfigMap, Secret template
+- **OPERATIONS.md** -- Per-component failure postures (what fails open vs. closed), recovery hierarchy, Prometheus monitoring guide, backup/restore, load-test recipes
+
+### Optional Extras
+
+Optional capabilities install as extras -- never as base dependencies:
+
+| Extra | Installs | Enables |
+|-------|----------|---------|
+| `[postgres]` | psycopg 3 | Learning store Postgres backend (`LEARNING_BACKEND=postgres`) |
+| `[mcp]` | mcp | Real MCP transport for the tool connectors |
+| `[metrics]` | prometheus_client | `GET /metrics/prometheus` exposition (no-op shim without it) |
+| `[load]` | locust | Load harness (`tests/load/locustfile.py` + `make load-test`) |
 
 ### Development Subagents (`.cursor/agents/`)
 
@@ -455,6 +469,7 @@ make demo          # Run round table demo (no API keys needed)
 make new-agent NAME=my_analyst DOMAIN="code review"  # Scaffold a new agent
 make docker-build  # Build Docker image
 make docker-run    # Run with docker-compose
+make load-test     # Start the stack in load mode (mock LLM), then run Locust
 make k8s-deploy    # Apply Kubernetes manifests
 make red-team      # Run red team on all source files
 make lint          # Run linters
@@ -473,7 +488,7 @@ The scaffold itself is validated by a 16-check pipeline:
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
                          ruff lint, bandit security, import validation, red team,
-                         AI checks, agent review, pytest (673 tests, 85% coverage),
+                         AI checks, agent review, pytest (689 tests, 85% coverage),
                          file structure verification
 make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
 ```
@@ -498,6 +513,7 @@ template/{{project_slug}}/
     enforcement/      # Output signing (HMAC attestation)
     harness/          # Session lifecycle (Item/Turn/Thread) + sequence detector
     llm/              # LLM client with prompt caching + model router
+    observability/    # Optional Prometheus metrics (no-op without the [metrics] extra)
     orchestration/    # Round Table + Chat Orchestrator + Agent Router
     security/         # Prompt guard, injection defense, validators, SSRF protection
     learning/         # Feedback, trust, preferences, RAG, corrections, reflections
@@ -505,6 +521,6 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 673 tests across 27 test files
+  tests/              # 693 tests across 28 test files (+ tests/load/ Locust harness)
   evals/              # Eval infrastructure
 ```

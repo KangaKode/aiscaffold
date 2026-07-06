@@ -15,6 +15,11 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+# tests/load/ holds the Locust harness, not pytest tests. Locust is an
+# optional extra ([load]) that default CI does not install, so keep the
+# directory out of collection entirely.
+collect_ignore = ["load"]
+
 from {{ project_slug }}.llm.client import LLMResponse, TokenUsage, CacheablePrompt
 from {{ project_slug }}.orchestration.round_table import (
     AgentAnalysis, AgentChallenge, AgentVote, RoundTableTask, SynthesisResult,

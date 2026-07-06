@@ -1,0 +1,185 @@
+# Operations Guide
+
+Running {{ project_name }} in production: failure postures, recovery,
+monitoring, backups, and load testing. Every statement here matches the
+shipped code -- where a posture matters, the implementing module is named
+so you can verify it.
+
+---
+
+## Severity Matrix: What Fails How
+
+Components degrade independently. Know each one's posture before an
+incident, not during it.
+
+| Component | When it cannot run | Posture | What actually happens |
+|-----------|--------------------|---------|------------------------|
+| Sentinel (semantic injection screen) | No LLM / LLM call fails | **Fails CLOSED** | Sentinel dissents with a blocking observation instead of silently passing (`agents/core/sentinel.py`) |
+| Premise / refusal gate (Phase 0.5) | LLM error, parse failure, or no LLM | **Fails OPEN** | A failed check counts as "proceed" for that agent; with no LLM the gate is skipped. The fail-closed backstop for hostile input is the Sentinel, not this gate (`orchestration/premise.py`) |
+| Corrections API | No learning store / manager not wired | **503** | Every `/api/v1/corrections` endpoint returns 503 so callers can tell "learning not enabled" apart from "no corrections" (`api/routes/corrections.py`) |
+| Learning system init | Store init raises at startup | **Degrades to no-op** | The gateway logs a warning and continues serving; learning features are absent, core deliberation is unaffected (`api/gateway.py`) |
+| Budget tracking | No store (or store write fails) | **In-memory fallback** | Spend accumulates in process memory and **resets to zero on restart** -- a restart silently refills every tenant's budget until a store is attached (`llm/budget_manager.py`) |
+| Rate limiting | Always in-memory | **Per-process, resets on restart** | The sliding window lives in process memory; multiple replicas each enforce the limit independently (`api/middleware/rate_limit.py`) |
+| Extraction detection | `ACTIVITY_TRACKING_ENABLED=false` or store unavailable | **Inert** | Timing analysis, read-volume guard, and burst checks all key off activity events; without tracking they observe nothing. The gateway logs a one-time warning (`api/gateway.py`, `learning/extraction_guard.py`) |
+| Prometheus metrics | `[metrics]` extra not installed | **No-op** | Every record function is inert; `GET /metrics/prometheus` returns 501 with an install hint. Nothing else is affected (`observability/metrics.py`) |
+
+## Recovery Hierarchy
+
+Work top-down; each step is cheaper than the one below it.
+
+1. **Restart the process.** Clears wedged in-memory state (rate-limit
+   windows, chat sessions, cached round-table results). Remember the
+   trade-off above: store-less budget spend resets too.
+2. **Check the learning store.** SQLite: does `data/learning.db` exist
+   and is the disk writable? Postgres: is `LEARNING_POSTGRES_DSN`
+   reachable? A dead store shows up as 503s on corrections and one-time
+   init warnings in the gateway log.
+3. **Check provider keys.** `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+   `GOOGLE_API_KEY` missing or expired makes every LLM call fail; the
+   Sentinel then fails closed and deliberations dissent. `make check`
+   verifies the environment.
+4. **Degrade deliberately with flags.** `LLM_PROVIDER=mock` (offline
+   deterministic client), `ACTIVITY_TRACKING_ENABLED=false` (stop
+   activity writes -- also disables extraction detection),
+   `AUTH_DISABLED=true` (dev only, never production).
+
+---
+
+## What to Monitor
+
+### Prometheus metrics (`GET /metrics/prometheus`, `[metrics]` extra)
+
+| Metric | Labels | Watch for |
+|--------|--------|-----------|
+| `deliberations_total` | `outcome` (completed / refused / failed) | Rising `failed` ratio; a spike in `refused` means the premise gate is turning work away |
+| `deliberation_duration_seconds` | -- | p95 creep (histogram buckets reach 300s) |
+| `phase_duration_seconds` | `phase` | Which phase is eating the time budget (populated by per-phase audit events) |
+| `llm_calls_total` | `provider`, `model` | Unexpected provider/model mix after config changes |
+| `llm_tokens_total` | `direction` (input / output) | Input-token growth = prompt bloat |
+| `llm_cost_dollars_total` | -- | Spend rate (all tenants combined) |
+| `corrections_lifecycle_total` | `action` (propose / approve / reject / retire / revalidate) | Approvals without proposals, mass retirements |
+
+The endpoint is authenticated with the **same bearer API key as the
+rest of the API**. That is a deliberate simplicity trade-off: your
+scrape infrastructure holds the application key. If that is not
+acceptable, add a dedicated `METRICS_API_KEY` check to
+`api/routes/health.py` -- it is a five-line extension.
+
+**Multi-worker caveat:** `prometheus_client` keeps its registry per
+process. Under `make serve-prod` (4 uvicorn workers) each scrape hits
+one arbitrary worker and sees only that worker's counts. Run one worker,
+or wire up prometheus_client multiprocess mode
+(`PROMETHEUS_MULTIPROC_DIR` + a shared `CollectorRegistry`) as a
+"you add" extension.
+
+### Per-tenant spend: the `budget_spend` table, NOT metric labels
+
+Tenant is deliberately **not** a Prometheus label: tenant ids are
+unbounded, and every distinct label value becomes a permanent timeseries
+(cardinality explosion). Per-tenant questions go to the store instead:
+
+- `GET /api/v1/budgets/{tenant_id}` -- current spend vs. budget
+- the `budget_spend` table -- one row per LLM response, with model and
+  timestamp, for ad-hoc SQL
+
+### Integrity signals
+
+- `GET /api/v1/activity/anomalies` -- open behavioral integrity flags
+  (timing regularity, read-volume caps, approval-pair dominance)
+- `GET /api/v1/reports/governance?from_date=&to_date=` -- tenant-scoped
+  counts: deliberation outcomes, corrections lifecycle, stale knowledge,
+  integrity flags, budget spend
+
+---
+
+## Backup and Restore
+
+### SQLite (default)
+
+The learning store is a single file (default `data/learning.db`; the
+app database is `data/{{ project_slug }}.db` when `persistence=sqlite`).
+Connections run in **WAL mode** (`PRAGMA journal_mode=WAL`), which means
+live data can sit in `-wal` / `-shm` sidecar files next to the database.
+
+- **Preferred:** `sqlite3 data/learning.db ".backup 'backup.db'"` --
+  safe while the app is running, folds the WAL in.
+- **File copy:** only with the app stopped, and copy the `-wal` and
+  `-shm` files together with the `.db` if they exist.
+- **Restore:** stop the app, replace the file(s), start. Schema
+  migrations are forward-only and idempotent -- an older backup is
+  upgraded on next startup.
+
+### Postgres (`LEARNING_BACKEND=postgres`)
+
+```bash
+pg_dump "$LEARNING_POSTGRES_DSN" --format=custom --file=learning.dump
+pg_restore --clean --if-exists --dbname="$LEARNING_POSTGRES_DSN" learning.dump
+```
+
+The docker-compose Postgres service (when `persistence=postgres`) stores
+data in the `pgdata` volume; back that up on the same schedule.
+
+---
+
+## Load Testing
+
+The harness measures **your stack** -- routing, enforcement, persistence,
+serialization -- not an LLM provider: the load override forces the
+deterministic mock client.
+
+```bash
+pip install '.[load]'
+make load-test        # = docker-compose -f docker-compose.yml -f docker-compose.load.yml up -d
+locust -f tests/load/locustfile.py --host http://localhost:8000
+```
+
+The override (`docker-compose.load.yml`) sets `LLM_PROVIDER=mock`,
+raises `RATE_LIMIT_PER_MINUTE`, and sets `ACTIVITY_TRACKING_ENABLED=false`
+(deliberate: keeps synthetic traffic out of the activity table, and --
+consciously -- disables extraction detection for the run's duration).
+
+### Threshold gating (recipe)
+
+Run Locust headless with CSV output, then fail the run on p95 / error
+rate. Adjust thresholds to your hardware baseline:
+
+```bash
+locust -f tests/load/locustfile.py --host http://localhost:8000 \
+  --headless -u 20 -r 5 -t 2m --csv=load_results
+
+python3 - <<'PY'
+import csv, sys
+MAX_P95_MS, MAX_ERROR_RATE = 2000, 0.01
+with open("load_results_stats.csv") as f:
+    agg = [r for r in csv.DictReader(f) if r["Name"] == "Aggregated"][0]
+p95 = float(agg["95%"])
+requests, failures = int(agg["Request Count"]), int(agg["Failure Count"])
+error_rate = failures / requests if requests else 1.0
+print(f"p95={p95:.0f}ms error_rate={error_rate:.2%}")
+sys.exit(0 if p95 <= MAX_P95_MS and error_rate <= MAX_ERROR_RATE else 1)
+PY
+```
+
+### CI (manual trigger, recipe)
+
+Load runs are on-demand, never per-commit. A minimal
+`workflow_dispatch` job:
+
+```yaml
+name: load-test
+on: workflow_dispatch
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: docker compose -f docker-compose.yml -f docker-compose.load.yml up -d --build
+      - run: pip install '.[load]'
+      - run: |
+          locust -f tests/load/locustfile.py --host http://localhost:8000 \
+            --headless -u 20 -r 5 -t 2m --csv=load_results
+      # threshold check: paste the Python snippet from the recipe above
+      - run: docker compose down
+```

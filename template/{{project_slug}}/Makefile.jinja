@@ -1,7 +1,7 @@
 # {{ project_name }} Development Commands
 # Run 'make help' to see all available targets.
 
-.PHONY: help test test-p0 test-p1 test-arch test-all lint format red-team doctor clean
+.PHONY: help test test-p0 test-p1 test-arch test-all lint format red-team doctor clean load-test
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -157,6 +157,19 @@ docker-test: ## Run tests inside Docker container
 docker-logs: ## Follow application logs
 	docker-compose logs -f app
 
+{% if include_api_gateway -%}
+# =============================================================================
+# LOAD TESTING
+# =============================================================================
+
+load-test: ## Start the stack in load mode (mock LLM, relaxed rate limit), then run Locust by hand
+	docker-compose -f docker-compose.yml -f docker-compose.load.yml up -d
+	@echo ""
+	@echo "Stack is up in load mode (LLM_PROVIDER=mock, activity tracking off)."
+	@echo "Drive traffic with (pip install '.[load]' first):"
+	@echo "  locust -f tests/load/locustfile.py --host http://localhost:8000"
+	@echo "Recipe + pass/fail thresholds: docs/OPERATIONS.md"
+{% endif %}
 # =============================================================================
 # KUBERNETES
 # =============================================================================

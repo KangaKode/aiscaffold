@@ -17,6 +17,7 @@ from collections import OrderedDict
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ...llm import create_client
+from ...observability.metrics import record_deliberation
 from ...orchestration.deliberation_audit import audited_round_table
 from ...orchestration.round_table import (
     RoundTable,
@@ -230,6 +231,10 @@ async def submit_task(
         metrics["total_agent_calls"] += len(agents) * 3
 
         pcr = result.premise_challenge
+        record_deliberation(
+            "refused" if pcr is not None else "completed",
+            result.duration_seconds,
+        )
         response = RoundTableResultResponse(
             task_id=task_id,
             status="refused" if pcr is not None else "completed",
@@ -289,6 +294,7 @@ async def submit_task(
 
     except Exception as e:
         metrics["tasks_failed"] += 1
+        record_deliberation("failed", 0.0)
         logger.error(f"[RoundTableAPI] Task {task_id} failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,

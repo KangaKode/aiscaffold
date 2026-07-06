@@ -36,6 +36,7 @@ import uuid
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 
+from ..observability.metrics import record_phase
 from ..security.reasoning_chain_hash import compute_chain_hash
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,13 @@ class DeliberationAuditor:
         Record one audit event. Fire-and-forget: exceptions are logged,
         never raised. Extra keyword arguments become detail_json after
         filtering (see _clean_detail -- no free text).
+
+        Events carrying a phase and a duration also feed the optional
+        phase_duration_seconds Prometheus histogram (no-op without the
+        [metrics] extra) -- store or no store.
         """
+        if phase and duration_seconds > 0:
+            record_phase(phase, duration_seconds)
         if self._store is None:
             logger.debug("[DeliberationAudit] No store configured; event dropped")
             return

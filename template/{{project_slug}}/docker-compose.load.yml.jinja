@@ -1,0 +1,24 @@
+# {{ project_name }} - Load-testing override (DELTA ONLY)
+#
+# Layered on top of the base compose file -- never used alone:
+#   docker-compose -f docker-compose.yml -f docker-compose.load.yml up -d
+#
+# Then drive traffic with the Locust harness (pip install '.[load]'):
+#   locust -f tests/load/locustfile.py --host http://localhost:8000
+#
+# See docs/OPERATIONS.md for the full load-test recipe.
+
+services:
+  app:
+    environment:
+      # Deterministic offline LLM: zero cost, no API keys, stable latency,
+      # so the harness measures YOUR stack, not a provider's.
+      - LLM_PROVIDER=mock
+      # The per-IP limiter would throttle a single Locust host immediately.
+      - RATE_LIMIT_PER_MINUTE=100000
+      # DELIBERATE for load runs: skips the per-request activity_events
+      # write so storage does not fill with synthetic traffic. NOTE: this
+      # also disables extraction detection (timing analysis, read-volume
+      # guard) for the duration of the run. Never carry this into
+      # production configuration.
+      - ACTIVITY_TRACKING_ENABLED=false

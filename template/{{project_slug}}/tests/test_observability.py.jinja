@@ -1,0 +1,194 @@
+"""Tests for optional Prometheus metrics -- the no-op shim (absent path),
+the present path (skipped unless prometheus_client is importable), the
+LLM_PROVIDER=mock factory branch, and the metrics route (auth + 501)."""
+
+import os
+
+import pytest
+
+from {{project_slug}}.observability import metrics as obs_metrics
+from {{project_slug}}.llm import MockLLMClient, create_client
+
+
+def _record_everything():
+    """Call every public record function once."""
+    obs_metrics.record_deliberation("completed", 12.5)
+    obs_metrics.record_deliberation("failed", 0.0)
+    obs_metrics.record_phase("analysis", 3.2)
+    obs_metrics.record_phase("", 3.2)  # empty phase is ignored
+    obs_metrics.record_llm_call(
+        "anthropic", "some-model", input_tokens=100, output_tokens=50, cost_usd=0.01
+    )
+    obs_metrics.record_correction_lifecycle("approve")
+
+
+# =============================================================================
+# SHIM: absent path (flag forced off -- exercised even when the extra IS
+# installed, so the no-op path is covered on every run)
+# =============================================================================
+
+
+class TestShimAbsentPath:
+    def test_record_functions_are_noops_without_prometheus(self, monkeypatch):
+        monkeypatch.setattr(obs_metrics, "PROMETHEUS_AVAILABLE", False)
+        _record_everything()  # must not raise
+
+    def test_render_returns_empty_bytes_without_prometheus(self, monkeypatch):
+        monkeypatch.setattr(obs_metrics, "PROMETHEUS_AVAILABLE", False)
+        assert obs_metrics.render_prometheus() == b""
+
+    def test_noop_instrument_supports_full_chain(self):
+        noop = obs_metrics._NoopInstrument()
+        assert noop.labels(outcome="x") is noop
+        noop.inc()
+        noop.inc(5)
+        noop.observe(1.5)
+
+    def test_module_imports_cleanly_and_exposes_flag(self):
+        assert isinstance(obs_metrics.PROMETHEUS_AVAILABLE, bool)
+        assert "text/plain" in obs_metrics.PROMETHEUS_CONTENT_TYPE
+
+
+# =============================================================================
+# PRESENT PATH (only when prometheus_client is importable)
+# =============================================================================
+
+
+class TestPresentPath:
+    def test_recorded_values_appear_in_exposition(self):
+        pytest.importorskip("prometheus_client")
+        assert obs_metrics.PROMETHEUS_AVAILABLE is True
+        _record_everything()
+        payload = obs_metrics.render_prometheus().decode("utf-8")
+        assert "deliberations_total" in payload
+        assert "deliberation_duration_seconds" in payload
+        assert "phase_duration_seconds" in payload
+        assert "llm_calls_total" in payload
+        assert "llm_tokens_total" in payload
+        assert "llm_cost_dollars_total" in payload
+        assert "corrections_lifecycle_total" in payload
+
+    def test_no_unbounded_labels_in_exposition(self):
+        pytest.importorskip("prometheus_client")
+        _record_everything()
+        payload = obs_metrics.render_prometheus().decode("utf-8")
+        for banned in ("tenant_id=", "user_id=", "session_id=", "correlation_id="):
+            assert banned not in payload
+
+
+# =============================================================================
+# FACTORY: LLM_PROVIDER=mock
+# =============================================================================
+
+
+class TestMockProviderBranch:
+    def test_env_var_selects_mock_client(self, monkeypatch):
+        monkeypatch.setenv("LLM_PROVIDER", "mock")
+        client = create_client()
+        assert isinstance(client, MockLLMClient)
+        assert client.provider == "mock"
+
+    def test_explicit_mock_provider(self, monkeypatch):
+        monkeypatch.delenv("LLM_PROVIDER", raising=False)
+        client = create_client(provider="mock")
+        assert isinstance(client, MockLLMClient)
+
+
+# =============================================================================
+# LOAD HARNESS: excluded from pytest collection
+# =============================================================================
+
+
+class TestLoadDirExcluded:
+    def test_conftest_ignores_load_dir(self):
+        from tests import conftest
+
+        assert "load" in getattr(conftest, "collect_ignore", [])
+
+    def test_locustfile_exists_but_is_not_test_prefixed(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        locustfile = os.path.join(here, "load", "locustfile.py")
+        assert os.path.isfile(locustfile)
+        assert not os.path.basename(locustfile).startswith("test_")
+
+
+{% if include_api_gateway -%}
+# =============================================================================
+# ROUTE: GET /metrics/prometheus (auth + 501 + 200)
+# =============================================================================
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from {{project_slug}}.api.routes import health
+
+
+def _make_app() -> FastAPI:
+    app = FastAPI()
+    app.include_router(health.router)
+    return app
+
+
+class TestPrometheusRoute:
+    def test_missing_bearer_returns_401(self, monkeypatch):
+        monkeypatch.setenv("API_KEY", "route-test-key")
+        client = TestClient(_make_app())
+        response = client.get("/metrics/prometheus")
+        assert response.status_code == 401
+
+    def test_wrong_bearer_returns_403(self, monkeypatch):
+        monkeypatch.setenv("API_KEY", "route-test-key")
+        client = TestClient(_make_app())
+        response = client.get(
+            "/metrics/prometheus",
+            headers={"Authorization": "Bearer wrong-key"},
+        )
+        assert response.status_code == 403
+
+    def test_returns_501_with_hint_when_prometheus_absent(self, monkeypatch):
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.setattr(obs_metrics, "PROMETHEUS_AVAILABLE", False)
+        client = TestClient(_make_app())
+        response = client.get("/metrics/prometheus")
+        assert response.status_code == 501
+        assert "[metrics]" in response.json()["detail"]
+
+    def test_returns_exposition_when_prometheus_present(self, monkeypatch):
+        pytest.importorskip("prometheus_client")
+        monkeypatch.delenv("API_KEY", raising=False)
+        obs_metrics.record_deliberation("completed", 1.0)
+        client = TestClient(_make_app())
+        response = client.get("/metrics/prometheus")
+        assert response.status_code == 200
+        assert "deliberations_total" in response.text
+
+    def test_existing_json_metrics_contract_untouched(self, monkeypatch):
+        """GET /metrics keeps its JSON shape regardless of the extra."""
+        monkeypatch.delenv("API_KEY", raising=False)
+        app = _make_app()
+
+        class _Registry:
+            count = 0
+
+            def get_all_entries(self):
+                return []
+
+        app.state.registry = _Registry()
+        app.state.metrics = {
+            "tasks_completed": 0,
+            "tasks_failed": 0,
+            "total_duration": 0.0,
+            "total_agent_calls": 0,
+        }
+        response = TestClient(app).get("/metrics")
+        assert response.status_code == 200
+        body = response.json()
+        for key in (
+            "tasks_completed",
+            "tasks_failed",
+            "average_duration_seconds",
+            "agents_registered",
+            "total_agent_calls",
+        ):
+            assert key in body
+{% endif %}
