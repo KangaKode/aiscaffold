@@ -19,7 +19,9 @@ expressed in terms of your own API surface -- no separate activity-type
 taxonomy to maintain. Matches are written to integrity_flags for human
 review; nothing is blocked automatically.
 
-Keep this file under 250 lines.
+Keep this file under 300 lines. (Raised from 250: the detector set
+shipped slightly over its original budget; new detectors go in a
+sibling module.)
 """
 
 import json

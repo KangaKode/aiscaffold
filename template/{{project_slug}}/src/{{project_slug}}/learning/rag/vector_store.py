@@ -17,7 +17,9 @@ Security:
   - Documents are sanitized before indexing (size-limited)
   - Project isolation prevents cross-project data leakage
 
-Keep this file under 250 lines.
+Keep this file under 400 lines. (Raised from 250: the Chroma
+persistence-preservation logic and the in-memory fallback both live
+here; if a third backend is added, split the adapters apart.)
 """
 
 import logging

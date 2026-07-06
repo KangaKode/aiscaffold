@@ -11,7 +11,9 @@ Uses a pluggable GraduationRule protocol. Ships with one built-in rule:
 Projects add domain-specific rules by implementing the protocol.
 Graduation ALWAYS requires user confirmation via CheckInManager.
 
-Keep this file under 200 lines.
+Keep this file under 300 lines. (Raised from 200: the graduation API
+support code grew it to ~250; pluggable rules move to a sibling module
+if it keeps growing.)
 """
 
 import logging

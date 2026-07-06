@@ -13,7 +13,9 @@ All round-table result access is via duck typing with getattr().
 Reflections are capped (per session and per tenant per day) and persisted
 to the reflections table; read them back via GET /api/v1/reflections.
 
-Keep this file under 250 lines.
+Keep this file under 300 lines. (Raised from 250: the four detector
+functions live here by design; if another detector is added, move the
+detectors to a sibling module.)
 """
 
 import json
