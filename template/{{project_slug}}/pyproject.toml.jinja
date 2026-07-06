@@ -22,9 +22,7 @@ dependencies = [
     "anthropic>=0.40",
     "openai>=1.50",
 {% endif -%}
-{% if project_type == 'web-app' -%}
-    "nicegui>=2.0",
-{% elif project_type == 'cli-tool' -%}
+{% if project_type == 'cli-tool' -%}
     "typer>=0.12",
     "rich>=13.0",
 {% endif -%}
