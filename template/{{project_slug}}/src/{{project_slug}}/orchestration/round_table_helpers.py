@@ -59,12 +59,21 @@ async def phase_synthesis(
     )
     try:
         from ..llm.json_parser import extract_json
+        from ..llm.response_guard import llm_call_failed
 
         response = await llm.call(prompt=prompt, role="synthesis", temperature=0.2)
 
         if not response or not response.content:
             logger.warning("[RoundTable] Synthesis returned empty response")
             return SynthesisResult(recommended_direction="Synthesis returned empty response")
+
+        if llm_call_failed(response):
+            # Never surface the client's error string as the recommended
+            # direction -- it flows into check-ins and API responses.
+            logger.warning("[RoundTable] Synthesis LLM call failed -- using fallback")
+            return SynthesisResult(
+                recommended_direction="Synthesis failed -- review individual analyses"
+            )
 
         data = extract_json(response.content)
         if data is None:
