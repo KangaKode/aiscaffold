@@ -130,8 +130,9 @@ def validate_url(
     Limitation (TOCTOU):
         Hostname resolution occurs at validation time. A hostname could resolve
         to a public IP during validation but to a private IP at connection time
-        (DNS rebinding). For highest assurance, validate at connection time or
-        use IP allowlists.
+        (DNS rebinding). revalidate_url_at_connect() narrows (but cannot
+        close) that window; for highest assurance use IP pinning or
+        allowlists at the transport.
     """
     if not url or not url.strip():
         raise ValidationError(f"{field_name} cannot be empty")
@@ -165,6 +166,74 @@ def validate_url(
 
     logger.debug(f"[Validators] URL validated: {parsed.scheme}://{hostname}")
     return url.strip()
+
+
+def revalidate_url_at_connect(url: str, field_name: str = "url") -> None:
+    """
+    Connect-time DNS re-validation (anti-rebinding).
+
+    Re-resolves the URL's hostname immediately before an outbound request
+    and raises ValidationError if it now resolves to a private, loopback,
+    or link-local address -- catching hostnames that passed validate_url
+    earlier but were re-pointed at internal targets since (DNS rebinding).
+
+    Literal IPs and "localhost" are deliberately NOT re-checked here:
+    they cannot rebind, and whether they are allowed at all was decided
+    when the URL was admitted (validate_url at registration blocks them;
+    directly constructed dev clients may point at localhost on purpose).
+
+    Unlike registration-time validation, this path fails CLOSED on a
+    resolver error: if the hostname cannot be re-resolved, the request
+    is refused (the connect would fail anyway if DNS were truly down,
+    and passing an unverifiable hostname would defeat the re-check).
+
+    Residual TOCTOU (honest limitation): this check and the subsequent
+    connect are still two separate resolutions, so a rebind in the gap
+    between them wins. Callers should re-check before every connect
+    attempt (agents/remote.py does), which narrows the exposure to the
+    re-check-to-connect gap of each attempt; eliminating it entirely
+    needs IP pinning at the transport layer.
+    """
+    import socket
+
+    parsed = urlparse(url.strip())
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValidationError(f"{field_name} must include a hostname")
+    try:
+        ipaddress.ip_address(hostname)
+        return  # literal IP: cannot rebind; admission policy already ruled
+    except ValueError:
+        pass
+    if hostname.lower() == "localhost":
+        return  # cannot rebind; admission policy already ruled
+    try:
+        results = socket.getaddrinfo(
+            hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+        )
+    except socket.gaierror as e:
+        logger.warning(
+            f"[Validators] Connect-time re-resolution of {hostname} failed "
+            f"({e}); failing closed"
+        )
+        raise ValidationError(
+            f"{field_name} could not be re-resolved at connect time; "
+            "refusing to connect (fail closed)"
+        ) from e
+    for _family, _socktype, _proto, _canonname, sockaddr in results:
+        try:
+            addr = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            logger.warning(
+                f"[Validators] DNS rebinding blocked at connect time: "
+                f"{hostname} resolved to {sockaddr[0]}"
+            )
+            raise ValidationError(
+                f"{field_name} now resolves to a private/internal address "
+                "(possible DNS rebinding); refusing to connect"
+            )
 
 
 def validate_list_size(

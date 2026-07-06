@@ -7,9 +7,10 @@ Defines a minimal storage protocol plus two reference backends:
     (install with the 'postgres' extra: pip install "<project>[postgres]")
 
 The protocol is intentionally tiny (ensure_schema / insert / query /
-update / count / delete) so enterprise users can implement it against
-anything (MySQL, DynamoDB, an internal storage service) without touching
-callers.
+update / update_if / count / delete) so enterprise users can implement
+it against anything (MySQL, DynamoDB, an internal storage service)
+without touching callers. update_if and sum_amount are optional,
+feature-detected extensions (see the LearningStore docstring).
 
 Table names and columns are defined ONCE in tables.py (TABLE_COLUMNS).
 Every SQL identifier is validated against that allowlist before
@@ -20,7 +21,7 @@ in the schema_version table).
 Backend selection: get_learning_store() reads LEARNING_BACKEND
 ("sqlite" default | "postgres") and LEARNING_POSTGRES_DSN.
 
-Keep this file under 400 lines.
+Keep this file under 500 lines.
 """
 
 import logging
@@ -50,10 +51,17 @@ class LearningStore(Protocol):
     """
     Minimal storage interface for the extended learning tables.
 
-    Implement these six methods against any datastore to bring your own
-    backend (the scaffold ships SQLite and Postgres reference
-    implementations). Rows are plain dicts keyed by column name; JSON
-    columns (*_json) are stored as serialized strings by callers.
+    Required core (bring your own backend by implementing these against
+    any datastore): ensure_schema, insert, query, update, count, delete.
+    The scaffold ships SQLite and Postgres reference implementations.
+    Rows are plain dicts keyed by column name; JSON columns (*_json)
+    are stored as serialized strings by callers.
+
+    update_if and sum_amount are OPTIONAL extensions: runtime callers
+    feature-detect them (getattr) and fall back to core methods, so
+    custom backends without them keep working -- but update_if is
+    declared on this Protocol, so static type checkers flag backends
+    that omit it; implement it (one conditional UPDATE) to satisfy both.
     """
 
     def ensure_schema(self) -> None:
@@ -73,6 +81,15 @@ class LearningStore(Protocol):
 
     def update(self, table: str, row_id: str, changes: dict) -> bool:
         """Update the row with the given id. Returns True if a row changed."""
+        ...
+
+    def update_if(
+        self, table: str, row_id: str, changes: dict, expected: dict
+    ) -> bool:
+        """Conditionally update the row with the given id: apply changes
+        only if every expected column still holds its expected value, as
+        one atomic UPDATE. True only when the row matched and changed.
+        Optional extension -- callers feature-detect it (getattr)."""
         ...
 
     def count(self, table: str, filters: dict) -> int:
@@ -158,6 +175,45 @@ def _update_sql(table: str, row_id: str, changes: dict, ph: str) -> tuple[str, l
     # Identifiers allowlist-validated; values parameterized.
     sql = f"UPDATE {table} SET {sets} WHERE id = {ph}"  # nosec B608
     return sql, [*changes.values(), row_id]
+
+
+def _update_if_sql(
+    table: str, row_id: str, changes: dict, expected: dict, ph: str
+) -> tuple[str, list]:
+    _validate_table(table)
+    _validate_columns(table, changes.keys())
+    _validate_columns(table, expected.keys())
+    if not changes:
+        raise ValueError("update_if() requires at least one change")
+    if not expected:
+        raise ValueError("update_if() requires at least one expected column")
+    if any(v is None for v in expected.values()):
+        raise ValueError(
+            "update_if() expected values cannot be None: SQL 'col = ?' "
+            "never matches NULL, so the update would silently never apply"
+        )
+    sets = ", ".join(f"{c} = {ph}" for c in changes)
+    conditions = " AND ".join(f"{c} = {ph}" for c in expected)
+    # Identifiers allowlist-validated; values parameterized.
+    sql = (
+        f"UPDATE {table} SET {sets}"  # nosec B608
+        f" WHERE id = {ph} AND {conditions}"
+    )
+    return sql, [*changes.values(), row_id, *expected.values()]
+
+
+def _sum_sql(
+    table: str, column: str, filters: dict, since_iso: str, ph: str
+) -> tuple[str, list]:
+    _validate_table(table)
+    _validate_columns(table, [column])
+    where, values = _where_sql(table, filters, ph)
+    if since_iso:
+        _validate_columns(table, ["created_at"])
+        where += (" AND " if where else " WHERE ") + f"created_at >= {ph}"
+        values = [*values, since_iso]
+    # Identifiers allowlist-validated; values parameterized.
+    return f"SELECT SUM({column}) AS s FROM {table}{where}", values  # nosec B608
 
 
 def _count_sql(table: str, filters: dict, ph: str) -> tuple[str, list]:
@@ -273,12 +329,37 @@ class SqliteLearningStore:
         finally:
             conn.close()
 
+    def update_if(
+        self, table: str, row_id: str, changes: dict, expected: dict
+    ) -> bool:
+        sql, values = _update_if_sql(table, row_id, changes, expected, "?")
+        conn = self._connect()
+        try:
+            cursor = conn.execute(sql, values)
+            conn.commit()
+            return cursor.rowcount == 1
+        finally:
+            conn.close()
+
     def count(self, table: str, filters: dict) -> int:
         sql, values = _count_sql(table, filters, "?")
         conn = self._connect()
         try:
             row = conn.execute(sql, values).fetchone()
             return row["n"] if row else 0
+        finally:
+            conn.close()
+
+    def sum_amount(
+        self, table: str, column: str, filters: dict, since_iso: str = ""
+    ) -> float:
+        """SQL SUM over an allowlisted numeric column (optional aggregate:
+        callers feature-detect it and fall back to fetch-and-sum)."""
+        sql, values = _sum_sql(table, column, filters, since_iso, "?")
+        conn = self._connect()
+        try:
+            row = conn.execute(sql, values).fetchone()
+            return float(row["s"] or 0.0) if row else 0.0
         finally:
             conn.close()
 
@@ -352,11 +433,30 @@ class PostgresLearningStore:
             cur.execute(sql, values)
             return cur.rowcount > 0
 
+    def update_if(
+        self, table: str, row_id: str, changes: dict, expected: dict
+    ) -> bool:
+        sql, values = _update_if_sql(table, row_id, changes, expected, "%s")
+        with self._conn.cursor() as cur:
+            cur.execute(sql, values)
+            return cur.rowcount == 1
+
     def count(self, table: str, filters: dict) -> int:
         sql, values = _count_sql(table, filters, "%s")
         with self._conn.cursor() as cur:
             cur.execute(sql, values)
             return cur.fetchone()["n"]
+
+    def sum_amount(
+        self, table: str, column: str, filters: dict, since_iso: str = ""
+    ) -> float:
+        """SQL SUM over an allowlisted numeric column (optional aggregate:
+        callers feature-detect it and fall back to fetch-and-sum)."""
+        sql, values = _sum_sql(table, column, filters, since_iso, "%s")
+        with self._conn.cursor() as cur:
+            cur.execute(sql, values)
+            row = cur.fetchone()
+            return float(row["s"] or 0.0) if row else 0.0
 
     def delete(self, table: str, row_id: str) -> bool:
         sql, values = _delete_sql(table, row_id, "%s")

@@ -14,11 +14,20 @@ old ones. Configurable decay rate, floor (0.1), and ceiling (0.95).
 The ChatOrchestrator uses trust scores to prefer higher-trust agents.
 The RoundTable can weight synthesis by trust.
 
-Keep this file under 200 lines.
+Concurrency: update_from_signal reads and writes inside one BEGIN
+IMMEDIATE transaction on a single connection, so concurrent updates
+serialize instead of losing each other's writes (the previous
+read-modify-write across two connections dropped signals under
+concurrency). This lives in the legacy learning stack (schema.py),
+which is SQLite-only by design -- the locking here is SQLite's write
+lock, not a portable-store guarantee.
+
+Keep this file under 250 lines.
 """
 
 import json
 import logging
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -78,52 +87,81 @@ class AgentTrustManager:
         Proper EMA: new_score = alpha * target + (1 - alpha) * current
         Where target is the signal-implied trust level.
         Clamped to [floor, ceiling].
+
+        The read and the write share one BEGIN IMMEDIATE transaction, so
+        SQLite's write lock serializes concurrent updates: no signal is
+        computed against a stale row and silently overwritten.
         """
         if not signal.agent_id:
             return AgentTrustScore(agent_id="", project_id=signal.project_id)
 
-        current = self.get_trust_entry(signal.agent_id, signal.project_id)
-
-        if signal.signal_type == SignalType.RATE and signal.confidence:
-            target = signal.confidence
-        else:
-            target = SIGNAL_TARGETS.get(signal.signal_type, current.trust_score)
-
-        new_score = self._alpha * target + (1 - self._alpha) * current.trust_score
-        new_score = max(self._floor, min(self._ceiling, new_score))
-
-        positive = signal.signal_type in (SignalType.ACCEPT, SignalType.RATE)
-        new_count = current.interaction_count + 1
-        new_rate = (
-            (current.acceptance_rate * current.interaction_count + (1.0 if positive else 0.0))
-            / new_count
-        )
-
         conn = get_connection(self._db_path)
         try:
-            conn.execute(
-                """INSERT INTO agent_trust
-                   (agent_id, project_id, trust_score, interaction_count,
-                    acceptance_rate, last_signal_type, metadata_json, last_updated)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(project_id, agent_id) DO UPDATE SET
-                    trust_score = excluded.trust_score,
-                    interaction_count = excluded.interaction_count,
-                    acceptance_rate = excluded.acceptance_rate,
-                    last_signal_type = excluded.last_signal_type,
-                    last_updated = excluded.last_updated""",
-                (
-                    signal.agent_id,
-                    signal.project_id,
-                    new_score,
-                    new_count,
-                    new_rate,
-                    signal.signal_type,
-                    json.dumps(current.metadata, default=str),
-                    datetime.now().isoformat(),
-                ),
-            )
-            conn.commit()
+            # Explicit transaction control: BEGIN IMMEDIATE takes the
+            # write lock BEFORE the read, so a concurrent updater blocks
+            # (up to SQLite's busy timeout) instead of racing us.
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM agent_trust"
+                    " WHERE project_id = ? AND agent_id = ?",
+                    (signal.project_id, signal.agent_id),
+                ).fetchone()
+                current = self._entry_from_row(
+                    row, signal.agent_id, signal.project_id
+                )
+
+                if signal.signal_type == SignalType.RATE and signal.confidence:
+                    target = signal.confidence
+                else:
+                    target = SIGNAL_TARGETS.get(
+                        signal.signal_type, current.trust_score
+                    )
+
+                new_score = (
+                    self._alpha * target + (1 - self._alpha) * current.trust_score
+                )
+                new_score = max(self._floor, min(self._ceiling, new_score))
+
+                positive = signal.signal_type in (SignalType.ACCEPT, SignalType.RATE)
+                new_count = current.interaction_count + 1
+                new_rate = (
+                    current.acceptance_rate * current.interaction_count
+                    + (1.0 if positive else 0.0)
+                ) / new_count
+
+                conn.execute(
+                    """INSERT INTO agent_trust
+                       (agent_id, project_id, trust_score, interaction_count,
+                        acceptance_rate, last_signal_type, metadata_json, last_updated)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(project_id, agent_id) DO UPDATE SET
+                        trust_score = excluded.trust_score,
+                        interaction_count = excluded.interaction_count,
+                        acceptance_rate = excluded.acceptance_rate,
+                        last_signal_type = excluded.last_signal_type,
+                        last_updated = excluded.last_updated""",
+                    (
+                        signal.agent_id,
+                        signal.project_id,
+                        new_score,
+                        new_count,
+                        new_rate,
+                        signal.signal_type,
+                        json.dumps(current.metadata, default=str),
+                        datetime.now().isoformat(),
+                    ),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    # A failed ROLLBACK must not mask the original error;
+                    # the connection is closed in the finally block anyway.
+                    logger.warning("[AgentTrust] ROLLBACK failed after error")
+                raise
 
             logger.debug(
                 f"[AgentTrust] {signal.agent_id}: "
@@ -158,26 +196,29 @@ class AgentTrustManager:
                 "SELECT * FROM agent_trust WHERE project_id = ? AND agent_id = ?",
                 (project_id, agent_id),
             ).fetchone()
-
-            if row is None:
-                return AgentTrustScore(
-                    agent_id=agent_id, project_id=project_id,
-                    trust_score=DEFAULT_TRUST,
-                )
-
-            data = dict_from_row(row)
-            return AgentTrustScore(
-                agent_id=data["agent_id"],
-                project_id=data.get("project_id", project_id),
-                trust_score=data.get("trust_score", DEFAULT_TRUST),
-                interaction_count=data.get("interaction_count", 0),
-                acceptance_rate=data.get("acceptance_rate", 0.5),
-                last_signal_type=data.get("last_signal_type", ""),
-                metadata=data.get("metadata", {}),
-                last_updated=data.get("last_updated", ""),
-            )
+            return self._entry_from_row(row, agent_id, project_id)
         finally:
             conn.close()
+
+    @staticmethod
+    def _entry_from_row(row, agent_id: str, project_id: str) -> AgentTrustScore:
+        """Build an AgentTrustScore from a row (or the neutral default)."""
+        if row is None:
+            return AgentTrustScore(
+                agent_id=agent_id, project_id=project_id,
+                trust_score=DEFAULT_TRUST,
+            )
+        data = dict_from_row(row)
+        return AgentTrustScore(
+            agent_id=data["agent_id"],
+            project_id=data.get("project_id", project_id),
+            trust_score=data.get("trust_score", DEFAULT_TRUST),
+            interaction_count=data.get("interaction_count", 0),
+            acceptance_rate=data.get("acceptance_rate", 0.5),
+            last_signal_type=data.get("last_signal_type", ""),
+            metadata=data.get("metadata", {}),
+            last_updated=data.get("last_updated", ""),
+        )
 
     def get_all_scores(self, project_id: str = "default") -> dict[str, float]:
         """Get all trust scores for a project. Returns {agent_id: score}."""
@@ -199,19 +240,8 @@ class AgentTrustManager:
                 "SELECT * FROM agent_trust WHERE project_id = ? ORDER BY trust_score DESC",
                 (project_id,),
             ).fetchall()
-            results = []
-            for r in rows:
-                data = dict_from_row(r)
-                results.append(AgentTrustScore(
-                    agent_id=data["agent_id"],
-                    project_id=data.get("project_id", project_id),
-                    trust_score=data.get("trust_score", DEFAULT_TRUST),
-                    interaction_count=data.get("interaction_count", 0),
-                    acceptance_rate=data.get("acceptance_rate", 0.5),
-                    last_signal_type=data.get("last_signal_type", ""),
-                    metadata=data.get("metadata", {}),
-                    last_updated=data.get("last_updated", ""),
-                ))
-            return results
+            return [
+                self._entry_from_row(r, "", project_id) for r in rows
+            ]
         finally:
             conn.close()

@@ -19,8 +19,13 @@ within one sampling period.
 Recording is fire-and-forget: ActivityTracker.record() swallows storage
 errors, and this middleware additionally guards the whole hook so
 tracking can never fail a request.
+
+The tracker's SQLite writes and the sampled detection pass are
+synchronous; both run via asyncio.to_thread so they never block the
+event loop under concurrent traffic.
 """
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -63,7 +68,9 @@ class ActivityTrackingMiddleware(BaseHTTPMiddleware):
             tracker = getattr(request.app.state, "activity_tracker", None)
             if tracker is not None:
                 user_id = _user_id_from_request(request)
-                tracker.record(
+                # Blocking SQLite write: off the event loop.
+                await asyncio.to_thread(
+                    tracker.record,
                     route=request.url.path,
                     method=request.method,
                     status_code=response.status_code,
@@ -72,7 +79,9 @@ class ActivityTrackingMiddleware(BaseHTTPMiddleware):
                 self._records_since_check += 1
                 if self._records_since_check >= _check_sample_n():
                     self._records_since_check = 0
-                    self._run_checks(request, tracker, user_id)
+                    await asyncio.to_thread(
+                        self._run_checks, request, tracker, user_id
+                    )
         except Exception as exc:
             logger.warning(f"[ActivityMiddleware] recording failed (ignored): {exc}")
         return response

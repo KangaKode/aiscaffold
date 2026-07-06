@@ -91,6 +91,15 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
         "model": "TEXT DEFAULT ''",
         "created_at": "TEXT NOT NULL",
     },
+    # Per-tenant budget caps (added in migration v6 -- one row per tenant,
+    # id == tenant_id). Caps survive restarts alongside the spend ledger.
+    "budget_configs": {
+        "id": "TEXT PRIMARY KEY",
+        "tenant_id": "TEXT NOT NULL DEFAULT 'default'",
+        "max_budget_usd": "REAL DEFAULT 0",
+        "warn_at": "REAL DEFAULT 0.8",
+        "updated_at": "TEXT NOT NULL",
+    },
     "reflections": {
         "id": "TEXT PRIMARY KEY",
         "tenant_id": "TEXT NOT NULL DEFAULT 'default'",
@@ -224,4 +233,8 @@ MIGRATIONS: list[list[str]] = [
         "ALTER TABLE corrections ADD COLUMN last_validated_at TEXT DEFAULT ''",
         "ALTER TABLE corrections ADD COLUMN last_validated_by TEXT DEFAULT ''",
     ],
+    # v6 -- budget_configs: per-tenant budget caps persist alongside the
+    # spend ledger. New table (no frozen-table columns touched): baseline
+    # already creates it on fresh installs; this upgrades existing DBs.
+    _table_statements("budget_configs"),
 ]

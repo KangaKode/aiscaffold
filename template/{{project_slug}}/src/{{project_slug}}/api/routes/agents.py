@@ -18,6 +18,7 @@ Security:
   - All mutation endpoints require API key
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -52,7 +53,8 @@ async def register_agent(
 
     try:
         validate_identifier(registration.name, "agent name")
-        validate_url(registration.base_url, "base_url")
+        # validate_url resolves DNS (blocking getaddrinfo): off the loop.
+        await asyncio.to_thread(validate_url, registration.base_url, "base_url")
         validate_list_size(
             registration.capabilities, "capabilities", max_items=MAX_CAPABILITIES
         )

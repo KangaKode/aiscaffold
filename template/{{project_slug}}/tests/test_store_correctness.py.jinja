@@ -1,0 +1,549 @@
+"""Store-correctness regression tests: the conditional-update primitive
+(update_if) and the correction-lifecycle race it closes, atomic
+agent-trust EMA updates, budget cap persistence + SQL SUM aggregate,
+and thread-safe usage accounting. The connect-time DNS re-validation
+and event-loop responsiveness tests live in test_async_hardening.py."""
+
+import sqlite3
+import threading
+
+import pytest
+
+from {{project_slug}}.learning import lifecycle as lifecycle_module
+from {{project_slug}}.learning.agent_trust import AgentTrustManager
+from {{project_slug}}.learning.corrections import (
+    STATUS_APPROVED,
+    STATUS_REJECTED,
+    STATUS_RETIRED,
+    CorrectionsManager,
+)
+from {{project_slug}}.learning.models import FeedbackSignal, SignalType
+from {{project_slug}}.learning.store import SqliteLearningStore
+from {{project_slug}}.learning.tables import MIGRATIONS, SCHEMA_VERSION_DDL
+from {{project_slug}}.llm.budget_manager import BudgetManager, BudgetStatus
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
+
+
+def propose(mgr, original="limit is 100", corrected="limit is 60",
+            created_by="alice"):
+    return mgr.propose(agent_id="analyst", original_claim=original,
+                       corrected_claim=corrected, reason="",
+                       evidence_level="documented", created_by=created_by)
+
+
+# --- update_if: the conditional-update primitive ------------------------------
+
+
+class TestUpdateIf:
+    def test_applies_only_when_expected_matches(self, store):
+        mgr = CorrectionsManager(store)
+        correction = propose(mgr)
+
+        assert store.update_if(
+            "corrections", correction.id,
+            {"status": STATUS_APPROVED}, {"status": "proposed"},
+        ) is True
+        assert store.query("corrections", {"id": correction.id})[0][
+            "status"
+        ] == STATUS_APPROVED
+
+        # Stale expectation: no write, False returned.
+        assert store.update_if(
+            "corrections", correction.id,
+            {"status": STATUS_REJECTED}, {"status": "proposed"},
+        ) is False
+        assert store.query("corrections", {"id": correction.id})[0][
+            "status"
+        ] == STATUS_APPROVED
+
+    def test_missing_row_returns_false(self, store):
+        assert store.update_if(
+            "corrections", "no-such-id",
+            {"status": STATUS_APPROVED}, {"status": "proposed"},
+        ) is False
+
+    def test_identifiers_are_allowlist_validated(self, store):
+        with pytest.raises(ValueError, match="Unknown table"):
+            store.update_if("users", "x", {"status": "a"}, {"status": "b"})
+        with pytest.raises(ValueError, match="Unknown columns"):
+            store.update_if("corrections", "x", {"sneaky": 1}, {"status": "b"})
+        with pytest.raises(ValueError, match="Unknown columns"):
+            store.update_if("corrections", "x", {"status": "a"}, {"sneaky": 1})
+        with pytest.raises(ValueError, match="at least one change"):
+            store.update_if("corrections", "x", {}, {"status": "b"})
+        with pytest.raises(ValueError, match="at least one expected"):
+            store.update_if("corrections", "x", {"status": "a"}, {})
+
+    def test_none_expected_values_are_rejected(self, store):
+        """SQL 'col = ?' never matches NULL, so expecting None would make
+        the conditional update silently never apply -- refuse it loudly."""
+        with pytest.raises(ValueError, match="cannot be None"):
+            store.update_if(
+                "corrections", "x", {"status": "a"}, {"approved_by": None}
+            )
+
+
+class TestLifecycleRace:
+    """The read-check-write TOCTOU in approve/reject/retire is closed:
+    when the status changes between the pre-check read and the write,
+    the write must lose (ValueError -> 409 at the API), not silently
+    overwrite the concurrent transition."""
+
+    def _race(self, monkeypatch, mgr, store, correction_id, concurrent_status):
+        """Make the pre-check read see the stale row, then apply a
+        concurrent transition before the caller's write lands."""
+        real_get = mgr.get
+
+        def stale_read_then_concurrent_write(cid):
+            result = real_get(cid)
+            store.update("corrections", cid, {"status": concurrent_status})
+            return result
+
+        monkeypatch.setattr(mgr, "get", stale_read_then_concurrent_write)
+        return real_get
+
+    def test_approve_loses_race_to_reject(self, store, monkeypatch):
+        mgr = CorrectionsManager(store)
+        correction = propose(mgr)
+        real_get = self._race(monkeypatch, mgr, store, correction.id,
+                              STATUS_REJECTED)
+
+        with pytest.raises(ValueError, match="concurrent"):
+            mgr.approve(correction.id, approved_by="bob")
+        # The concurrent transition survives; approve did not clobber it.
+        assert real_get(correction.id).status == STATUS_REJECTED
+
+    def test_retire_loses_race_to_prior_retire(self, store, monkeypatch):
+        mgr = CorrectionsManager(store)
+        correction = propose(mgr)
+        mgr.approve(correction.id, approved_by="bob")
+        real_get = self._race(monkeypatch, mgr, store, correction.id,
+                              STATUS_RETIRED)
+
+        with pytest.raises(ValueError, match="concurrent"):
+            mgr.retire(correction.id)
+        assert real_get(correction.id).status == STATUS_RETIRED
+
+    def test_store_without_update_if_falls_back_with_one_warning(
+        self, store, monkeypatch, caplog
+    ):
+        """Bring-your-own-backend contract: a custom store implementing
+        only the original six methods still works (old read-then-write
+        path) and warns exactly once per process."""
+        import logging
+
+        class LegacyStore:
+            """Protocol-minimal wrapper hiding update_if/sum_amount."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def ensure_schema(self):
+                return self._inner.ensure_schema()
+
+            def insert(self, table, row):
+                return self._inner.insert(table, row)
+
+            def query(self, table, filters, order_by="", limit=0):
+                return self._inner.query(table, filters, order_by, limit)
+
+            def update(self, table, row_id, changes):
+                return self._inner.update(table, row_id, changes)
+
+            def count(self, table, filters):
+                return self._inner.count(table, filters)
+
+            def delete(self, table, row_id):
+                return self._inner.delete(table, row_id)
+
+        monkeypatch.setattr(lifecycle_module, "_update_if_missing_warned", False)
+        mgr = CorrectionsManager(LegacyStore(store))
+        first = propose(mgr)
+        second = propose(mgr, original="another claim")
+
+        with caplog.at_level(logging.WARNING):
+            approved = mgr.approve(first.id, approved_by="bob")
+            mgr.reject(second.id, rejected_by="bob")
+
+        assert approved.status == STATUS_APPROVED
+        fallback_warnings = [
+            r for r in caplog.records if "update_if" in r.getMessage()
+        ]
+        assert len(fallback_warnings) == 1  # once per process, not per call
+
+
+# --- Atomic agent-trust EMA ---------------------------------------------------
+
+
+class TestAtomicTrustUpdates:
+    def test_concurrent_signals_lose_no_updates(self, tmp_path):
+        """Regression: the old read-modify-write used two connections,
+        so concurrent update_from_signal calls computed against stale
+        rows and overwrote each other (interaction_count came up short).
+        The single BEGIN IMMEDIATE transaction serializes them."""
+        mgr = AgentTrustManager(db_path=tmp_path / "trust.db")
+        threads, per_thread = 8, 5
+        barrier = threading.Barrier(threads)
+        errors = []
+
+        def send_signals():
+            try:
+                barrier.wait()
+                for _ in range(per_thread):
+                    mgr.update_from_signal(
+                        FeedbackSignal(
+                            signal_type=SignalType.ACCEPT, agent_id="agent_x"
+                        )
+                    )
+            except Exception as exc:  # surfaced below; threads must not die
+                errors.append(exc)
+
+        workers = [threading.Thread(target=send_signals) for _ in range(threads)]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join()
+
+        assert errors == []
+        entry = mgr.get_trust_entry("agent_x")
+        assert entry.interaction_count == threads * per_thread
+
+    def test_single_update_semantics_unchanged(self, tmp_path):
+        mgr = AgentTrustManager(db_path=tmp_path / "trust.db")
+        result = mgr.update_from_signal(
+            FeedbackSignal(signal_type=SignalType.ACCEPT, agent_id="agent_y")
+        )
+        assert result.interaction_count == 1
+        assert result.trust_score > 0.5  # accept moves trust up from neutral
+        assert mgr.get_trust("agent_y") == pytest.approx(result.trust_score)
+
+
+# --- Budget cap persistence + SQL SUM aggregate --------------------------------
+
+
+class TestBudgetCapPersistence:
+    def test_cap_survives_manager_restart(self, store):
+        """Regression: caps lived only in process memory, so a restart
+        silently reset every tenant to 0 = unlimited even though spend
+        history persisted."""
+        first = BudgetManager(store=store)
+        first.set_budget("acme", max_budget_usd=1.0, warn_at=0.5)
+        first.record_spend("acme", 0.9, model="test-model")
+
+        restarted = BudgetManager(store=store)  # fresh process, same store
+        budget = restarted.get_budget("acme")
+        assert budget["max_budget_usd"] == pytest.approx(1.0)
+        assert budget["warn_at"] == pytest.approx(0.5)
+        assert restarted.check("acme") == BudgetStatus.WARNED
+
+    def test_cap_change_does_not_reset_spend(self, store):
+        manager = BudgetManager(store=store)
+        manager.set_budget("acme", max_budget_usd=10.0)
+        manager.record_spend("acme", 4.0, model="test-model")
+
+        manager.set_budget("acme", max_budget_usd=3.0)  # replace, not reset
+        assert manager.current_spend("acme") == pytest.approx(4.0)
+        assert manager.check("acme") == BudgetStatus.EXHAUSTED
+
+    def test_no_store_stays_in_memory(self):
+        manager = BudgetManager()
+        manager.set_budget("acme", max_budget_usd=1.0)
+        assert manager.get_budget("acme")["max_budget_usd"] == pytest.approx(1.0)
+        fresh = BudgetManager()  # store-less restart still resets (documented)
+        assert fresh.get_budget("acme")["max_budget_usd"] == 0.0
+
+    def test_v5_database_upgrades_to_budget_configs(self, tmp_path):
+        """A pre-existing DB stamped at v5 gains the table via migration."""
+        db_path = tmp_path / "pre_configs.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(SCHEMA_VERSION_DDL)
+        for version, statements in enumerate(MIGRATIONS[:5], start=1):
+            for stmt in statements:
+                conn.execute(stmt)
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (version, "2026-01-01T00:00:00"),
+            )
+        # The current baseline creates budget_configs on fresh installs;
+        # drop it to recreate the exact pre-v6 shape this migration
+        # must upgrade.
+        conn.execute("DROP TABLE IF EXISTS budget_configs")
+        conn.commit()
+        conn.close()
+
+        upgraded = SqliteLearningStore(db_path=db_path)  # applies v6
+        manager = BudgetManager(store=upgraded)
+        manager.set_budget("acme", max_budget_usd=2.0)
+        assert BudgetManager(store=upgraded).get_budget("acme")[
+            "max_budget_usd"
+        ] == pytest.approx(2.0)
+
+    def test_cap_change_converges_across_managers_within_ttl(
+        self, store, monkeypatch
+    ):
+        """Regression: get_budget cached caps forever per process, so a
+        cap changed by another replica never became visible. The TTL
+        re-read (BUDGET_CONFIG_TTL_SECONDS) must converge it."""
+        monkeypatch.setenv("BUDGET_CONFIG_TTL_SECONDS", "0")  # expire instantly
+        writer = BudgetManager(store=store)
+        reader = BudgetManager(store=store)
+        writer.set_budget("acme", max_budget_usd=1.0)
+        assert reader.get_budget("acme")["max_budget_usd"] == pytest.approx(1.0)
+
+        writer.set_budget("acme", max_budget_usd=5.0)  # "another process"
+        assert reader.get_budget("acme")["max_budget_usd"] == pytest.approx(5.0)
+
+    def test_malformed_ttl_env_var_does_not_disable_budgets(
+        self, store, monkeypatch
+    ):
+        """Regression: a malformed BUDGET_CONFIG_TTL_SECONDS (e.g. "60s")
+        raised ValueError in the constructor, which the gateway swallows
+        as a non-fatal init failure -- silently disabling ALL budget
+        enforcement. The manager must construct with the default TTL and
+        still enforce caps."""
+        monkeypatch.setenv("BUDGET_CONFIG_TTL_SECONDS", "60s")
+        manager = BudgetManager(store=store)  # must not raise
+        manager.set_budget("acme", max_budget_usd=1.0)
+        manager.record_spend("acme", 2.0, model="test-model")
+        assert manager.check("acme") == BudgetStatus.EXHAUSTED
+
+    def test_unconfigured_tenant_lookups_are_cached_within_ttl(
+        self, store, monkeypatch
+    ):
+        """Regression: tenants with no configured cap missed the cache
+        entirely, so every budget check -- i.e. every LLM call -- ran a
+        blocking config query against the store. Negative lookups must
+        be cached under the same TTL."""
+        monkeypatch.delenv("BUDGET_CONFIG_TTL_SECONDS", raising=False)
+        manager = BudgetManager(store=store)  # default TTL (60s)
+        config_queries = []
+        real_query = store.query
+
+        def counting_query(table, filters, order_by="", limit=0):
+            if table == "budget_configs":
+                config_queries.append(filters)
+            return real_query(table, filters, order_by, limit)
+
+        store.query = counting_query
+        for _ in range(5):
+            assert manager.check("unconfigured") == BudgetStatus.ALLOWED
+        assert len(config_queries) == 1  # first miss only, then cached
+
+    def test_persist_config_converges_after_losing_insert_race(self, store):
+        """Regression: two processes racing a tenant's first cap insert --
+        the loser hit the PK conflict, logged a bogus 'in-memory only'
+        warning, and left the winner's value in the store. It must
+        converge by retrying the write as an update."""
+        manager = BudgetManager(store=store)
+        real_insert = store.insert
+
+        def losing_insert(table, row):
+            if table == "budget_configs":
+                # Another process wins the first insert...
+                real_insert(table, {**row, "max_budget_usd": 99.0})
+                # ...so this one hits the primary-key conflict.
+                raise sqlite3.IntegrityError("UNIQUE constraint failed")
+            return real_insert(table, row)
+
+        store.insert = losing_insert
+        manager.set_budget("acme", max_budget_usd=2.0)
+        assert BudgetManager(store=store).get_budget("acme")[
+            "max_budget_usd"
+        ] == pytest.approx(2.0)
+
+    def test_ttl_reload_does_not_clobber_concurrent_set_budget(self, store):
+        """Regression: a get_budget thread that saw an expired TTL read the
+        old row, and if a set_budget completed in between, the reader
+        overwrote the fresh cap with its stale load -- the very process
+        that just changed the cap served the old one for a full TTL."""
+        import time as time_module
+
+        manager = BudgetManager(store=store)
+        manager.set_budget("acme", max_budget_usd=1.0)
+        # Force the next get_budget onto the TTL-reload path.
+        manager._config_read_at["acme"] = time_module.monotonic() - 10_000
+
+        real_load = manager._load_config
+
+        def load_then_lose_race(tenant_id):
+            stale = real_load(tenant_id)  # reads the 1.0 row...
+            # ...then a concurrent set_budget lands before we apply it.
+            manager.set_budget("acme", max_budget_usd=5.0)
+            return stale
+
+        manager._load_config = load_then_lose_race
+        assert manager.get_budget("acme")["max_budget_usd"] == pytest.approx(5.0)
+        manager._load_config = real_load
+        assert manager.get_budget("acme")["max_budget_usd"] == pytest.approx(5.0)
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_still_propagates_from_llm_call(self, store):
+        """Budget enforcement moved off the event loop (asyncio.to_thread)
+        -- BudgetExceededError must still reach the caller of call()."""
+        from {{project_slug}}.llm.budget_manager import (
+            BudgetExceededError,
+            _tenant_context,
+            set_tenant_context,
+        )
+        from {{project_slug}}.llm.client import LLMClient
+
+        manager = BudgetManager(store=store)
+        manager.set_budget("acme", max_budget_usd=0.01)
+        manager.record_spend("acme", 0.02, model="m")
+        token = set_tenant_context("acme")
+        try:
+            client = LLMClient(
+                provider="anthropic", api_key="test-key", budget_manager=manager
+            )
+            with pytest.raises(BudgetExceededError):
+                await client.call("hello")
+        finally:
+            _tenant_context.reset(token)
+
+
+class TestConcurrentUsageAccounting:
+    """_track_usage and the in-memory spend fallback run in
+    asyncio.to_thread workers, so their read-modify-write on shared
+    accumulators must be lock-guarded or concurrent calls lose updates
+    -- undercounting the _max_cost_usd circuit breaker.
+
+    A plain thread-pool hammer cannot catch this on GIL CPython (the
+    race window between LOAD_ATTR and STORE_ATTR is a few bytecodes),
+    so these tests instrument the shared object to sleep inside the
+    read half of the read-modify-write: threads then pile into the
+    widened window and an unlocked implementation reliably loses
+    nearly every update, while the locked one serializes correctly."""
+
+    N_THREADS = 8
+    N_ITERATIONS = 5
+
+    def test_concurrent_track_usage_does_not_lose_updates(self):
+        import threading
+        import time as time_module
+        from concurrent.futures import ThreadPoolExecutor
+
+        from {{project_slug}}.llm.client import LLMClient, TokenUsage
+
+        class SlowReadUsage(TokenUsage):
+            def __getattribute__(self, name):
+                value = super().__getattribute__(name)
+                if name == "estimated_cost_usd":
+                    time_module.sleep(0.002)  # widen read->write window
+                return value
+
+        client = LLMClient(provider="anthropic", api_key="test-key")
+        client._total_usage = SlowReadUsage()
+        usage = TokenUsage(
+            input_tokens=10, output_tokens=5, cached_input_tokens=1,
+            estimated_cost_usd=0.001,
+        )
+        barrier = threading.Barrier(self.N_THREADS)
+
+        def hammer(_):
+            barrier.wait()  # maximize overlap
+            for _ in range(self.N_ITERATIONS):
+                client._track_usage(usage)
+
+        with ThreadPoolExecutor(max_workers=self.N_THREADS) as pool:
+            list(pool.map(hammer, range(self.N_THREADS)))
+
+        calls = self.N_THREADS * self.N_ITERATIONS
+        total = client.total_usage
+        assert total.input_tokens == calls * 10
+        assert total.output_tokens == calls * 5
+        assert total.cached_input_tokens == calls
+        assert total.estimated_cost_usd == pytest.approx(calls * 0.001)
+
+    def test_concurrent_memory_spend_does_not_lose_updates(self):
+        import threading
+        import time as time_module
+        from concurrent.futures import ThreadPoolExecutor
+
+        class SlowReadDict(dict):
+            def get(self, key, default=None):
+                value = super().get(key, default)
+                time_module.sleep(0.002)  # widen read->write window
+                return value
+
+        manager = BudgetManager()  # store-less: in-memory fallback path
+        manager._memory_spend = SlowReadDict()
+        barrier = threading.Barrier(self.N_THREADS)
+
+        def hammer(_):
+            barrier.wait()  # maximize overlap
+            for _ in range(self.N_ITERATIONS):
+                manager.record_spend("acme", 0.01, model="m")
+
+        with ThreadPoolExecutor(max_workers=self.N_THREADS) as pool:
+            list(pool.map(hammer, range(self.N_THREADS)))
+
+        expected = self.N_THREADS * self.N_ITERATIONS * 0.01
+        assert manager.current_spend("acme") == pytest.approx(expected)
+
+
+class TestSumAggregate:
+    def test_sum_amount_totals_and_windows(self, store):
+        for idx, amount in enumerate((1.0, 2.0, 4.0)):
+            store.insert("budget_spend", {
+                "id": f"spend-{idx}",
+                "tenant_id": "acme",
+                "amount_usd": amount,
+                "model": "m",
+                "created_at": f"2026-01-0{idx + 1}T00:00:00",
+            })
+        assert store.sum_amount(
+            "budget_spend", "amount_usd", {"tenant_id": "acme"}
+        ) == pytest.approx(7.0)
+        assert store.sum_amount(
+            "budget_spend", "amount_usd", {"tenant_id": "acme"},
+            since_iso="2026-01-02T00:00:00",
+        ) == pytest.approx(6.0)
+        assert store.sum_amount(
+            "budget_spend", "amount_usd", {"tenant_id": "nobody"}
+        ) == 0.0
+
+    def test_sum_amount_validates_identifiers(self, store):
+        with pytest.raises(ValueError, match="Unknown table"):
+            store.sum_amount("users", "amount_usd", {})
+        with pytest.raises(ValueError, match="Unknown columns"):
+            store.sum_amount("budget_spend", "sneaky", {})
+
+    def test_current_spend_prefers_sql_sum_over_row_fetch(self, store):
+        """When the store exposes sum_amount, the spend total must come
+        from SQL SUM -- not from fetching every ledger row."""
+        query_tables = []
+        real_query = store.query
+
+        def spying_query(table, filters, order_by="", limit=0):
+            query_tables.append(table)
+            return real_query(table, filters, order_by, limit)
+
+        store.query = spying_query
+        manager = BudgetManager(store=store)
+        manager.record_spend("acme", 0.25, model="m")
+        assert manager.current_spend("acme") == pytest.approx(0.25)
+        assert "budget_spend" not in query_tables
+
+    def test_current_spend_falls_back_to_fetch_and_sum(self, store):
+        """Custom stores without sum_amount keep the old fetch-and-sum."""
+
+        class NoAggregateStore:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def insert(self, table, row):
+                return self._inner.insert(table, row)
+
+            def query(self, table, filters, order_by="", limit=0):
+                return self._inner.query(table, filters, order_by, limit)
+
+            def update(self, table, row_id, changes):
+                return self._inner.update(table, row_id, changes)
+
+        manager = BudgetManager(store=NoAggregateStore(store))
+        manager.record_spend("acme", 0.75, model="m")
+        assert manager.current_spend("acme") == pytest.approx(0.75)

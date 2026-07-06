@@ -22,6 +22,10 @@ sanitize_for_prompt so stored content cannot inject into prompts.
 Rendering respects a character budget (CORRECTION_CONTEXT_BUDGET env
 override). An optional ContentPolicy can gate propose().
 
+Concurrency: status transitions (approve/reject/retire) are conditional
+writes (learning/lifecycle.py): they only land while the row still holds
+the expected prior status; a lost race raises ValueError (409 at the API).
+
 Keep this file under 500 lines.
 """
 
@@ -36,6 +40,7 @@ from typing import Any
 
 from ..security.pii import redact_pii
 from ..security.prompt_guard import sanitize_for_prompt
+from .lifecycle import transition
 from .store import LearningStore
 
 logger = logging.getLogger(__name__)
@@ -264,15 +269,11 @@ class CorrectionsManager:
         correction.status = STATUS_APPROVED
         correction.approved_by = approved_by
         correction.updated_at = datetime.now().isoformat()
-        self._store.update(
-            "corrections",
-            correction_id,
-            {
-                "status": STATUS_APPROVED,
-                "approved_by": approved_by,
-                "updated_at": correction.updated_at,
-            },
-        )
+        transition(self._store, correction_id, {
+            "status": STATUS_APPROVED,
+            "approved_by": approved_by,
+            "updated_at": correction.updated_at,
+        }, expected_status=STATUS_PROPOSED)
         logger.info(f"[Corrections] Approved {correction_id} by '{approved_by}'")
 
         if self._on_approve is not None:
@@ -296,15 +297,11 @@ class CorrectionsManager:
         correction.status = STATUS_REJECTED
         correction.updated_at = datetime.now().isoformat()
         correction.metadata.update({"rejected_by": rejected_by, "reject_reason": reason})
-        self._store.update(
-            "corrections",
-            correction_id,
-            {
-                "status": STATUS_REJECTED,
-                "updated_at": correction.updated_at,
-                "metadata_json": json.dumps(correction.metadata, default=str),
-            },
-        )
+        transition(self._store, correction_id, {
+            "status": STATUS_REJECTED,
+            "updated_at": correction.updated_at,
+            "metadata_json": json.dumps(correction.metadata, default=str),
+        }, expected_status=STATUS_PROPOSED)
         logger.info(f"[Corrections] Rejected {correction_id} by '{rejected_by}'")
         return correction
 
@@ -318,11 +315,9 @@ class CorrectionsManager:
             )
         correction.status = STATUS_RETIRED
         correction.updated_at = datetime.now().isoformat()
-        self._store.update(
-            "corrections",
-            correction_id,
-            {"status": STATUS_RETIRED, "updated_at": correction.updated_at},
-        )
+        transition(self._store, correction_id,
+                   {"status": STATUS_RETIRED, "updated_at": correction.updated_at},
+                   expected_status=STATUS_APPROVED)
         logger.info(f"[Corrections] Retired {correction_id}")
         return correction
 

@@ -16,6 +16,7 @@ Keep this file under 250 lines.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -150,7 +151,8 @@ class MCPClient:
         timeout: float | None = None,
     ) -> MCPToolResult:
         """Call an MCP tool; audit-log the outcome (metadata only)."""
-        validate_url(server_url, field_name="server_url")
+        # validate_url resolves DNS (blocking getaddrinfo) -- off the loop.
+        await asyncio.to_thread(validate_url, server_url, field_name="server_url")
         effective_timeout = timeout or self.default_timeout
         start = time.monotonic()
         status = "success"
@@ -200,7 +202,8 @@ class MCPClient:
         auth_token: str | None = None,
     ) -> list[MCPToolInfo]:
         """List available tools on an MCP server ([] on any failure)."""
-        validate_url(server_url, field_name="server_url")
+        # validate_url resolves DNS (blocking getaddrinfo) -- off the loop.
+        await asyncio.to_thread(validate_url, server_url, field_name="server_url")
         try:
             return await self._transport.list_tools(
                 server_url, self._headers(auth_token), self.default_timeout

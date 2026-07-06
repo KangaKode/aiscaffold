@@ -31,6 +31,7 @@ from .validators import (  # noqa: F401
     validate_in_choices,
     validate_positive_number,
     validate_url,
+    revalidate_url_at_connect,
     validate_list_size,
     validate_dict_size,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "validate_in_choices",
     "validate_positive_number",
     "validate_url",
+    "revalidate_url_at_connect",
     "validate_list_size",
     "validate_dict_size",
 ]
