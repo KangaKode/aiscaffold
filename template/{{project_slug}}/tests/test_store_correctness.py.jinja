@@ -1,0 +1,520 @@
+"""Store-correctness regression tests: the conditional-update primitive
+(update_if) and the correction-lifecycle race it closes, atomic
+agent-trust EMA updates, budget cap persistence + SQL SUM aggregate,
+and keeping sync store/DNS I/O off the event loop."""
+
+import socket
+import sqlite3
+import threading
+
+import pytest
+
+from {{project_slug}}.learning import lifecycle as lifecycle_module
+from {{project_slug}}.learning.agent_trust import AgentTrustManager
+from {{project_slug}}.learning.corrections import (
+    STATUS_APPROVED,
+    STATUS_REJECTED,
+    STATUS_RETIRED,
+    CorrectionsManager,
+)
+from {{project_slug}}.learning.models import FeedbackSignal, SignalType
+from {{project_slug}}.learning.store import SqliteLearningStore
+from {{project_slug}}.learning.tables import MIGRATIONS, SCHEMA_VERSION_DDL
+from {{project_slug}}.llm.budget_manager import BudgetManager, BudgetStatus
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
+
+
+def propose(mgr, original="limit is 100", corrected="limit is 60",
+            created_by="alice"):
+    return mgr.propose(agent_id="analyst", original_claim=original,
+                       corrected_claim=corrected, reason="",
+                       evidence_level="documented", created_by=created_by)
+
+
+# --- update_if: the conditional-update primitive ------------------------------
+
+
+class TestUpdateIf:
+    def test_applies_only_when_expected_matches(self, store):
+        mgr = CorrectionsManager(store)
+        correction = propose(mgr)
+
+        assert store.update_if(
+            "corrections", correction.id,
+            {"status": STATUS_APPROVED}, {"status": "proposed"},
+        ) is True
+        assert store.query("corrections", {"id": correction.id})[0][
+            "status"
+        ] == STATUS_APPROVED
+
+        # Stale expectation: no write, False returned.
+        assert store.update_if(
+            "corrections", correction.id,
+            {"status": STATUS_REJECTED}, {"status": "proposed"},
+        ) is False
+        assert store.query("corrections", {"id": correction.id})[0][
+            "status"
+        ] == STATUS_APPROVED
+
+    def test_missing_row_returns_false(self, store):
+        assert store.update_if(
+            "corrections", "no-such-id",
+            {"status": STATUS_APPROVED}, {"status": "proposed"},
+        ) is False
+
+    def test_identifiers_are_allowlist_validated(self, store):
+        with pytest.raises(ValueError, match="Unknown table"):
+            store.update_if("users", "x", {"status": "a"}, {"status": "b"})
+        with pytest.raises(ValueError, match="Unknown columns"):
+            store.update_if("corrections", "x", {"sneaky": 1}, {"status": "b"})
+        with pytest.raises(ValueError, match="Unknown columns"):
+            store.update_if("corrections", "x", {"status": "a"}, {"sneaky": 1})
+        with pytest.raises(ValueError, match="at least one change"):
+            store.update_if("corrections", "x", {}, {"status": "b"})
+        with pytest.raises(ValueError, match="at least one expected"):
+            store.update_if("corrections", "x", {"status": "a"}, {})
+
+
+class TestLifecycleRace:
+    """The read-check-write TOCTOU in approve/reject/retire is closed:
+    when the status changes between the pre-check read and the write,
+    the write must lose (ValueError -> 409 at the API), not silently
+    overwrite the concurrent transition."""
+
+    def _race(self, monkeypatch, mgr, store, correction_id, concurrent_status):
+        """Make the pre-check read see the stale row, then apply a
+        concurrent transition before the caller's write lands."""
+        real_get = mgr.get
+
+        def stale_read_then_concurrent_write(cid):
+            result = real_get(cid)
+            store.update("corrections", cid, {"status": concurrent_status})
+            return result
+
+        monkeypatch.setattr(mgr, "get", stale_read_then_concurrent_write)
+        return real_get
+
+    def test_approve_loses_race_to_reject(self, store, monkeypatch):
+        mgr = CorrectionsManager(store)
+        correction = propose(mgr)
+        real_get = self._race(monkeypatch, mgr, store, correction.id,
+                              STATUS_REJECTED)
+
+        with pytest.raises(ValueError, match="concurrent"):
+            mgr.approve(correction.id, approved_by="bob")
+        # The concurrent transition survives; approve did not clobber it.
+        assert real_get(correction.id).status == STATUS_REJECTED
+
+    def test_retire_loses_race_to_prior_retire(self, store, monkeypatch):
+        mgr = CorrectionsManager(store)
+        correction = propose(mgr)
+        mgr.approve(correction.id, approved_by="bob")
+        real_get = self._race(monkeypatch, mgr, store, correction.id,
+                              STATUS_RETIRED)
+
+        with pytest.raises(ValueError, match="concurrent"):
+            mgr.retire(correction.id)
+        assert real_get(correction.id).status == STATUS_RETIRED
+
+    def test_store_without_update_if_falls_back_with_one_warning(
+        self, store, monkeypatch, caplog
+    ):
+        """Bring-your-own-backend contract: a custom store implementing
+        only the original six methods still works (old read-then-write
+        path) and warns exactly once per process."""
+        import logging
+
+        class LegacyStore:
+            """Protocol-minimal wrapper hiding update_if/sum_amount."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def ensure_schema(self):
+                return self._inner.ensure_schema()
+
+            def insert(self, table, row):
+                return self._inner.insert(table, row)
+
+            def query(self, table, filters, order_by="", limit=0):
+                return self._inner.query(table, filters, order_by, limit)
+
+            def update(self, table, row_id, changes):
+                return self._inner.update(table, row_id, changes)
+
+            def count(self, table, filters):
+                return self._inner.count(table, filters)
+
+            def delete(self, table, row_id):
+                return self._inner.delete(table, row_id)
+
+        monkeypatch.setattr(lifecycle_module, "_update_if_missing_warned", False)
+        mgr = CorrectionsManager(LegacyStore(store))
+        first = propose(mgr)
+        second = propose(mgr, original="another claim")
+
+        with caplog.at_level(logging.WARNING):
+            approved = mgr.approve(first.id, approved_by="bob")
+            mgr.reject(second.id, rejected_by="bob")
+
+        assert approved.status == STATUS_APPROVED
+        fallback_warnings = [
+            r for r in caplog.records if "update_if" in r.getMessage()
+        ]
+        assert len(fallback_warnings) == 1  # once per process, not per call
+
+
+# --- Atomic agent-trust EMA ---------------------------------------------------
+
+
+class TestAtomicTrustUpdates:
+    def test_concurrent_signals_lose_no_updates(self, tmp_path):
+        """Regression: the old read-modify-write used two connections,
+        so concurrent update_from_signal calls computed against stale
+        rows and overwrote each other (interaction_count came up short).
+        The single BEGIN IMMEDIATE transaction serializes them."""
+        mgr = AgentTrustManager(db_path=tmp_path / "trust.db")
+        threads, per_thread = 8, 5
+        barrier = threading.Barrier(threads)
+        errors = []
+
+        def send_signals():
+            try:
+                barrier.wait()
+                for _ in range(per_thread):
+                    mgr.update_from_signal(
+                        FeedbackSignal(
+                            signal_type=SignalType.ACCEPT, agent_id="agent_x"
+                        )
+                    )
+            except Exception as exc:  # surfaced below; threads must not die
+                errors.append(exc)
+
+        workers = [threading.Thread(target=send_signals) for _ in range(threads)]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join()
+
+        assert errors == []
+        entry = mgr.get_trust_entry("agent_x")
+        assert entry.interaction_count == threads * per_thread
+
+    def test_single_update_semantics_unchanged(self, tmp_path):
+        mgr = AgentTrustManager(db_path=tmp_path / "trust.db")
+        result = mgr.update_from_signal(
+            FeedbackSignal(signal_type=SignalType.ACCEPT, agent_id="agent_y")
+        )
+        assert result.interaction_count == 1
+        assert result.trust_score > 0.5  # accept moves trust up from neutral
+        assert mgr.get_trust("agent_y") == pytest.approx(result.trust_score)
+
+
+# --- Budget cap persistence + SQL SUM aggregate --------------------------------
+
+
+class TestBudgetCapPersistence:
+    def test_cap_survives_manager_restart(self, store):
+        """Regression: caps lived only in process memory, so a restart
+        silently reset every tenant to 0 = unlimited even though spend
+        history persisted."""
+        first = BudgetManager(store=store)
+        first.set_budget("acme", max_budget_usd=1.0, warn_at=0.5)
+        first.record_spend("acme", 0.9, model="test-model")
+
+        restarted = BudgetManager(store=store)  # fresh process, same store
+        budget = restarted.get_budget("acme")
+        assert budget["max_budget_usd"] == pytest.approx(1.0)
+        assert budget["warn_at"] == pytest.approx(0.5)
+        assert restarted.check("acme") == BudgetStatus.WARNED
+
+    def test_cap_change_does_not_reset_spend(self, store):
+        manager = BudgetManager(store=store)
+        manager.set_budget("acme", max_budget_usd=10.0)
+        manager.record_spend("acme", 4.0, model="test-model")
+
+        manager.set_budget("acme", max_budget_usd=3.0)  # replace, not reset
+        assert manager.current_spend("acme") == pytest.approx(4.0)
+        assert manager.check("acme") == BudgetStatus.EXHAUSTED
+
+    def test_no_store_stays_in_memory(self):
+        manager = BudgetManager()
+        manager.set_budget("acme", max_budget_usd=1.0)
+        assert manager.get_budget("acme")["max_budget_usd"] == pytest.approx(1.0)
+        fresh = BudgetManager()  # store-less restart still resets (documented)
+        assert fresh.get_budget("acme")["max_budget_usd"] == 0.0
+
+    def test_v5_database_upgrades_to_budget_configs(self, tmp_path):
+        """A pre-existing DB stamped at v5 gains the table via migration."""
+        db_path = tmp_path / "pre_configs.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(SCHEMA_VERSION_DDL)
+        for version, statements in enumerate(MIGRATIONS[:5], start=1):
+            for stmt in statements:
+                conn.execute(stmt)
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (version, "2026-01-01T00:00:00"),
+            )
+        # The current baseline creates budget_configs on fresh installs;
+        # drop it to recreate the exact pre-v6 shape this migration
+        # must upgrade.
+        conn.execute("DROP TABLE IF EXISTS budget_configs")
+        conn.commit()
+        conn.close()
+
+        upgraded = SqliteLearningStore(db_path=db_path)  # applies v6
+        manager = BudgetManager(store=upgraded)
+        manager.set_budget("acme", max_budget_usd=2.0)
+        assert BudgetManager(store=upgraded).get_budget("acme")[
+            "max_budget_usd"
+        ] == pytest.approx(2.0)
+
+
+class TestSumAggregate:
+    def test_sum_amount_totals_and_windows(self, store):
+        for idx, amount in enumerate((1.0, 2.0, 4.0)):
+            store.insert("budget_spend", {
+                "id": f"spend-{idx}",
+                "tenant_id": "acme",
+                "amount_usd": amount,
+                "model": "m",
+                "created_at": f"2026-01-0{idx + 1}T00:00:00",
+            })
+        assert store.sum_amount(
+            "budget_spend", "amount_usd", {"tenant_id": "acme"}
+        ) == pytest.approx(7.0)
+        assert store.sum_amount(
+            "budget_spend", "amount_usd", {"tenant_id": "acme"},
+            since_iso="2026-01-02T00:00:00",
+        ) == pytest.approx(6.0)
+        assert store.sum_amount(
+            "budget_spend", "amount_usd", {"tenant_id": "nobody"}
+        ) == 0.0
+
+    def test_sum_amount_validates_identifiers(self, store):
+        with pytest.raises(ValueError, match="Unknown table"):
+            store.sum_amount("users", "amount_usd", {})
+        with pytest.raises(ValueError, match="Unknown columns"):
+            store.sum_amount("budget_spend", "sneaky", {})
+
+    def test_current_spend_prefers_sql_sum_over_row_fetch(self, store):
+        """When the store exposes sum_amount, the spend total must come
+        from SQL SUM -- not from fetching every ledger row."""
+        query_tables = []
+        real_query = store.query
+
+        def spying_query(table, filters, order_by="", limit=0):
+            query_tables.append(table)
+            return real_query(table, filters, order_by, limit)
+
+        store.query = spying_query
+        manager = BudgetManager(store=store)
+        manager.record_spend("acme", 0.25, model="m")
+        assert manager.current_spend("acme") == pytest.approx(0.25)
+        assert "budget_spend" not in query_tables
+
+    def test_current_spend_falls_back_to_fetch_and_sum(self, store):
+        """Custom stores without sum_amount keep the old fetch-and-sum."""
+
+        class NoAggregateStore:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def insert(self, table, row):
+                return self._inner.insert(table, row)
+
+            def query(self, table, filters, order_by="", limit=0):
+                return self._inner.query(table, filters, order_by, limit)
+
+            def update(self, table, row_id, changes):
+                return self._inner.update(table, row_id, changes)
+
+        manager = BudgetManager(store=NoAggregateStore(store))
+        manager.record_spend("acme", 0.75, model="m")
+        assert manager.current_spend("acme") == pytest.approx(0.75)
+
+
+# --- Connect-time DNS re-validation (anti-rebinding) ---------------------------
+
+
+def _private_resolver(monkeypatch):
+    """Every DNS lookup resolves to a private address (simulated rebind)."""
+
+    def rebound(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", rebound)
+
+
+def _mock_remote_http(monkeypatch, hits):
+    """Replace httpx.AsyncClient so no real network is touched."""
+    import httpx
+
+    def handler(request):
+        hits.append(str(request.url))
+        return httpx.Response(200, json={
+            "observations": [], "recommendations": [], "confidence": 0.5,
+        })
+
+    real_client = httpx.AsyncClient
+
+    def client_with_mock_transport(**kwargs):
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_with_mock_transport)
+
+
+class TestConnectTimeDnsRevalidation:
+    @pytest.mark.asyncio
+    async def test_rebound_hostname_refused_before_request(
+        self, monkeypatch, sample_task
+    ):
+        """Regression: a hostname validated as public at registration but
+        rebound to a private IP afterwards was still contacted. The
+        connect-time re-check must refuse it before any bytes leave."""
+        from {{project_slug}}.agents.remote import RemoteAgent
+
+        hits = []
+        _mock_remote_http(monkeypatch, hits)
+        _private_resolver(monkeypatch)
+
+        agent = RemoteAgent(
+            name="rebound", domain="t", base_url="http://rebind.example.com"
+        )
+        with pytest.raises(ConnectionError, match="private|rebind"):
+            await agent.analyze(sample_task)
+        assert hits == []  # refused before the transport was touched
+
+    @pytest.mark.asyncio
+    async def test_localhost_dev_agent_still_connects(
+        self, monkeypatch, sample_task
+    ):
+        """localhost cannot rebind; directly constructed dev agents that
+        point at it keep working (admission policy is decided at
+        registration, not re-litigated per request)."""
+        from {{project_slug}}.agents.remote import RemoteAgent
+
+        hits = []
+        _mock_remote_http(monkeypatch, hits)
+
+        agent = RemoteAgent(
+            name="dev", domain="t", base_url="http://localhost:3000"
+        )
+        analysis = await agent.analyze(sample_task)
+        assert analysis.agent_name == "dev"
+        assert len(hits) == 1
+
+    @pytest.mark.asyncio
+    async def test_health_check_also_rechecks(self, monkeypatch):
+        from {{project_slug}}.agents.remote import RemoteAgent
+
+        hits = []
+        _mock_remote_http(monkeypatch, hits)
+        _private_resolver(monkeypatch)
+
+        agent = RemoteAgent(
+            name="rebound", domain="t", base_url="http://rebind.example.com"
+        )
+        assert await agent.health_check() is False
+        assert hits == []
+
+
+{% if include_api_gateway -%}
+# --- Event-loop responsiveness under store I/O ---------------------------------
+
+
+class TestEventLoopResponsiveness:
+    @pytest.fixture
+    async def api(self, tmp_path, monkeypatch):
+        """Gateway with activity tracking ON so every request writes."""
+        from httpx import ASGITransport, AsyncClient
+
+        from {{project_slug}}.agents.registry import AgentRegistry
+        from {{project_slug}}.api.gateway import create_app
+
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.delenv("ENV", raising=False)
+        monkeypatch.setenv("ACTIVITY_TRACKING_ENABLED", "true")
+        monkeypatch.chdir(tmp_path)
+
+        app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client, app
+
+    @pytest.mark.asyncio
+    async def test_timer_ticks_while_store_writes_run(self, api, monkeypatch):
+        """Load smoke: fire concurrent requests at a store-touching path
+        (the activity middleware writes one row per request) with an
+        artificially slow store, and assert a concurrent timer task
+        still completes on time. Pre-fix the middleware ran the SQLite
+        write on the event loop, so ten 0.1s writes serialized the loop
+        for ~1s and the timer could not tick."""
+        import asyncio
+        import time
+
+        client, app = api
+        store = app.state.learning_store
+        real_insert = store.insert
+
+        def slow_insert(table, row):
+            time.sleep(0.1)  # simulated slow disk; must run OFF the loop
+            return real_insert(table, row)
+
+        monkeypatch.setattr(store, "insert", slow_insert)
+
+        loop = asyncio.get_running_loop()
+        timer_elapsed = 0.0
+
+        async def timer():
+            nonlocal timer_elapsed
+            started = loop.time()
+            for _ in range(5):
+                await asyncio.sleep(0.05)
+            timer_elapsed = loop.time() - started
+
+        timer_task = asyncio.create_task(timer())
+        responses = await asyncio.gather(
+            *(client.get("/health") for _ in range(10))
+        )
+        await timer_task
+
+        assert all(r.status_code == 200 for r in responses)
+        # Expected ~0.25s; anything close to the 1s serialized-write
+        # total means the loop was blocked by store I/O.
+        assert timer_elapsed < 0.7, (
+            f"event loop was blocked: 5x50ms timer took {timer_elapsed:.2f}s"
+        )
+
+    @pytest.mark.asyncio
+    async def test_lost_lifecycle_race_maps_to_409(self, api, monkeypatch):
+        """A transition that loses the race surfaces as 409 Conflict."""
+        from {{project_slug}}.learning.corrections import STATUS_PROPOSED
+
+        client, app = api
+        manager = app.state.corrections_manager
+        correction = propose(manager, created_by="alice")
+
+        real_get = manager.get
+
+        def stale_snapshot_while_concurrently_rejected(cid):
+            # Simulate a stale read: the returned snapshot still shows
+            # PROPOSED while the database has already moved to REJECTED.
+            result = real_get(cid)
+            manager.store.update("corrections", cid, {"status": STATUS_REJECTED})
+            if result is not None:
+                result.status = STATUS_PROPOSED
+            return result
+
+        monkeypatch.setattr(
+            manager, "get", stale_snapshot_while_concurrently_rejected
+        )
+        r = await client.post(f"/api/v1/corrections/{correction.id}/approve")
+        assert r.status_code == 409
+        assert "concurrent" in r.json()["detail"]
+{% endif -%}

@@ -292,7 +292,7 @@ See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the full HTTP contract with JSON 
 
 ### What the platform does automatically
 
-- **SSRF protection**: The agent's `base_url` is validated at registration (no private IPs, no cloud metadata endpoints). Note: DNS can change between validation and request time (TOCTOU). For high-assurance deployments, validate IPs at connection time or use an IP allowlist.
+- **SSRF protection**: The agent's `base_url` is validated at registration (no private IPs, no cloud metadata endpoints), and DNS is re-resolved and re-checked against the same blocklist just before every request (`security/validators.py`, `revalidate_url_at_connect`), so a hostname rebound to an internal address after registration is refused. Residual TOCTOU: the re-check and the connect are still two separate resolutions, so a rebind in that millisecond gap wins; for high-assurance deployments pin the resolved IP at the transport or use an IP allowlist.
 - **Response sanitization**: All agent responses are sanitized for prompt injection and size-limited (5MB body, 50K per field)
 - **Evidence enforcement**: The enforcement pipeline validates the agent's analysis before it enters the challenge phase
 - **Rate limiting**: Per-IP rate limits on all endpoints (per-tenant when you add tenant-based keying)
