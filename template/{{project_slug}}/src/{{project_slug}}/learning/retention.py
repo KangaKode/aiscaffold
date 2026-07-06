@@ -56,9 +56,11 @@ def prune_activity_events(store, batch_limit: int = DEFAULT_BATCH_LIMIT) -> int:
 
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     try:
-        # Oldest first: equality-only store protocol, so the age filter
-        # runs in Python over a bounded batch (same tradeoff as the
-        # rolling windows in activity.py).
+        # Oldest first: the plain created_at index (idx_activity_created,
+        # migration v7) serves this ORDER BY ... LIMIT without a full
+        # table sort. The store protocol is equality-only, so the age
+        # filter still runs in Python over the bounded batch (same
+        # tradeoff as the rolling windows in activity.py).
         rows = store.query(
             "activity_events", {}, order_by="created_at ASC", limit=batch_limit
         )

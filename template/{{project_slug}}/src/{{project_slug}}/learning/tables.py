@@ -237,4 +237,16 @@ MIGRATIONS: list[list[str]] = [
     # spend ledger. New table (no frozen-table columns touched): baseline
     # already creates it on fresh installs; this upgrades existing DBs.
     _table_statements("budget_configs"),
+    # v7 -- plain created_at index on activity_events: retention pruning
+    # (learning/retention.py) scans oldest-first with no tenant filter,
+    # which the composite idx_activity_tenant cannot serve. Index-only
+    # (no frozen-table columns touched); IF NOT EXISTS keeps it
+    # idempotent on both backends. Deliberately NOT in INDEX_STATEMENTS:
+    # fresh installs replay every migration, so they get it here too,
+    # and a DB stamped at v6 genuinely lacks it (which is what the
+    # upgrade test asserts).
+    [
+        "CREATE INDEX IF NOT EXISTS idx_activity_created"
+        " ON activity_events(created_at)",
+    ],
 ]

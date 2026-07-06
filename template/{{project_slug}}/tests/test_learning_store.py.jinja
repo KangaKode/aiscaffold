@@ -194,6 +194,46 @@ class TestSchemaMigrations:
             "last_validated_by"
         ] == "carol"
 
+    def test_v7_adds_activity_created_index_on_pre_existing_db(self, tmp_path):
+        """A DB stamped at v6 (pre retention-index) gains
+        idx_activity_created via ensure_schema -- mirrors the v4->v5
+        upgrade test. v7 lives only in MIGRATIONS (not INDEX_STATEMENTS),
+        so the replayed v1..v6 DB genuinely lacks the index."""
+        import sqlite3
+
+        from {{project_slug}}.learning.tables import MIGRATIONS, SCHEMA_VERSION_DDL
+
+        db_path = tmp_path / "pre_retention_index.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(SCHEMA_VERSION_DDL)
+        for version, statements in enumerate(MIGRATIONS[:6], start=1):
+            for stmt in statements:
+                conn.execute(stmt)
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (version, "2026-01-01T00:00:00"),
+            )
+        conn.commit()
+
+        def index_names(connection):
+            return {
+                r[0]
+                for r in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                )
+            }
+
+        assert "idx_activity_created" not in index_names(conn)
+        conn.close()
+
+        SqliteLearningStore(db_path=db_path)  # applies v7
+
+        conn = sqlite3.connect(str(db_path))
+        assert "idx_activity_created" in index_names(conn)
+        versions = {r[0] for r in conn.execute("SELECT version FROM schema_version")}
+        conn.close()
+        assert len(MIGRATIONS) in versions
+
     def test_wedged_migration_state_recovers(self, tmp_path):
         """Regression: columns added but the final version stamp missing
         (a crash or two racing workers between a migration's ALTERs and

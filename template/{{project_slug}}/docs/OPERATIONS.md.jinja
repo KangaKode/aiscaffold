@@ -181,6 +181,13 @@ Failure posture, so you know what you are opting into:
   `ACTIVITY_CHECK_SAMPLE_N`th request) and deletes in bounded batches
   (500 oldest rows per pass) -- a large backlog drains incrementally,
   never in one stall.
+- Remaining cost per pass, honestly: the oldest-first fetch is served
+  by a plain `created_at` index (`idx_activity_created`, schema
+  migration v7 -- applied automatically on startup), so it reads only
+  the batch, not the table. The age comparison then runs in Python
+  over those <= 500 rows, and each qualifying row is deleted by id.
+  The sampled request that triggers the pass still waits for that
+  bounded work.
 - It is best-effort: a storage error is logged and skipped; it can
   never fail the request that triggered it. A quiet deployment prunes
   slowly (no traffic, no passes) -- for strict horizons run a cron that
