@@ -98,6 +98,75 @@ unbounded, and every distinct label value becomes a permanent timeseries
 - the `budget_spend` table -- one row per LLM response, with model and
   timestamp, for ad-hoc SQL
 
+### Rate limiting is per-process: replicas multiply the limit
+
+{% if include_api_gateway -%}
+Both shipped rate limiters keep their sliding windows in **process
+memory**:
+
+- the API limiter (`api/middleware/rate_limit.py`, per client IP,
+  `RATE_LIMIT_PER_MINUTE`, default 60), and
+- the per-agent call limiter (`agents/rate_limiter.py`,
+  `max_calls_per_hour`, default 100).
+
+Every worker process enforces its limit independently. Under
+`make serve-prod` (4 uvicorn workers) a single client that spreads
+requests across workers gets up to **4x** the configured rate; N
+replicas behind a load balancer multiply it by N. The same applies to
+per-agent call caps -- each replica grants each agent its own hourly
+allowance. Restarts reset all windows. This is a deliberate
+vanilla-scaffold trade-off (no required external service), documented
+here so nobody sizes production limits assuming global enforcement.
+
+**Sizing rule of thumb:** set `RATE_LIMIT_PER_MINUTE` to
+`intended_global_limit / worker_count` if approximate global limiting
+is enough.
+{%- else -%}
+The per-agent call limiter (`agents/rate_limiter.py`,
+`max_calls_per_hour`, default 100) keeps its sliding windows in
+**process memory**: every process running deliberations enforces the
+cap independently, so N replicas grant each agent N times the hourly
+allowance, and restarts reset all windows. This is a deliberate
+vanilla-scaffold trade-off (no required external service).
+{%- endif %}
+
+{% if include_api_gateway -%}
+**Shared-store limiter (extension recipe, not a default).** If you need
+one limit across workers/replicas without adding Redis, the learning
+store can back the counters -- the activity middleware already writes
+one `activity_events` row per request when `ACTIVITY_TRACKING_ENABLED`
+is on. A dependency that counts the caller's recent rows and returns
+429 over a threshold looks like:
+
+```python
+# e.g. src/{{ project_slug }}/api/middleware/shared_rate_limit.py
+from datetime import datetime, timedelta
+from fastapi import HTTPException, Request
+
+async def check_shared_rate_limit(request: Request, limit_per_minute: int = 60):
+    store = getattr(request.app.state, "learning_store", None)
+    tracker = getattr(request.app.state, "activity_tracker", None)
+    if store is None or tracker is None:
+        return  # fail open: same posture as tracking-off deployments
+    cutoff = (datetime.now() - timedelta(minutes=1)).isoformat()
+    rows = store.query(
+        "activity_events",
+        {"user_id": _user_id_from_request(request)},  # reuse middleware/activity.py helper
+        order_by="created_at DESC", limit=limit_per_minute + 1,
+    )
+    if sum(1 for r in rows if r.get("created_at", "") >= cutoff) >= limit_per_minute:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded",
+                            headers={"Retry-After": "60"})
+```
+
+Trade-offs to accept before adopting it: one store read per request
+(SQLite serializes writers; Postgres scales further), counters lag by
+the middleware's post-response write, and keyless deployments share one
+`"anon"` user id. For hard guarantees use a real shared limiter
+(Redis/gateway-level); this recipe only removes the per-process
+multiplication.
+{%- endif %}
+
 ### Integrity signals
 
 {% if include_api_gateway -%}
@@ -115,6 +184,31 @@ so read them from the store's tables directly.
 ---
 
 ## Backup and Restore
+
+{% if persistence == 'postgres' and learning_backend != 'postgres' -%}
+> **This project has TWO datastores -- back up both.** You generated it
+> with `persistence=postgres`, which provisions Postgres for *your
+> application code*. The platform's learning store is separate and
+> **stays SQLite** (`learning_backend=sqlite`): corrections, feedback,
+> trust scores, budget spend, and audit events all live in
+> `data/learning.db` on the app host's disk, not in Postgres. A
+> deployment pipeline that only dumps Postgres silently loses all
+> learned state on every redeploy that recreates the filesystem. Back up
+> the SQLite file (next section) on the same schedule as `pg_dump`, and
+> mount `data/` on a persistent volume in containerized deployments --
+> or set `learning_backend=postgres` (`copier update`) to consolidate.
+{%- elif persistence == 'postgres' and learning_backend == 'postgres' -%}
+> **Two Postgres databases.** Your app data (`DATABASE_URL`) and the
+> learning store (`LEARNING_POSTGRES_DSN`) are separate connections and
+> may be separate databases -- `pg_dump` both. Note that with
+> `LEARNING_BACKEND=postgres` and no `LEARNING_POSTGRES_DSN`, store
+> init raises and learning degrades to no-op (nothing is silently
+> written to SQLite instead) -- verify the DSN is set in production.
+{%- elif persistence == 'sqlite' and learning_backend == 'sqlite' -%}
+> **Two SQLite files.** The app database
+> (`data/{{ project_slug }}.db`) and the learning store
+> (`data/learning.db`) are separate files; back up both.
+{%- endif %}
 
 ### SQLite (default)
 

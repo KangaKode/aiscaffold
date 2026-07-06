@@ -22,7 +22,9 @@ class AgentRateLimiter:
     Known limitations:
     - Counters reset on process restart
     - Per-name keying: re-registering with different names creates separate counters
-    - No cross-instance coordination (single-process)
+    - No cross-instance coordination (single-process): N replicas grant
+      each agent N x max_calls_per_hour in aggregate -- see
+      docs/OPERATIONS.md ("Rate limiting is per-process")
     """
 
     def __init__(self) -> None:

@@ -2,7 +2,13 @@
 Rate limiting middleware -- prevents abuse from any single client.
 
 Uses a simple in-memory sliding window counter per client IP.
-For production with multiple replicas, replace with Redis-backed limiter.
+
+HONEST LIMITATION: the window is per process. Every uvicorn worker and
+every replica enforces the limit independently, so N processes give one
+client up to N x RATE_LIMIT_PER_MINUTE, and restarts reset all windows.
+Size the env value accordingly (intended_global_limit / process_count),
+or adopt the shared-store recipe in docs/OPERATIONS.md ("Rate limiting
+is per-process") / a Redis-backed limiter for real global enforcement.
 
 Configuration via environment:
   RATE_LIMIT_PER_MINUTE=60  (default: 60 requests per minute per IP)
