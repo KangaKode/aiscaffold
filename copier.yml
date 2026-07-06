@@ -1,6 +1,20 @@
 _min_copier_version: "9.0.0"
 _subdirectory: template
 
+# Overriding _exclude replaces copier's defaults, so they are restated here.
+# The final entry conditionally excludes the evals tree when include_evals=false.
+_exclude:
+  - "copier.yml"
+  - "copier.yaml"
+  - "~*"
+  - "*.py[co]"
+  - "__pycache__"
+  - ".git"
+  - ".DS_Store"
+  - ".svn"
+  - "{% if not include_evals %}*/evals{% endif %}"
+  - "{% if not include_evals %}*/evals/**{% endif %}"
+
 # =============================================================================
 # PROJECT IDENTITY
 # =============================================================================

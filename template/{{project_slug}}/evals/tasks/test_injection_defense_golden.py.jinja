@@ -1,0 +1,230 @@
+"""
+Injection-Defense Golden Set -- deterministic regression smoke test.
+
+Grades the labeled dataset (evals/fixtures/injection_defense_dataset.json)
+through the SAME deterministic layers the gateway applies:
+
+  Layer 1  static patterns   -> detect_injection_attempt(text)
+  Layer 2  normalize/decode   -> detect_injection_attempt(text, advanced=True)
+           fence neutralize    -> neutralize_fence(text, label)
+           multi-turn poison   -> detect_multi_turn_poisoning(messages)
+
+The functions are IMPORTED from the security package (no reimplementation),
+so a change in the shipped defenses moves these numbers. Results are compared
+against a committed baseline (evals/fixtures/injection_defense_baseline.json)
+and any category with MORE false negatives or false positives than baseline is
+a regression (nonzero exit).
+
+Scope, stated honestly: this is a REGRESSION SMOKE SET for the deterministic
+layers, NOT a security benchmark, and it does NOT cover Layer 3 (the Sentinel
+semantic screen, which needs an LLM). Malicious cases reference the shared
+adversarial corpus (tests/adversarial_payloads.py) by category/index -- one
+payload list, not two. Benign look-alikes measure false positives.
+
+Run:      python evals/tasks/test_injection_defense_golden.py
+Rebaseline (intentional): python evals/tasks/test_injection_defense_golden.py --update-baseline
+
+Keep this file under 300 lines.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+from {{ project_slug }}.security.injection_defense import detect_multi_turn_poisoning
+from {{ project_slug }}.security.prompt_guard import (
+    detect_injection_attempt,
+    neutralize_fence,
+)
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+DATASET_PATH = _FIXTURES / "injection_defense_dataset.json"
+BASELINE_PATH = _FIXTURES / "injection_defense_baseline.json"
+
+LABELS = ("block", "flag", "pass")
+
+
+def _corpus():
+    """Import the shared adversarial corpus (single source of payloads).
+
+    Adds the project root to sys.path so the ``tests`` package resolves both
+    when pytest collects this file and when it runs as a standalone script.
+    """
+    if str(_PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PROJECT_ROOT))
+    from tests.adversarial_payloads import INJECTION_PAYLOADS, POISONING_PAYLOADS
+
+    return INJECTION_PAYLOADS, POISONING_PAYLOADS
+
+
+def resolve_payload(ref: str) -> str:
+    """Resolve a 'corpus:category[i]' or 'corpus:poisoning.key' reference."""
+    injection, poisoning = _corpus()
+    body = ref.split(":", 1)[1]
+    if body.startswith("poisoning."):
+        return poisoning[body.split(".", 1)[1]]
+    category, index = body.rstrip("]").split("[")
+    return injection[category][int(index)]
+
+
+def case_input(case: dict) -> str:
+    """The single text a case screens (literal for benign, corpus for attacks)."""
+    src = case["source"]
+    return resolve_payload(src) if src.startswith("corpus:") else case.get("input", "")
+
+
+def screen(text: str, fence_label: str = "USER_CONTENT") -> str:
+    """Return the tier that catches this text, mirroring the gateway.
+
+    'block' = Layer 1 static patterns; 'flag' = only Layer 2 (normalization,
+    encoding, invisible-char stripping, or fence neutralization); 'pass' =
+    neither layer reacts.
+    """
+    if detect_injection_attempt(text):
+        return "block"
+    layer2 = bool(detect_injection_attempt(text, advanced=True))
+    fence_defanged = neutralize_fence(text, fence_label) != text
+    return "flag" if (layer2 or fence_defanged) else "pass"
+
+
+def actual_label(case: dict) -> str:
+    """Screen one case; multi-turn cases use the poisoning detector."""
+    if "messages" in case:
+        messages = [resolve_payload(m) for m in case["messages"]]
+        return "flag" if detect_multi_turn_poisoning(messages) else "pass"
+    return screen(case_input(case), case.get("fence_label", "USER_CONTENT"))
+
+
+def load_dataset() -> dict:
+    return json.loads(DATASET_PATH.read_text())
+
+
+def validate_schema(data: dict) -> list[str]:
+    """Preflight: ids unique, labels in enum, corpus refs resolve, benign has input."""
+    errors: list[str] = []
+    cases = data.get("cases", [])
+    seen: set[str] = set()
+    for case in cases:
+        cid = case.get("id", "<missing id>")
+        if cid in seen:
+            errors.append(f"duplicate id: {cid}")
+        seen.add(cid)
+        if case.get("expected") not in LABELS:
+            errors.append(f"{cid}: expected must be one of {LABELS}")
+        src = case.get("source", "")
+        if "messages" in case:
+            # Multi-turn case: payloads live in `messages`; `source` is a label.
+            pass
+        elif src.startswith("corpus:"):
+            try:
+                resolve_payload(src)
+            except Exception as exc:  # noqa: BLE001 -- surface any lookup failure
+                errors.append(f"{cid}: unresolved corpus ref {src!r} ({exc})")
+        elif src == "benign-lookalike":
+            if "input" not in case:
+                errors.append(f"{cid}: benign look-alike missing 'input'")
+        else:
+            errors.append(f"{cid}: source must be 'corpus:...' or 'benign-lookalike'")
+        for ref in case.get("messages", []):
+            try:
+                resolve_payload(ref)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{cid}: unresolved message ref {ref!r} ({exc})")
+    return errors
+
+
+def grade(data: dict) -> dict:
+    """Compute per-category false_positive / false_negative counts."""
+    report: dict = {}
+    for case in data["cases"]:
+        cat = case["category"]
+        expected = case["expected"]
+        actual = actual_label(case)
+        bucket = report.setdefault(
+            cat, {"total": 0, "false_positive": 0, "false_negative": 0}
+        )
+        bucket["total"] += 1
+        if expected == "pass" and actual != "pass":
+            bucket["false_positive"] += 1
+        elif expected in ("block", "flag") and actual == "pass":
+            bucket["false_negative"] += 1
+    return report
+
+
+def compare(current: dict, baseline: dict) -> list[str]:
+    """Return regression messages where FP/FN exceed baseline."""
+    regressions: list[str] = []
+    for cat, cur in current.items():
+        base = baseline.get(cat, {"false_positive": 0, "false_negative": 0})
+        for metric in ("false_negative", "false_positive"):
+            if cur[metric] > base.get(metric, 0):
+                regressions.append(
+                    f"{cat}.{metric}: {base.get(metric, 0)} -> {cur[metric]}"
+                )
+    return regressions
+
+
+def format_table(current: dict, baseline: dict | None) -> str:
+    header = f"{'category':<14}{'total':>7}{'FP':>5}{'FN':>5}{'baseFP':>8}{'baseFN':>8}"
+    lines = [header, "-" * len(header)]
+    for cat in sorted(current):
+        cur = current[cat]
+        base = (baseline or {}).get(cat, {})
+        lines.append(
+            f"{cat:<14}{cur['total']:>7}{cur['false_positive']:>5}"
+            f"{cur['false_negative']:>5}{base.get('false_positive', '-'):>8}"
+            f"{base.get('false_negative', '-'):>8}"
+        )
+    return "\n".join(lines)
+
+
+def run(update_baseline: bool = False) -> int:
+    data = load_dataset()
+    errors = validate_schema(data)
+    if errors:
+        print("SCHEMA PREFLIGHT FAILED:")
+        for err in errors:
+            print(f"  - {err}")
+        return 1
+
+    current = grade(data)
+    if update_baseline:
+        BASELINE_PATH.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+        print(f"Baseline written to {BASELINE_PATH}")
+        print(format_table(current, current))
+        return 0
+
+    baseline = json.loads(BASELINE_PATH.read_text()) if BASELINE_PATH.exists() else None
+    print(format_table(current, baseline))
+    if baseline is None:
+        print("\nNo baseline committed; run with --update-baseline to create one.")
+        return 1
+    regressions = compare(current, baseline)
+    if regressions:
+        print("\nREGRESSIONS vs baseline:")
+        for reg in regressions:
+            print(f"  - {reg}")
+        return 1
+    print("\nNo regressions vs baseline.")
+    return 0
+
+
+# -- pytest entry points (only run if the evals dir is collected directly) --
+
+
+def test_dataset_schema_valid():
+    assert validate_schema(load_dataset()) == []
+
+
+def test_corpus_imports_resolve():
+    injection, poisoning = _corpus()
+    assert injection and poisoning
+
+
+def test_no_regression_vs_baseline():
+    assert run(update_baseline=False) == 0
+
+
+if __name__ == "__main__":
+    sys.exit(run(update_baseline="--update-baseline" in sys.argv))

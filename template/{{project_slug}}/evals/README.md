@@ -96,6 +96,77 @@ EVAL_USE_REAL_LLM=1 make eval  # Run with real LLM (needs API key)
 
 ---
 
+## Injection-Defense Golden Set (regression smoke set)
+
+`tasks/test_injection_defense_golden.py` is a deterministic regression smoke
+set for the **first two injection-defense layers only**: Layer 1 static
+patterns (`security/prompt_guard.py`) and Layer 2 normalization/decoding
+(`security/injection_defense.py`). It runs a labeled dataset through the *same*
+functions the gateway calls (imported, not reimplemented), tallies false
+positives and false negatives per attack category, and compares them to a
+committed baseline.
+
+What it is **not**: it is not a security benchmark, and it does **not** cover
+Layer 3 (the Sentinel semantic screen), which needs an LLM and lives in the
+deliberation, not in a deterministic filter. A green run means "the
+deterministic layers still behave as they did when the baseline was frozen," not
+"injection is solved."
+
+Dataset (`fixtures/injection_defense_dataset.json`): malicious cases are **not**
+copied here -- they reference the shared adversarial corpus
+(`tests/adversarial_payloads.py`) by category/index via each case's `source`
+field, so there is one payload list, not two. Benign look-alikes (legitimate
+text that mentions "ignore", "system prompt", `[INST]`, base64, etc.) carry
+literal `input` text and are labeled `pass` to measure false positives.
+
+The baseline deliberately freezes a handful of benign **false positives**: the
+affected cases quote a detection pattern or a model control token verbatim
+(e.g. citing the regex `ignore all previous instructions`, or documenting
+`<|im_start|>`), and a regex layer cannot distinguish *quoting* a pattern from
+*using* one. Each such case carries a `note` field in the dataset explaining
+why. The baseline guards that this set does not grow; shrinking it (smarter
+matching) is an improvement worth a deliberate rebaseline.
+
+```bash
+# Run the golden set (nonzero exit on any per-category regression vs baseline).
+# This is the primary entry point -- it prints the per-category table, runs the
+# dataset-schema preflight first, and exits nonzero on a schema error or a
+# regression vs the committed baseline:
+python evals/tasks/test_injection_defense_golden.py
+```
+
+The module also defines `pytest` functions (`test_dataset_schema_valid`,
+`test_corpus_imports_resolve`, `test_no_regression_vs_baseline`) for suites that
+collect the eval tasks. The standalone command above is the reliable path and is
+what CI should call.
+
+> **Known issue (pre-existing):** the other eval task files in `tasks/`
+> (`test_security_evals.py`, `test_quality_evals.py`, `test_reliability_evals.py`,
+> `test_system_evals.py`) and `conftest.py` currently ship with literal
+> unrendered `{{ project_slug }}` placeholders in their imports, so
+> `pytest evals/` fails at collection. The golden-set grader uses the working
+> pattern -- a `.py.jinja` template rendered at generation time -- which is how
+> those files should be fixed in a future change. Until then, run the golden
+> set standalone as shown above.
+
+### Updating the baseline (intentional)
+
+The baseline (`fixtures/injection_defense_baseline.json`) is the frozen
+per-category FP/FN counts. Regenerate it **only** when you have deliberately
+changed the deterministic defenses (added a pattern, adjusted normalization) or
+edited the dataset, and you have reviewed the new numbers:
+
+```bash
+python evals/tasks/test_injection_defense_golden.py --update-baseline
+git add evals/fixtures/injection_defense_baseline.json
+# Commit with a message explaining WHY the numbers moved.
+```
+
+Treat a baseline change like a snapshot update: the diff should be explainable.
+An unexplained rise in false negatives means a defense regressed.
+
+---
+
 ## Directory Structure
 
 ```
@@ -109,8 +180,11 @@ evals/
     test_quality_evals.py      # Output quality evals
     test_reliability_evals.py  # Reliability and consistency evals
     test_system_evals.py       # System integration evals
+    test_injection_defense_golden.py  # Deterministic injection-defense regression smoke set
   fixtures/
     sample_inputs.json  # Example inputs for evals
+    injection_defense_dataset.json    # Labeled golden-set cases (corpus refs + benign look-alikes)
+    injection_defense_baseline.json   # Frozen per-category FP/FN baseline
   regression/           # Graduated evals (must pass)
   results/              # Eval run results
   human_review/         # Pending human reviews
