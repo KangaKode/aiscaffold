@@ -13,6 +13,7 @@ Security:
   - tenant_id validated as a safe identifier
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -69,6 +70,7 @@ def _validated_tenant(tenant_id: str) -> str:
 
 
 def _budget_response(manager: BudgetManager, tenant_id: str) -> BudgetResponse:
+    """Build the response (sync store reads -- call via asyncio.to_thread)."""
     budget = manager.get_budget(tenant_id)
     return BudgetResponse(
         tenant_id=tenant_id,
@@ -88,7 +90,7 @@ async def get_budget(
     """Get a tenant's budget config, current spend, and status."""
     tenant_id = _validated_tenant(tenant_id)
     manager = _get_budget_manager(request)
-    return _budget_response(manager, tenant_id)
+    return await asyncio.to_thread(_budget_response, manager, tenant_id)
 
 
 @router.put("/budgets/{tenant_id}", response_model=BudgetResponse)
@@ -98,11 +100,19 @@ async def set_budget(
     request: Request,
     auth: AuthContext = Depends(verify_api_key),
 ) -> BudgetResponse:
-    """Set (or replace) a tenant's budget cap and warn threshold."""
+    """Set (or replace) a tenant's budget cap and warn threshold.
+
+    The cap persists to the budget_configs table when a store is
+    configured, so it survives restarts alongside the spend ledger.
+    Changing the cap does NOT reset accumulated spend.
+    """
     tenant_id = _validated_tenant(tenant_id)
     manager = _get_budget_manager(request)
-    manager.set_budget(
-        tenant_id, max_budget_usd=update.max_budget_usd, warn_at=update.warn_at
+    await asyncio.to_thread(
+        manager.set_budget,
+        tenant_id,
+        max_budget_usd=update.max_budget_usd,
+        warn_at=update.warn_at,
     )
     logger.info(f"[BudgetsAPI] Budget updated for '{tenant_id}'")
-    return _budget_response(manager, tenant_id)
+    return await asyncio.to_thread(_budget_response, manager, tenant_id)
