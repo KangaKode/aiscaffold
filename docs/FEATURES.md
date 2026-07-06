@@ -185,7 +185,7 @@ API route modules expose the core workflow over HTTP:
 - `GET  /api/v1/preferences/search?q=` -- Semantic preference search
 - `GET  /api/v1/checkins` -- List pending check-ins
 - `POST /api/v1/mcp/servers` -- Register an MCP tool server (per-tenant, scope-gated, optional `[mcp]` extra)
-- `POST /api/v1/corrections` (+ `/approve`, `/reject`, `/retire`, `/revalidate`, `DELETE`) -- Four-eyes correction lifecycle, including knowledge-aging revalidation and hard-delete erasure (`GET ?stale=true` lists the aging review queue)
+- `POST /api/v1/corrections` (+ `/approve`, `/reject`, `/retire`, `/revalidate`, `DELETE`) -- Four-eyes correction lifecycle, including knowledge-aging revalidation and hard-delete erasure (`GET ?stale=true` lists the aging review queue, paged stalest-first)
 - `GET  /api/v1/reflections` -- Deterministic lessons distilled from each deliberation
 - `GET/POST /api/v1/graduation/...` -- Candidates, propose (opens check-ins), apply (requires approved check-in)
 - `GET/PUT /api/v1/budgets/{tenant_id}` -- Read and set per-tenant spend budgets
@@ -342,7 +342,7 @@ erDiagram
 - API key auth with production enforcement (`AuthContext` with multi-tenancy structural prep)
 - CORS restricted to configured origins (wildcard rejected)
 - DNS TOCTOU limitation documented on URL validation
-- Extraction defense (detection-first): timing-regularity detection (low CV over inter-request intervals = machine-like cadence, checked every Nth request from the activity middleware), a knowledge-read volume guard (per-user + tenant-wide counts mapped to normal/elevated/capped; detection-only by default, opt-in `EXTRACTION_GUARD_ENFORCE` returns 429 + Retry-After on `GET /corrections` while capped), and directed proposer→approver pair escalation over approved corrections -- all findings persist as integrity flags for human review
+- Extraction defense (detection-first): timing-regularity detection (low CV over inter-request intervals = machine-like cadence, checked every Nth request from the activity middleware), a knowledge-read volume guard (successful reads of the corrections and reflections listings counted per-user + tenant-wide and mapped to normal/elevated/capped -- failed requests never count; detection-only by default, opt-in `EXTRACTION_GUARD_ENFORCE` returns 429 + Retry-After on `GET /corrections` while capped), and directed proposer→approver pair escalation over approved corrections -- all findings persist as integrity flags for human review
 
 ### Evidence Enforcement Pipeline (Hallucination Resistance)
 
@@ -488,8 +488,8 @@ The scaffold itself is validated by a 16-check pipeline:
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
                          ruff lint, bandit security, import validation, red team,
-                         AI checks, agent review, pytest (689 tests collected,
-                         685 passing, 85% coverage), file structure verification
+                         AI checks, agent review, pytest (700 tests collected,
+                         696 passing, 85% coverage), file structure verification
 make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
 ```
 
@@ -521,7 +521,7 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 693 tests across 28 files: 689 pass, 3 skip without the
+  tests/              # 704 tests across 28 files: 700 pass, 3 skip without the
                       # [metrics] extra, 1 opt-in Postgres skip (+ tests/load/ Locust harness)
   evals/              # Eval infrastructure
 ```

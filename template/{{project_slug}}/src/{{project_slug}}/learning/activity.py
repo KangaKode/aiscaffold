@@ -131,6 +131,8 @@ class ActivityTracker:
             logger.warning(f"[Activity] check_thresholds query failed: {exc}")
             return []
 
+        # Naive local time, like the stored timestamps: a DST shift can
+        # skew a window by an hour. Harmless for burst heuristics.
         now = datetime.now()
         hour_cutoff = (now - timedelta(hours=1)).isoformat()
         day_cutoff = (now - timedelta(days=1)).isoformat()

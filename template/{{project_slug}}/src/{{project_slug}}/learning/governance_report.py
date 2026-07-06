@@ -82,7 +82,9 @@ def reports_today(store: LearningStore, tenant_id: str, user_id: str) -> int:
             "correlation_id": f"govreport-{user_id}"[:64],
         },
         order_by="created_at DESC",
-        limit=200,
+        # Fetch at least as many rows as the cap, or a REPORT_DAILY_CAP
+        # above the fetch limit would be silently unenforceable.
+        limit=max(200, _daily_cap()),
     )
     cutoff = datetime.now() - timedelta(hours=24)
     count = 0
@@ -100,7 +102,12 @@ def enforce_report_cap(
     store: LearningStore, tenant_id: str, user_id: str
 ) -> int:
     """Raise ReportCapExceededError at the user's daily cap; otherwise
-    return how many reports this user has generated in the last 24h."""
+    return how many reports this user has generated in the last 24h.
+
+    Check-then-insert: the count here and the audit event written after
+    generation are not atomic, so concurrent requests can slightly
+    exceed the cap (acceptable single-node; multi-worker deployments
+    should treat the cap as approximate)."""
     cap = _daily_cap()
     used = reports_today(store, tenant_id, user_id)
     if used >= cap:
@@ -257,6 +264,10 @@ def _corrections_section(
         "stale_approved_now": len(stale_now),
         "fresh_only_via_revalidation": len(revalidation_carried),
         "self_revalidated_ids": self_revalidated_ids,
+        # The staleness snapshot rides on its own capped refetch, not the
+        # windowed fetch coverage_partial describes; disclose its horizon
+        # separately (True = older rows exist the snapshot cannot see).
+        "staleness_snapshot_partial": len(all_fetched) >= SECTION_FETCH_CAP,
         **coverage,
     }
 

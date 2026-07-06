@@ -70,6 +70,9 @@ def insert_flag_once(
     Insert an integrity flag unless an unresolved one of the same
     type+subject already exists at the same or higher severity
     (persistence-level cooldown that never suppresses an escalation).
+    Check-then-insert is not atomic: concurrent evaluators can slip
+    past the cooldown and insert duplicates (acceptable single-node;
+    multi-worker gets occasional extra flags, never missing ones).
     Best-effort: storage errors are logged, never raised. Returns True
     if inserted.
     """
