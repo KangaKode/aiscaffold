@@ -68,7 +68,7 @@ The last row of that table deserves its own section, because it is the scaffold'
 | Behavioral baselines | Refusal rate, confidence, latency, and scope discipline compared against each agent's own history -- valid credentials with anomalous behavior still get flagged | `learning/activity.py` |
 | Multi-step patterns | Sequences of individually-benign actions that add up to extraction are detected across a window | `harness/sequence_detector.py` |
 | Timing regularity | Machine-like request cadence (suspiciously low variation in inter-request intervals) is flagged -- valid credentials driven by a script on a timer still surface | `learning/timing_analysis.py` |
-| Extraction volume | Knowledge-endpoint reads are counted per user and tenant-wide over a rolling window; elevated/capped volume is flagged, with an opt-in 429 on the corrections listing as the only enforcement | `learning/extraction_guard.py` |
+| Extraction volume | Successful knowledge-endpoint reads (corrections and reflections listings; failed requests such as 401s and guard 429s never count) are counted per user and tenant-wide over a rolling window; elevated/capped volume is flagged on either listing, with an opt-in 429 on the corrections listing as the only enforcement | `learning/extraction_guard.py` |
 | Approval-pair dominance | Directed proposer->approver pairs that dominate correction approvals -- four-eyes satisfied, but always by the same two accounts -- are flagged with escalating severity | `learning/approval_patterns.py` |
 | Collusion | Lockstep agreement between agents that should be independent is flagged (e.g. two agents defeating four-eyes review) | `learning/collusion.py` |
 | Containment | Suspension removes an agent from dispatch and listings without deleting its record | `agents/registry.py` |
@@ -110,6 +110,6 @@ The scaffold validates its own security posture on every change:
 
 - **Adversarial harness**: six deterministic hostile agents (no LLM, zero cost) attack a full round table with injection payloads in every field; CI asserts containment end-to-end.
 - **Red-team scans, Bandit, and AI security checks** run in the 16-check validation pipeline against every generated configuration.
-- **693 generated tests** (85% coverage) include dedicated suites for injection defense, agent identity, tamper evidence, governance, the corrections lifecycle, extraction defense (timing regularity, knowledge-read volume, approval-pair escalation), and governance reporting.
+- **704 generated tests** (85% coverage) include dedicated suites for injection defense, agent identity, tamper evidence, governance, the corrections lifecycle, extraction defense (timing regularity, knowledge-read volume, approval-pair escalation), and governance reporting.
 
 The process has caught real issues before release -- for example, a tenant-isolation bug where remote agents reverted to public visibility on restart ([fix](https://github.com/KangaKode/roundtable/commit/9168334ac050e22022ab2787b7b3ff3ce06796cc)).

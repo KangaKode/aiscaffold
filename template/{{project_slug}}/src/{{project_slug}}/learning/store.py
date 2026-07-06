@@ -173,6 +173,35 @@ def _delete_sql(table: str, row_id: str, ph: str) -> tuple[str, list]:
     return f"DELETE FROM {table} WHERE id = {ph}", [row_id]  # nosec B608
 
 
+def _is_duplicate_column_error(stmt: str, exc: Exception) -> bool:
+    """True when stmt is an ALTER TABLE ADD COLUMN that failed only
+    because the column already exists (SQLite "duplicate column name",
+    Postgres SQLSTATE 42701 / "already exists"). Migrations are not
+    atomic with their version stamp, so a crash or racing workers can
+    leave columns present without the stamp; tolerating the duplicate
+    (and stamping idempotently) lets a retry converge instead of
+    wedging schema init. Generic so future ALTERs inherit the safety."""
+    upper = " ".join(stmt.upper().split())
+    if "ALTER TABLE" not in upper or "ADD COLUMN" not in upper:
+        return False
+    if getattr(exc, "sqlstate", None) == "42701":  # duplicate_column
+        return True
+    message = str(exc).lower()
+    return "duplicate column name" in message or "already exists" in message
+
+
+def _run_migration_statement(execute, stmt: str) -> None:
+    """Run one migration statement, tolerating already-added columns."""
+    try:
+        execute(stmt)
+    except Exception as exc:
+        if not _is_duplicate_column_error(stmt, exc):
+            raise
+        logger.warning(
+            f"[LearningStore] Column already exists (continuing): {stmt!r} -> {exc}"
+        )
+
+
 # =============================================================================
 # SQLITE BACKEND (default)
 # =============================================================================
@@ -203,9 +232,11 @@ class SqliteLearningStore:
                 if version <= current:
                     continue
                 for stmt in statements:
-                    conn.execute(stmt)
+                    _run_migration_statement(conn.execute, stmt)
+                # Idempotent stamp: racing workers must not die here.
                 conn.execute(
-                    "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO schema_version"
+                    " (version, applied_at) VALUES (?, ?)",
                     (version, datetime.now().isoformat()),
                 )
                 logger.info(f"[LearningStore] Applied migration v{version} (sqlite)")
@@ -294,9 +325,10 @@ class PostgresLearningStore:
                 if version <= current:
                     continue
                 for stmt in statements:
-                    cur.execute(stmt)
+                    _run_migration_statement(cur.execute, stmt)
                 cur.execute(
-                    "INSERT INTO schema_version (version, applied_at) VALUES (%s, %s)",
+                    "INSERT INTO schema_version (version, applied_at) VALUES"
+                    " (%s, %s) ON CONFLICT (version) DO NOTHING",
                     (version, datetime.now().isoformat()),
                 )
                 logger.info(f"[LearningStore] Applied migration v{version} (postgres)")

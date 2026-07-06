@@ -6,8 +6,9 @@ institutional knowledge; an insider who can read them can also bulk-copy
 them. This module counts recent reads of knowledge endpoints (GET
 /corrections and friends) in activity_events over a rolling window and
 maps the counts to a mode. Counting queries the store once per exact
-knowledge route (equality filters on route+method), so noise traffic to
-other endpoints cannot push knowledge reads out of the fetched rows.
+knowledge route (equality filters on route+method+status 200), so
+noise traffic cannot evict knowledge reads from the fetched rows and
+failed requests (401/403, the guard's own 429s) never raise the count.
 Residual limitation: only the exact listing routes are counted --
 per-resource GETs (e.g. /corrections/{id}) have distinct paths and are
 NOT counted; the sequence detector (harness/sequence_detector.py) is
@@ -139,13 +140,22 @@ def _mode_from_counts(
 
 def _fetch_knowledge_reads(store, tenant_id: str) -> list[dict]:
     """One equality query per exact knowledge route, so unrelated noise
-    traffic cannot evict knowledge reads from the fetched rows."""
+    traffic cannot evict knowledge reads from the fetched rows.
+
+    Only successful reads (status 200) count: otherwise an attacker
+    with NO valid key could spam 401s to cap the tenant, and a capped
+    client's own 429s would keep the window full past Retry-After."""
     rows: list[dict] = []
     for route in KNOWLEDGE_READ_ROUTES:
         rows.extend(
             store.query(
                 "activity_events",
-                {"tenant_id": tenant_id, "route": route, "method": "GET"},
+                {
+                    "tenant_id": tenant_id,
+                    "route": route,
+                    "method": "GET",
+                    "status_code": 200,
+                },
                 order_by="created_at DESC",
                 limit=WINDOW_FETCH_CAP,
             )
@@ -194,6 +204,8 @@ def evaluate_extraction_mode(
         logger.warning(f"[ExtractionGuard] activity query failed (ignored): {exc}")
         return result
 
+    # Naive local time, like the stored timestamps: a DST shift can skew
+    # the rolling window by an hour. Harmless for a volume heuristic.
     cutoff = (datetime.now() - timedelta(minutes=window_minutes)).isoformat()
     knowledge_reads = [r for r in rows if r.get("created_at", "") >= cutoff]
     tenant_count = len(knowledge_reads)
@@ -221,10 +233,15 @@ def evaluate_extraction_mode(
             "window_minutes": window_minutes,
         }
         logger.warning(f"[ExtractionGuard] Knowledge-read volume {mode}: {detail}")
+        # Flag the dimension that caused the CURRENT mode: the user only
+        # if their own count reached this mode's bar, else the tenant
+        # (misleading blame; distinct users would defeat the cooldown).
+        user_bar = user_threshold * (CAP_MULTIPLIER if mode == MODE_CAPPED else 1)
+        user_tripped = bool(user_id) and user_count > user_bar
         insert_flag_once(
             store,
             FLAG_TYPE_EXTRACTION,
-            subject_id=user_id or tenant_id,
+            subject_id=user_id if user_tripped else tenant_id,
             tenant_id=tenant_id,
             detail=detail,
             severity="warning" if mode == MODE_ELEVATED else "error",

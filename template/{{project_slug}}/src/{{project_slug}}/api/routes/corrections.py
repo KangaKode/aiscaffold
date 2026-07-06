@@ -33,7 +33,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ...learning.aging import is_stale
+from ...learning.aging import freshness_timestamp, is_stale
 from ...learning.corrections import (
     STATUS_APPROVED,
     STATUS_PROPOSED,
@@ -209,10 +209,12 @@ async def list_corrections(
     stale=true restricts the listing to APPROVED corrections whose
     freshness timestamp (last_validated_at, falling back to updated_at
     for rows that predate revalidation) is older than
-    CORRECTION_STALE_DAYS -- the knowledge-aging review queue. The
-    staleness filter is applied in Python over the (limit-clamped)
-    approved listing, so a page of results may contain fewer than
-    `limit` entries.
+    CORRECTION_STALE_DAYS -- the knowledge-aging review queue, sorted
+    stalest-first by that same freshness key over a capped fetch (500
+    rows, oldest lifecycle activity first). Filtering and sorting
+    happen in Python, so a page may contain fewer than `limit` entries,
+    and tenants with more than 500 approved corrections have rows
+    beyond the fetch horizon that this page cannot see.
 
     The extraction guard evaluates knowledge-read volume on every call
     (detection-only: elevated/capped write integrity flags). The ONLY
@@ -258,18 +260,36 @@ async def list_corrections(
                 detail="stale=true only applies to approved corrections",
             )
         status = STATUS_APPROVED
+    page_limit = max(1, min(limit, 500))
     corrections = manager.list(
         tenant_id=auth.tenant_id,
         status=status,
         agent_id=agent_id,
-        limit=max(1, min(limit, 500)),
+        # The stale review queue fetches the full 500-row horizon from
+        # the stale end (a newest-first page would drop the stalest rows
+        # entirely once the tenant exceeds the limit) and pages in
+        # Python below. Residual caveat: rows past the 500-row fetch
+        # horizon are invisible to this page, and the fetch order is
+        # updated_at ASC (the store cannot ORDER BY the coalesced
+        # freshness key), so revalidated rows consume fetch budget.
+        limit=500 if stale else page_limit,
+        order_by="updated_at ASC" if stale else "created_at DESC",
     )
     if stale:
+        # Staleness is keyed on last_validated_at falling back to
+        # updated_at; sort by that key so a row revalidated long ago
+        # (stale again, but with a newer updated_at) still pages before
+        # fresher rows, then filter and clamp to the requested page.
+        corrections.sort(
+            key=lambda c: freshness_timestamp(
+                c.last_validated_at, c.updated_at, c.created_at
+            )
+        )
         corrections = [
             c
             for c in corrections
             if is_stale(c.last_validated_at, c.updated_at, c.created_at)
-        ]
+        ][:page_limit]
     return [_to_response(c) for c in corrections]
 
 

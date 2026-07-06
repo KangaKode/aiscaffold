@@ -194,6 +194,122 @@ class TestSchemaMigrations:
             "last_validated_by"
         ] == "carol"
 
+    def test_wedged_migration_state_recovers(self, tmp_path):
+        """Regression: columns added but the final version stamp missing
+        (a crash or two racing workers between a migration's ALTERs and
+        its version insert). ensure_schema must converge on retry, not
+        die with "duplicate column" on every subsequent startup."""
+        import sqlite3
+
+        from {{project_slug}}.learning.tables import MIGRATIONS, SCHEMA_VERSION_DDL
+
+        db_path = tmp_path / "wedged.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(SCHEMA_VERSION_DDL)
+        for version, statements in enumerate(MIGRATIONS, start=1):
+            for stmt in statements:
+                conn.execute(stmt)
+            if version < len(MIGRATIONS):  # last stamp deliberately missing
+                conn.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                    (version, "2026-01-01T00:00:00"),
+                )
+        conn.commit()
+        conn.close()
+
+        recovered = SqliteLearningStore(db_path=db_path)  # retries the last one
+        row = correction_row(1, "post-recovery")
+        row["last_validated_by"] = "carol"
+        recovered.insert("corrections", row)
+        assert recovered.query("corrections", {"id": "corr-0001"})[0][
+            "last_validated_by"
+        ] == "carol"
+        # The stamp is now present, so the next boot skips the migration.
+        conn = sqlite3.connect(str(db_path))
+        versions = {r[0] for r in conn.execute("SELECT version FROM schema_version")}
+        conn.close()
+        assert len(MIGRATIONS) in versions
+
+    def test_racing_worker_tolerates_pre_existing_stamp(self, tmp_path, monkeypatch):
+        """Regression: a worker that read the old schema version, then
+        lost the race (the winner applied the DDL AND stamped first)
+        must survive both the duplicate columns and the already-present
+        UNIQUE version stamp row."""
+        import sqlite3
+
+        from {{project_slug}}.learning import store as store_module
+        from {{project_slug}}.learning.tables import MIGRATIONS, SCHEMA_VERSION_DDL
+
+        db_path = tmp_path / "raced.db"
+        # Loser's view: final migration's columns applied, stamp missing.
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(SCHEMA_VERSION_DDL)
+        for version, statements in enumerate(MIGRATIONS, start=1):
+            for stmt in statements:
+                conn.execute(stmt)
+            if version < len(MIGRATIONS):
+                conn.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                    (version, "2026-01-01T00:00:00"),
+                )
+        conn.commit()
+        conn.close()
+
+        real_run = store_module._run_migration_statement
+        winner_stamped = []
+
+        def winner_stamps_mid_flight(execute, stmt):
+            # Simulate the winner stamping the final version between the
+            # loser's version read and the loser's own stamp insert.
+            if not winner_stamped:
+                winner_stamped.append(True)
+                execute(
+                    "INSERT INTO schema_version (version, applied_at)"
+                    f" VALUES ({len(MIGRATIONS)}, '2026-01-01T00:00:00')"
+                )
+            real_run(execute, stmt)
+
+        monkeypatch.setattr(
+            store_module, "_run_migration_statement", winner_stamps_mid_flight
+        )
+        SqliteLearningStore(db_path=db_path)  # loser retries: must not raise
+
+        conn = sqlite3.connect(str(db_path))
+        stamps = conn.execute(
+            "SELECT COUNT(*) FROM schema_version WHERE version = ?",
+            (len(MIGRATIONS),),
+        ).fetchone()[0]
+        conn.close()
+        assert stamps == 1  # stamped exactly once despite the race
+
+    def test_duplicate_column_error_matching(self):
+        """The tolerance is scoped: only ALTER TABLE ADD COLUMN statements
+        whose column already exists (SQLite wording, Postgres SQLSTATE
+        42701 or wording) are treated as already-applied."""
+        import sqlite3
+
+        from {{project_slug}}.learning.store import _is_duplicate_column_error
+
+        alter = "ALTER TABLE corrections ADD COLUMN last_validated_at TEXT"
+        sqlite_dup = sqlite3.OperationalError(
+            "duplicate column name: last_validated_at"
+        )
+        assert _is_duplicate_column_error(alter, sqlite_dup) is True
+
+        class FakePgDuplicateColumn(Exception):
+            sqlstate = "42701"
+
+        assert _is_duplicate_column_error(alter, FakePgDuplicateColumn()) is True
+        assert _is_duplicate_column_error(
+            alter, Exception('column "x" of relation "y" already exists')
+        ) is True
+        # Non-ALTER statements never swallow errors.
+        assert _is_duplicate_column_error(
+            "CREATE TABLE x (id TEXT)", sqlite_dup
+        ) is False
+        # Unrelated ALTER failures still raise.
+        assert _is_duplicate_column_error(alter, Exception("disk I/O error")) is False
+
 
 @pytest.mark.skipif(not POSTGRES_TEST_DSN, reason="LEARNING_POSTGRES_TEST_DSN not set (opt-in)")
 class TestPostgresParity:

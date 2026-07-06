@@ -326,6 +326,66 @@ class TestCorrectionsAPI:
         assert r.status_code == 200
         assert [c["id"] for c in r.json()] == [legacy.id]
 
+    async def test_stale_listing_pages_from_the_stale_end(self, api):
+        """With limit below the approved count, the stalest correction
+        must still appear: the stale queue pages oldest-first, so newer
+        rows cannot push it out of the page (regression: newest-first
+        paging dropped exactly the corrections the queue exists for)."""
+        client, app = api
+        manager = app.state.corrections_manager
+
+        stalest = propose(manager, original="oldest claim", created_by="alice")
+        await client.post(f"/api/v1/corrections/{stalest.id}/approve")
+        manager.store.update(
+            "corrections",
+            stalest.id,
+            {"updated_at": "2020-01-01T00:00:00", "last_validated_at": ""},
+        )
+        for i in range(3):
+            fresh = propose(manager, original=f"fresh claim {i}",
+                            created_by="alice")
+            await client.post(f"/api/v1/corrections/{fresh.id}/approve")
+
+        r = await client.get("/api/v1/corrections?stale=true&limit=2")
+        assert r.status_code == 200
+        assert stalest.id in [c["id"] for c in r.json()]
+
+    async def test_stale_listing_orders_by_freshness_key(self, api):
+        """A row revalidated long ago is stale AGAIN, and its freshness
+        key (old last_validated_at) can be older than a never-revalidated
+        row's updated_at even though its own updated_at is newer. The
+        page must sort by the freshness key, not raw updated_at, so the
+        truly stalest rows fit within a small limit."""
+        client, app = api
+        manager = app.state.corrections_manager
+
+        revalidated = propose(manager, original="revalidated ages ago",
+                              created_by="alice")
+        await client.post(f"/api/v1/corrections/{revalidated.id}/approve")
+        manager.store.update(
+            "corrections",
+            revalidated.id,
+            # Newer lifecycle activity, but the OLDEST freshness key.
+            {"updated_at": "2025-06-01T00:00:00",
+             "last_validated_at": "2019-06-01T00:00:00"},
+        )
+
+        legacy = propose(manager, original="never revalidated",
+                         created_by="alice")
+        await client.post(f"/api/v1/corrections/{legacy.id}/approve")
+        manager.store.update(
+            "corrections",
+            legacy.id,
+            {"updated_at": "2020-01-01T00:00:00", "last_validated_at": ""},
+        )
+
+        fresh = propose(manager, original="fresh claim", created_by="alice")
+        await client.post(f"/api/v1/corrections/{fresh.id}/approve")
+
+        r = await client.get("/api/v1/corrections?stale=true&limit=2")
+        assert r.status_code == 200
+        assert [c["id"] for c in r.json()] == [revalidated.id, legacy.id]
+
     async def test_stale_conflicts_with_other_status_filter(self, api):
         client, _ = api
         r = await client.get("/api/v1/corrections?stale=true&status=proposed")

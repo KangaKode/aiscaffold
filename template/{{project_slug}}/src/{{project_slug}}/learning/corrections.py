@@ -376,15 +376,16 @@ class CorrectionsManager:
         status: str = "",
         agent_id: str = "",
         limit: int = 100,
+        order_by: str = "created_at DESC",
     ) -> list[Correction]:
-        """List a tenant's corrections, newest first, optionally filtered."""
+        """List a tenant's corrections (newest first by default)."""
         filters: dict[str, Any] = {"tenant_id": tenant_id}
         if status:
             filters["status"] = status
         if agent_id:
             filters["agent_id"] = agent_id
         rows = self._store.query(
-            "corrections", filters, order_by="created_at DESC", limit=limit
+            "corrections", filters, order_by=order_by, limit=limit
         )
         return [self._from_row(row) for row in rows]
 

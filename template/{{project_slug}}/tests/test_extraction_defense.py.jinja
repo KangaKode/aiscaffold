@@ -29,6 +29,15 @@ from {{project_slug}}.learning.timing_analysis import (
 )
 
 
+@pytest.fixture(autouse=True)
+def pinned_detection_env(monkeypatch):
+    """Pin the timing tunables so shell env can't flip test outcomes."""
+    monkeypatch.setenv("TIMING_MIN_SAMPLES", "20")
+    monkeypatch.setenv("TIMING_CV_THRESHOLD", "0.1")
+    monkeypatch.delenv("TIMING_WINDOW_MINUTES", raising=False)
+    monkeypatch.delenv("EXTRACTION_WINDOW_MINUTES", raising=False)
+
+
 @pytest.fixture
 def store(tmp_path):
     return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
@@ -182,9 +191,10 @@ def guard_env(monkeypatch):
 
 
 def seed_reads(store, n, user_id="user1", route="/api/v1/corrections",
-               method="GET", minutes_ago=1):
+               method="GET", minutes_ago=1, status_code=200):
     ts = datetime.now() - timedelta(minutes=minutes_ago)
-    seed_events(store, [ts] * n, user_id=user_id, route=route, method=method)
+    seed_events(store, [ts] * n, user_id=user_id, route=route, method=method,
+                status_code=status_code)
 
 
 class TestExtractionGuardModes:
@@ -230,6 +240,55 @@ class TestExtractionGuardModes:
         seed_reads(store, 20, route="/api/v1/chat")
         result = evaluate_extraction_mode(store, user_id="user1")
         assert result["mode"] == MODE_NORMAL
+
+    def test_auth_failures_do_not_raise_counts(self, store, guard_env):
+        """Regression: keyless 401/403 spam on a knowledge route must not
+        push the tenant toward the cap (that would let an attacker
+        WITHOUT a valid key lock legitimate users out)."""
+        seed_reads(store, 50, status_code=401)
+        seed_reads(store, 50, user_id="user2", status_code=403)
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_NORMAL
+        assert result["user_count"] == 0
+        assert result["tenant_count"] == 0
+
+    def test_guard_429s_do_not_hold_the_cap(self, store, guard_env):
+        """Regression: a capped client's own 429 responses must not
+        refill the window, or the cap would never lift and the
+        Retry-After contract would be unkeepable."""
+        seed_reads(store, 11)  # capped on real reads
+        assert evaluate_extraction_mode(store, user_id="user1")["mode"] == MODE_CAPPED
+        # Simulate the real reads aging out of the rolling window, while
+        # a retrying client keeps collecting recent 429s.
+        for row in store.query("activity_events", {"status_code": 200}):
+            store.delete("activity_events", row["id"])
+        seed_reads(store, 50, status_code=429)
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_NORMAL
+
+    def test_tenant_breach_flag_names_the_tenant(self, store, guard_env):
+        """When only the TENANT threshold trips, the flag subject is the
+        tenant -- not whichever user happened to trigger evaluation."""
+        for i in range(11):
+            seed_reads(store, 1, user_id=f"user{i}")
+        evaluate_extraction_mode(store, user_id="user1")
+        flags = flags_of_type(store, FLAG_TYPE_EXTRACTION)
+        assert len(flags) == 1
+        assert flags[0]["subject_id"] == "default"
+
+    def test_tenant_cap_with_user_only_elevated_names_tenant(self, store, guard_env):
+        """When the TENANT aggregate is what capped, a caller who merely
+        crossed the elevated per-user bar (but not the per-user cap bar)
+        must not be flagged personally -- the capped-mode flag names the
+        tenant, the dimension that actually caused the mode."""
+        seed_reads(store, 6)  # user1: > 5 (elevated bar) but <= 10 (cap bar)
+        for i in range(15):  # tenant total 21 > 2 * 10 -> capped
+            seed_reads(store, 1, user_id=f"other{i}")
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_CAPPED
+        flags = flags_of_type(store, FLAG_TYPE_EXTRACTION)
+        assert len(flags) == 1
+        assert flags[0]["subject_id"] == "default"
 
     def test_flag_written_with_cooldown(self, store, guard_env):
         seed_reads(store, 6)
@@ -416,6 +475,30 @@ class TestExtractionEnforcementHTTP:
         r = await client.get("/api/v1/corrections")
         assert r.status_code == 429
         assert "Retry-After" in r.headers
+
+
+class TestReflectionsExtractionDetection:
+    async def test_heavy_reflections_reads_produce_flag(self, api, monkeypatch):
+        """Regression: /reflections is a knowledge-read route, so bulk
+        reads of reflections ALONE must surface an extraction flag."""
+        client, app = api
+        monkeypatch.delenv("EXTRACTION_GUARD_ENFORCE", raising=False)
+        seed_reads(app.state.learning_store, 20, user_id="anon",
+                   route="/api/v1/reflections")
+        r = await client.get("/api/v1/reflections")
+        assert r.status_code == 200
+        flags = flags_of_type(app.state.learning_store, FLAG_TYPE_EXTRACTION)
+        assert len(flags) == 1
+
+    async def test_reflections_never_429_even_when_enforcing(self, api, monkeypatch):
+        """Enforcement stays corrections-listing-only by design: capped
+        volume with EXTRACTION_GUARD_ENFORCE=true still serves reflections."""
+        client, app = api
+        monkeypatch.setenv("EXTRACTION_GUARD_ENFORCE", "true")
+        seed_reads(app.state.learning_store, 20, user_id="anon",
+                   route="/api/v1/reflections")
+        r = await client.get("/api/v1/reflections")
+        assert r.status_code == 200
 
 
 class TestMiddlewareSampledChecks:
