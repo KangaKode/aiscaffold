@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..observability.metrics import record_llm_call
 from ..security.prompt_guard import sanitize_for_prompt
 from .budget_manager import enforce_budget, record_response_spend
 
@@ -446,6 +447,13 @@ class LLMClient:
         record_response_spend(
             self.budget_manager, usage.estimated_cost_usd, self._model
         )
+        record_llm_call(
+            self._provider,
+            self._model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cost_usd=usage.estimated_cost_usd,
+        )
 
     @property
     def total_usage(self) -> TokenUsage:
@@ -460,37 +468,3 @@ class LLMClient:
     def model(self) -> str:
         return self._model
 
-
-# =============================================================================
-# FACTORY
-# =============================================================================
-
-
-def create_client(
-    provider: str | None = None,
-    model: str | None = None,
-    api_key: str | None = None,
-    **kwargs,
-) -> LLMClient:
-    """
-    Create an LLM client, auto-detecting provider from environment if not specified.
-
-    Detection order:
-      1. Explicit provider argument
-      2. ANTHROPIC_API_KEY set -> anthropic
-      3. OPENAI_API_KEY set -> openai
-      4. GOOGLE_API_KEY set -> google
-      5. Default: anthropic
-    """
-    if provider is None:
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            provider = "anthropic"
-        elif os.environ.get("OPENAI_API_KEY"):
-            provider = "openai"
-        elif os.environ.get("GOOGLE_API_KEY"):
-            provider = "google"
-        else:
-            provider = "anthropic"
-            logger.warning("[LLM] No API key found. Defaulting to anthropic.")
-
-    return LLMClient(provider=provider, model=model, api_key=api_key, **kwargs)

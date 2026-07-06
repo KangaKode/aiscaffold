@@ -1,16 +1,25 @@
 """
 Health, readiness, and metrics endpoints.
 
-  GET /health       -- Liveness probe (always returns 200 if process is alive)
-  GET /health/ready -- Readiness probe (checks DB, agents)
-  GET /metrics      -- Basic operational metrics
+  GET /health             -- Liveness probe (always returns 200 if process is alive)
+  GET /health/ready       -- Readiness probe (checks DB, agents)
+  GET /metrics            -- Basic operational metrics (JSON, always available)
+  GET /metrics/prometheus -- Prometheus exposition (requires the [metrics] extra;
+                             501 with an install hint without it)
+
+Auth note: /metrics/prometheus uses the same bearer dependency (and thus
+the same API_KEY) as the rest of the API. If your scrape infrastructure
+should not hold the application key, add a dedicated METRICS_API_KEY
+check here -- see docs/OPERATIONS.md.
 """
 
 import logging
 import time
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import JSONResponse
 
+from ...observability import metrics as obs_metrics
 from ..middleware.auth import AuthContext, verify_api_key
 from ..models.responses import HealthResponse, MetricsResponse, ReadinessResponse
 
@@ -68,4 +77,30 @@ async def metrics(
         average_duration_seconds=round(avg_duration, 2),
         agents_registered=registry.count,
         total_agent_calls=m["total_agent_calls"],
+    )
+
+
+@router.get("/metrics/prometheus")
+async def metrics_prometheus(
+    auth: AuthContext = Depends(verify_api_key),
+) -> Response:
+    """Prometheus exposition endpoint (optional [metrics] extra).
+
+    Returns 501 with an install hint when prometheus_client is not
+    installed. Per-process registry: under multiple uvicorn workers each
+    scrape sees one worker's counts (see docs/OPERATIONS.md).
+    """
+    if not obs_metrics.PROMETHEUS_AVAILABLE:
+        return JSONResponse(
+            status_code=501,
+            content={
+                "detail": (
+                    "Prometheus metrics are not enabled: install the "
+                    "[metrics] extra (pip install '.[metrics]')"
+                )
+            },
+        )
+    return Response(
+        content=obs_metrics.render_prometheus(),
+        media_type=obs_metrics.PROMETHEUS_CONTENT_TYPE,
     )

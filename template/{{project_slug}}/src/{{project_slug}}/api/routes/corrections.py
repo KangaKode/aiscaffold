@@ -49,6 +49,7 @@ from ...learning.extraction_guard import (
     evaluate_extraction_mode,
     retry_after_seconds,
 )
+from ...observability.metrics import record_correction_lifecycle
 from ...security import ValidationError, validate_identifier, validate_in_choices
 from ..middleware.auth import AuthContext, verify_api_key
 
@@ -179,6 +180,7 @@ async def propose_correction(
     except ValueError as e:
         # Content-policy rejection: refuse the write, tell the caller why.
         raise HTTPException(status_code=422, detail=str(e))
+    record_correction_lifecycle("propose")
 
     override_flags: list[str] = []
     detector = getattr(request.app.state, "override_detector", None)
@@ -293,6 +295,7 @@ async def approve_correction(
         approved = manager.approve(correction_id, approved_by=auth.user_id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    record_correction_lifecycle("approve")
 
     store = getattr(request.app.state, "learning_store", None) or manager.store
     if store is not None:
@@ -328,9 +331,11 @@ async def reject_correction(
     manager = _get_manager(request)
     _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
-        return _to_response(manager.reject(correction_id, rejected_by=auth.user_id))
+        rejected = manager.reject(correction_id, rejected_by=auth.user_id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    record_correction_lifecycle("reject")
+    return _to_response(rejected)
 
 
 @router.post("/corrections/{correction_id}/retire", response_model=CorrectionResponse)
@@ -343,9 +348,11 @@ async def retire_correction(
     manager = _get_manager(request)
     _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
-        return _to_response(manager.retire(correction_id))
+        retired = manager.retire(correction_id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    record_correction_lifecycle("retire")
+    return _to_response(retired)
 
 
 @router.post(
@@ -366,11 +373,11 @@ async def revalidate_correction(
     manager = _get_manager(request)
     _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
-        return _to_response(
-            manager.revalidate(correction_id, validated_by=auth.user_id)
-        )
+        revalidated = manager.revalidate(correction_id, validated_by=auth.user_id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    record_correction_lifecycle("revalidate")
+    return _to_response(revalidated)
 
 
 @router.delete("/corrections/{correction_id}", response_model=ErasureResponse)
