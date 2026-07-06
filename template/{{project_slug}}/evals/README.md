@@ -131,6 +131,15 @@ affected cases quote a detection pattern or a model control token verbatim
 why. The baseline guards that this set does not grow; shrinking it (smarter
 matching) is an improvement worth a deliberate rebaseline.
 
+The `benign_encoded` category measures the false-positive surface of the
+Layer 2 decoding pass on legitimate encoded content -- data URIs, JWTs, hex
+digests, base64 config blobs -- as seen on the surfaces that run the full
+`advanced=True` scan (MCP tool output, remote-agent responses, knowledge
+writes). Measured rate at freeze: 1 of 7 (a base64 YAML blob whose decoded
+`system:` key matches the Layer 1 system-role pattern). Because detection is
+log-only on those surfaces, an FP costs a warning log line, never a blocked
+flow; these cases document the trade-off rather than gate it.
+
 Two equivalent ways to run it:
 
 ```bash

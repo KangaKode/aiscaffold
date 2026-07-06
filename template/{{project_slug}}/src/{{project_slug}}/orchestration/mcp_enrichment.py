@@ -13,14 +13,21 @@ Scope gating: each server's response lands in the task context under its
 AgentCapability.access_scopes include that key.
 
 Injection defense: MCP responses are untrusted external content. They are
-scanned (detect_injection_attempt), sanitized (sanitize_for_prompt), and
-boundary-wrapped (wrap_user_content) before entering any context.
+sanitized first (sanitize_for_prompt truncation to MAX_RESPONSE_CHARS --
+oversized hostile responses never buy scan CPU), then scanned with the
+full Layer 1+2 pipeline off the event loop (detect_injection_attempt with
+advanced=True: static patterns plus homoglyph/invisible-char/encoding
+decoding), and boundary-wrapped (wrap_user_content) before entering any
+context. Detection is log-only on this surface: benign encoded blobs
+(data URIs, JWTs, base64 configs) are common in tool output, so a
+finding never blocks the enrichment.
 
 Keep this file under 200 lines.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -114,14 +121,24 @@ async def enrich_mcp_data(
             )
             continue
 
-        findings = detect_injection_attempt(result.content)
+        # Sanitize (truncate) FIRST, then scan: only content that can
+        # actually reach a prompt is worth the Layer 2 decoding cost,
+        # and a hostile server returning tens of MB must not buy CPU
+        # time for bytes that get truncated anyway. The advanced scan
+        # (Layer-2 imports stay lazy inside detect_injection_attempt)
+        # runs off the event loop -- Unicode normalization plus decode
+        # passes over 50k chars are real work. Log-only: the sanitized,
+        # wrapped content proceeds regardless of findings.
+        sanitized = sanitize_for_prompt(result.content, max_length=MAX_RESPONSE_CHARS)
+        findings = await asyncio.to_thread(
+            detect_injection_attempt, sanitized, advanced=True
+        )
         if findings:
             logger.warning(
                 "[MCPEnrichment] Injection patterns in %s response: %d finding(s)",
                 scope_key, len(findings),
             )
 
-        sanitized = sanitize_for_prompt(result.content, max_length=MAX_RESPONSE_CHARS)
         task_context[scope_key] = wrap_user_content(sanitized, label="MCP_DATA")
         logger.info(
             "[MCPEnrichment] Enriched %s from server '%s' (%.0fms)",

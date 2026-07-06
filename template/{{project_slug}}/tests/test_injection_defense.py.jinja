@@ -1,6 +1,9 @@
 """Unit tests for injection_defense -- Layer 2 defenses and prompt_guard integration."""
 
 import codecs
+import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from {{project_slug}}.security.injection_defense import (
     check_canary,
@@ -274,3 +277,203 @@ def payload_region(wrapped: str, label: str) -> str:
     if idx != -1:
         body = body[:idx]
     return body
+
+
+# =============================================================================
+# Ingestion boundaries: MCP tool output + remote-agent responses run the
+# full Layer 1+2 scan (advanced=True), log-only -- findings never block.
+# =============================================================================
+
+# Benign encoded content that legitimately appears in tool/agent output.
+BENIGN_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkphbmUgRG9lIiwiaWF0IjoxNTE2MjM5"
+    "MDIyLCJyb2xlIjoicmVhZGVyIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c"
+)
+
+
+def _mcp_stub(content: str):
+    """Stub registry + client pair whose default tool returns `content`."""
+    from {{project_slug}}.connectors.mcp_client import MCPToolResult
+
+    config = SimpleNamespace(
+        name="stub-server",
+        server_url="https://mcp.example.com",
+        default_tool="fetch",
+        auth_type="none",
+        credential_env_var="",
+        default_arguments={},
+        timeout=5.0,
+        resolve_credential=lambda: "",
+    )
+    registry = SimpleNamespace(get_by_scope=lambda scope, tenant: config)
+    client = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=MCPToolResult(content=content, tool_name="fetch")
+        )
+    )
+    return registry, client
+
+
+class TestIngestionBoundaryAdvancedScan:
+    async def test_mcp_enrichment_detects_encoded_injection(self, caplog):
+        """Layer 2 unmasking runs on MCP output: base64 payload is flagged.
+
+        Regression: with advanced=False this payload sailed through unlogged.
+        """
+        from {{project_slug}}.orchestration.mcp_enrichment import enrich_mcp_data
+
+        registry, client = _mcp_stub(ENCODED_PAYLOADS[0])
+        with caplog.at_level(logging.WARNING):
+            ctx = await enrich_mcp_data({}, {"mcp:tickets"}, "default", client, registry)
+
+        assert any("Injection patterns" in r.message for r in caplog.records)
+        # Log-only posture: the sanitized, wrapped content still enriches.
+        assert "mcp:tickets" in ctx
+
+    async def test_mcp_enrichment_benign_jwt_not_flagged(self, caplog):
+        """Benign encoded blobs (JWTs) must not trip the advanced scan."""
+        from {{project_slug}}.orchestration.mcp_enrichment import enrich_mcp_data
+
+        registry, client = _mcp_stub(f"Auth token issued: {BENIGN_JWT}")
+        with caplog.at_level(logging.WARNING):
+            ctx = await enrich_mcp_data({}, {"mcp:tickets"}, "default", client, registry)
+
+        assert not any("Injection patterns" in r.message for r in caplog.records)
+        assert "mcp:tickets" in ctx
+
+    def _remote_agent(self):
+        from {{project_slug}}.agents.remote import RemoteAgent
+
+        return RemoteAgent(
+            name="stub_remote",
+            domain="testing",
+            base_url="http://agent.internal:3000",
+            allow_private_endpoint=True,
+        )
+
+    def test_remote_agent_detects_encoded_injection(self, caplog):
+        """Regression: encoded payloads in agent fields were invisible to
+        the advanced=False scan."""
+        agent = self._remote_agent()
+        with caplog.at_level(logging.WARNING):
+            out = agent._sanitize_string(ENCODED_PAYLOADS[0], "analyze.finding")
+
+        assert any(
+            "injection patterns detected" in r.message.lower()
+            for r in caplog.records
+        )
+        # Log-only posture: the sanitized value is returned, never dropped.
+        assert ENCODED_PAYLOADS[0] in out
+
+    def test_remote_agent_benign_jwt_not_flagged(self, caplog):
+        agent = self._remote_agent()
+        with caplog.at_level(logging.WARNING):
+            out = agent._sanitize_string(f"token: {BENIGN_JWT}", "vote.condition")
+
+        assert not any(
+            "injection patterns detected" in r.message.lower()
+            for r in caplog.records
+        )
+        assert BENIGN_JWT in out
+
+
+class TestBoundaryScanLoopResponsiveness:
+    """The advanced (Layer 1+2) boundary scans are real CPU work; they
+    must be bounded by truncation and must run off the event loop."""
+
+    async def test_multi_mb_mcp_payload_does_not_stall_loop(self):
+        """Regression: enrich_mcp_data scanned the FULL response content
+        with advanced=True before the 50k-char truncation, inline on the
+        loop -- a hostile server returning ~10MB bought ~1s of loop
+        stall for bytes that never reach a prompt. Sanitize-first plus
+        the off-loop scan keeps a concurrent timer ticking."""
+        import asyncio
+
+        from {{project_slug}}.orchestration.mcp_enrichment import enrich_mcp_data
+
+        chunk = "SGVsbG8gd29ybGQhIFRoaXMgaXMgYSBiZW5pZ24gYmxvYg" * 3 + " "
+        big = chunk * (10_000_000 // len(chunk))  # ~10MB, base64-ish runs
+        registry, client = _mcp_stub(big)
+
+        loop = asyncio.get_running_loop()
+        timer_elapsed = 0.0
+
+        async def timer():
+            nonlocal timer_elapsed
+            started = loop.time()
+            for _ in range(5):
+                await asyncio.sleep(0.05)
+            timer_elapsed = loop.time() - started
+
+        timer_task = asyncio.create_task(timer())
+        await asyncio.sleep(0)  # let the timer take its first tick slot
+        ctx = await enrich_mcp_data({}, {"mcp:tickets"}, "default", client, registry)
+        await timer_task
+
+        assert "mcp:tickets" in ctx
+        # Truncation happened BEFORE the scan: only ~50k survives.
+        assert len(ctx["mcp:tickets"]) < 60_000
+        assert timer_elapsed < 0.7, (
+            f"event loop was blocked: 5x50ms timer took {timer_elapsed:.2f}s"
+        )
+
+    async def test_remote_response_scan_runs_off_the_loop(self, monkeypatch):
+        """Regression: the response sanitize+scan ran inline in the async
+        analyze/challenge/vote consumers; ten concurrent responses with a
+        slow scan serialized the loop. The build is now offloaded once
+        per response."""
+        import asyncio
+        import time
+
+        import httpx
+
+        from {{project_slug}}.agents import remote as remote_module
+        from {{project_slug}}.orchestration.round_table import RoundTableTask
+
+        def slow_scan(text, advanced=False):
+            time.sleep(0.1)  # simulated scan cost; must run OFF the loop
+            return []
+
+        monkeypatch.setattr(remote_module, "detect_injection_attempt", slow_scan)
+
+        def handler(request):
+            return httpx.Response(200, json={
+                "observations": [{"note": "one string field"}],
+                "recommendations": [],
+                "confidence": 0.5,
+            })
+
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            httpx, "AsyncClient",
+            lambda **kw: real_client(
+                transport=httpx.MockTransport(handler), **kw
+            ),
+        )
+
+        agent = remote_module.RemoteAgent(
+            name="stub_remote", domain="testing",
+            base_url="http://agent.internal:3000",
+            allow_private_endpoint=True,
+        )
+        task = RoundTableTask(id="t1", content="hello")
+
+        loop = asyncio.get_running_loop()
+        timer_elapsed = 0.0
+
+        async def timer():
+            nonlocal timer_elapsed
+            started = loop.time()
+            for _ in range(5):
+                await asyncio.sleep(0.05)
+            timer_elapsed = loop.time() - started
+
+        timer_task = asyncio.create_task(timer())
+        analyses = await asyncio.gather(*(agent.analyze(task) for _ in range(10)))
+        await timer_task
+
+        assert all(a.agent_name == "stub_remote" for a in analyses)
+        assert timer_elapsed < 0.7, (
+            f"event loop was blocked: 5x50ms timer took {timer_elapsed:.2f}s"
+        )

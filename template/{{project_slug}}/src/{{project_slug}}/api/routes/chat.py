@@ -13,6 +13,7 @@ Security:
   - Prompt sanitization via ChatOrchestrator
 """
 
+import asyncio
 import json
 import logging
 from collections import OrderedDict
@@ -27,6 +28,7 @@ from ...orchestration.chat_orchestrator import (
     ChatOrchestrator,
     ChatResponse,
 )
+from ...orchestration.ingest_scan import scan_user_message
 from ...security import ValidationError, validate_length
 from ..middleware.auth import AuthContext, auth_scope_key, verify_api_key
 from ..middleware.rate_limit import check_rate_limit
@@ -161,6 +163,16 @@ async def send_message(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Detect-only Layer 1 scan (logs + integrity flag; never blocks,
+    # never mutates). Off-loop: the flag write is blocking store I/O.
+    await asyncio.to_thread(
+        scan_user_message,
+        chat_request.message,
+        surface="chat",
+        store=getattr(request.app.state, "learning_store", None),
+        tenant_id=auth.tenant_id,
+    )
+
     orchestrator = _get_or_create_orchestrator(chat_request.session_id, request, auth)
 
     trust_scores = None
@@ -226,6 +238,15 @@ async def send_message_stream(
         )
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Same detect-only scan as the non-streaming route, off-loop.
+    await asyncio.to_thread(
+        scan_user_message,
+        chat_request.message,
+        surface="chat",
+        store=getattr(request.app.state, "learning_store", None),
+        tenant_id=auth.tenant_id,
+    )
 
     orchestrator = _get_or_create_orchestrator(chat_request.session_id, request, auth)
 

@@ -4,6 +4,11 @@
     "false_positive": 5,
     "total": 29
   },
+  "benign_encoded": {
+    "false_negative": 0,
+    "false_positive": 1,
+    "total": 7
+  },
   "direct": {
     "false_negative": 0,
     "false_positive": 0,

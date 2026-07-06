@@ -10,6 +10,7 @@ Security:
   - Agent IDs are validated as safe identifiers
 """
 
+import asyncio
 import logging
 import uuid
 from collections import OrderedDict
@@ -19,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from ...llm import create_client
 from ...observability.metrics import record_deliberation
 from ...orchestration.deliberation_audit import audited_round_table
+from ...orchestration.ingest_scan import scan_user_message
 from ...orchestration.round_table import (
     RoundTable,
     RoundTableConfig,
@@ -84,6 +86,17 @@ async def submit_task(
         validate_length(task_request.content, "content", min_length=1, max_length=MAX_CONTENT_SIZE)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Detect-only Layer 1 scan on the submitted task content (logs +
+    # integrity flag; never blocks, never mutates). Off-loop: the flag
+    # write is blocking store I/O.
+    await asyncio.to_thread(
+        scan_user_message,
+        task_request.content,
+        surface="round_table",
+        store=getattr(request.app.state, "learning_store", None),
+        tenant_id=auth.tenant_id,
+    )
 
     if registry.count == 0:
         raise HTTPException(

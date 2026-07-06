@@ -12,7 +12,13 @@ This adapter handles the HTTP calls, timeouts, retries, and JSON conversion.
 
 Security:
   - All agent responses are sanitized (null bytes stripped, size-limited)
-  - Prompt injection patterns in agent output are detected and logged
+  - Prompt injection patterns in agent output are detected and logged with
+    the full Layer 1+2 scan (advanced=True: static patterns plus
+    homoglyph/invisible-char/encoding decoding). Detection is log-only on
+    this surface -- benign encoded content (JWTs, hex digests, base64
+    blobs) is normal in agent responses, so a finding never drops a field.
+    The per-response sanitize+scan work (up to 100 items x 50k chars) runs
+    off the event loop via asyncio.to_thread, one hop per response
   - Response size is capped to prevent memory exhaustion
   - String fields are truncated to safe limits
   - DNS is re-validated before every request attempt (anti-rebinding),
@@ -111,7 +117,9 @@ class RemoteAgent:
     def _sanitize_string(self, value: str, field_name: str = "field") -> str:
         """Sanitize a string field from an external agent response."""
         sanitized = sanitize_for_prompt(value, max_length=MAX_FIELD_LENGTH)
-        injections = detect_injection_attempt(sanitized)
+        # advanced=True adds Layer 2 decoding (lazy imports inside the
+        # guard). Log-only: the sanitized value is returned regardless.
+        injections = detect_injection_attempt(sanitized, advanced=True)
         if injections:
             logger.warning(
                 f"[RemoteAgent:{self._name}] Prompt injection patterns detected "
@@ -209,15 +217,13 @@ class RemoteAgent:
             f"after {MAX_RETRIES + 1} attempts: {last_error}"
         )
 
-    async def analyze(self, task: RoundTableTask) -> AgentAnalysis:
-        """POST {base_url}/analyze with task JSON, return sanitized AgentAnalysis."""
-        payload = {
-            "task_id": task.id,
-            "content": task.content,
-            "context": task.context,
-            "constraints": task.constraints,
-        }
-        data = await self._post("analyze", payload)
+    # Response construction (the _build_* helpers) runs the full Layer
+    # 1+2 scan over up to 100 dict items x 50k chars per response --
+    # real CPU work that must not run inline in the async callers. Each
+    # async method offloads the WHOLE build once per response (one
+    # thread hop, not one per string field).
+
+    def _build_analysis(self, data: dict) -> AgentAnalysis:
         return AgentAnalysis(
             agent_name=self._name,
             domain=self._domain,
@@ -231,16 +237,7 @@ class RemoteAgent:
             raw_response=sanitize_for_prompt(str(data), max_length=MAX_FIELD_LENGTH),
         )
 
-    async def challenge(
-        self, task: RoundTableTask, other_analyses: list[AgentAnalysis]
-    ) -> AgentChallenge:
-        """POST {base_url}/challenge with task + analyses JSON, return sanitized."""
-        payload = {
-            "task_id": task.id,
-            "content": task.content,
-            "other_analyses": [asdict(a) for a in other_analyses],
-        }
-        data = await self._post("challenge", payload)
+    def _build_challenge(self, data: dict) -> AgentChallenge:
         return AgentChallenge(
             agent_name=self._name,
             challenges=self._sanitize_dict_list(
@@ -251,16 +248,7 @@ class RemoteAgent:
             ),
         )
 
-    async def vote(
-        self, task: RoundTableTask, synthesis: SynthesisResult
-    ) -> AgentVote:
-        """POST {base_url}/vote with task + synthesis JSON, return sanitized."""
-        payload = {
-            "task_id": task.id,
-            "content": task.content,
-            "synthesis": asdict(synthesis),
-        }
-        data = await self._post("vote", payload)
+    def _build_vote(self, data: dict) -> AgentVote:
         dissent = data.get("dissent_reason")
         if isinstance(dissent, str):
             dissent = self._sanitize_string(dissent, "vote.dissent_reason")
@@ -273,6 +261,41 @@ class RemoteAgent:
             ],
             dissent_reason=dissent,
         )
+
+    async def analyze(self, task: RoundTableTask) -> AgentAnalysis:
+        """POST {base_url}/analyze with task JSON, return sanitized AgentAnalysis."""
+        payload = {
+            "task_id": task.id,
+            "content": task.content,
+            "context": task.context,
+            "constraints": task.constraints,
+        }
+        data = await self._post("analyze", payload)
+        return await asyncio.to_thread(self._build_analysis, data)
+
+    async def challenge(
+        self, task: RoundTableTask, other_analyses: list[AgentAnalysis]
+    ) -> AgentChallenge:
+        """POST {base_url}/challenge with task + analyses JSON, return sanitized."""
+        payload = {
+            "task_id": task.id,
+            "content": task.content,
+            "other_analyses": [asdict(a) for a in other_analyses],
+        }
+        data = await self._post("challenge", payload)
+        return await asyncio.to_thread(self._build_challenge, data)
+
+    async def vote(
+        self, task: RoundTableTask, synthesis: SynthesisResult
+    ) -> AgentVote:
+        """POST {base_url}/vote with task + synthesis JSON, return sanitized."""
+        payload = {
+            "task_id": task.id,
+            "content": task.content,
+            "synthesis": asdict(synthesis),
+        }
+        data = await self._post("vote", payload)
+        return await asyncio.to_thread(self._build_vote, data)
 
     async def health_check(self) -> bool:
         """Check if the remote agent is reachable."""
