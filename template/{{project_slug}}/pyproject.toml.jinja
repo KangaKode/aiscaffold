@@ -40,8 +40,10 @@ postgres = ["psycopg[binary]>=3.1"]
 mcp = ["mcp>=1.0"]
 # Prometheus exposition at GET /metrics/prometheus (observability/metrics.py)
 metrics = ["prometheus_client>=0.20"]
+{% if include_api_gateway -%}
 # Locust load harness (tests/load/locustfile.py) -- never a base dependency
 load = ["locust>=2.20"]
+{% endif -%}
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]

@@ -1,7 +1,7 @@
 # Operations Guide
 
 Running {{ project_name }} in production: failure postures, recovery,
-monitoring, backups, and load testing. Every statement here matches the
+monitoring{% if include_api_gateway %}, backups, and load testing{% else %} and backups{% endif %}. Every statement here matches the
 shipped code -- where a posture matters, the implementing module is named
 so you can verify it.
 
@@ -119,6 +119,7 @@ pg_restore --clean --if-exists --dbname="$LEARNING_POSTGRES_DSN" learning.dump
 The docker-compose Postgres service (when `persistence=postgres`) stores
 data in the `pgdata` volume; back that up on the same schedule.
 
+{% if include_api_gateway -%}
 ---
 
 ## Load Testing
@@ -189,3 +190,4 @@ jobs:
       # threshold check: paste the Python snippet from the recipe above
       - run: docker compose down
 ```
+{% endif -%}

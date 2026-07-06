@@ -29,9 +29,17 @@ spec:
         - name: {{ project_slug }}
           # Replace `latest` with an immutable release tag in production.
           image: {{ project_slug }}:latest
+{% if include_api_gateway %}
           ports:
             - containerPort: 8000
               name: http
+{% else %}
+          # No API gateway in this project: no HTTP port. The default image
+          # CMD prints usage and exits, so a pod running it as-is will
+          # CrashLoopBackOff -- override `command:` with your own
+          # long-running process before deploying.
+          # command: ["python", "-m", "your_long_running_module"]
+{% endif %}
           envFrom:
             - configMapRef:
                 name: {{ project_slug }}-config

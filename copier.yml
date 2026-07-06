@@ -32,6 +32,12 @@ _exclude:
   - "{% if not include_evals %}/evals/**{% endif %}"
   - "{% if not include_api_gateway %}/src/*/api{% endif %}"
   - "{% if not include_api_gateway %}/src/*/api/**{% endif %}"
+  # The k8s Service, the load harness, and its compose override presuppose
+  # an HTTP server -- all gateway-only:
+  - "{% if not include_api_gateway %}/deploy/k8s/service.yaml{% endif %}"
+  - "{% if not include_api_gateway %}/docker-compose.load.yml{% endif %}"
+  - "{% if not include_api_gateway %}/tests/load{% endif %}"
+  - "{% if not include_api_gateway %}/tests/load/**{% endif %}"
   - "{% if not include_deployment %}/Dockerfile{% endif %}"
   - "{% if not include_deployment %}/docker-compose*.yml{% endif %}"
   - "{% if not include_deployment %}/.dockerignore{% endif %}"

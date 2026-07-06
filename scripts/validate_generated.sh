@@ -242,8 +242,16 @@ def _excluded(relative: Path) -> bool:
     parts = relative.parts
     if not context["include_evals"] and "evals" in parts:
         return True
-    if not context["include_api_gateway"] and "src" in parts and "api" in parts:
-        return True
+    if not context["include_api_gateway"]:
+        if "src" in parts and "api" in parts:
+            return True
+        # HTTP-only artifacts: k8s Service, Locust harness + compose override.
+        if "deploy" in parts and relative.name.startswith("service.yaml"):
+            return True
+        if relative.name.startswith("docker-compose.load"):
+            return True
+        if "tests" in parts and "load" in parts:
+            return True
     if not context["include_deployment"]:
         name = relative.name
         if name in ("Dockerfile", "Dockerfile.jinja", ".dockerignore") or "deploy" in parts:
@@ -507,7 +515,7 @@ elif [ -d "$GEN_ROOT/tests" ]; then
 
     # Run all test files (all use mocks/in-process testing, no external deps)
     UNIT_FILES=""
-    for f in tests/test_security.py tests/test_injection_defense.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_extraction_defense.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py; do
+    for f in tests/test_security.py tests/test_injection_defense.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_extraction_defense.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py; do
         if [ -f "$f" ]; then
             UNIT_FILES="$UNIT_FILES $f"
         fi
@@ -529,8 +537,13 @@ elif [ -d "$GEN_ROOT/tests" ]; then
     fi
 
     # Import sweep: every module in the generated package must import
-    # cleanly with only the base dependencies installed (proves e.g. a
-    # gateway-off project is importable end to end).
+    # cleanly in this step's environment (the pip install above includes
+    # fastapi/uvicorn/httpx in every profile, so this does NOT prove
+    # imports succeed with only base deps -- it proves e.g. a gateway-off
+    # project has no dangling imports of its excluded api/ tree).
+    # Caveat: pkgutil.walk_packages silently skips the children of a
+    # subpackage whose __init__ fails to import; the parent failure is
+    # still reported, child modules are not enumerated.
     IMPORT_SWEEP=$(python3 - "$PROJECT_SLUG" <<'PY'
 import importlib
 import pkgutil
@@ -633,10 +646,37 @@ if [ "$INCLUDE_API_GATEWAY" = "true" ]; then
     grep -q '^serve:' "$GEN_ROOT/Makefile" \
         && pass "gateway on: Makefile has serve target" \
         || fail "gateway on: Makefile serve target missing"
+    # .env.example must NOT ship an active API_HOST: compose env_file
+    # values override image ENV, so an uncommented API_HOST=127.0.0.1
+    # would bind uvicorn to the container's loopback and kill the
+    # published port while the localhost HEALTHCHECK stays green.
+    ! grep -q '^API_HOST=' "$GEN_ROOT/.env.example" \
+        && pass "gateway on: .env.example API_HOST is commented out" \
+        || fail "gateway on: .env.example has ACTIVE API_HOST (breaks container bind)"
+    grep -q '^load = ' "$GEN_ROOT/pyproject.toml" \
+        && pass "gateway on: pyproject has [load] extra" \
+        || fail "gateway on: pyproject [load] extra missing"
+    [ -f "$GEN_ROOT/tests/load/locustfile.py" ] \
+        && pass "gateway on: tests/load/ harness present" \
+        || fail "gateway on: tests/load/ harness missing"
     if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
         grep -q 'localhost:8000/health' "$GEN_ROOT/Dockerfile" \
             && pass "gateway on: Dockerfile HEALTHCHECK hits /health" \
             || fail "gateway on: Dockerfile HEALTHCHECK missing"
+        # Belt-and-braces for the same env_file-override bug: compose's
+        # environment: block (which outranks env_file) pins the bind.
+        grep -q 'API_HOST=0.0.0.0' "$GEN_ROOT/docker-compose.yml" \
+            && pass "gateway on: compose pins API_HOST=0.0.0.0 in environment:" \
+            || fail "gateway on: compose does not pin API_HOST=0.0.0.0"
+        grep -q '"8000:8000"' "$GEN_ROOT/docker-compose.yml" \
+            && pass "gateway on: compose publishes port 8000" \
+            || fail "gateway on: compose port mapping missing"
+        [ -f "$GEN_ROOT/deploy/k8s/service.yaml" ] \
+            && pass "gateway on: k8s Service present" \
+            || fail "gateway on: k8s Service missing"
+        [ -f "$GEN_ROOT/docker-compose.load.yml" ] \
+            && pass "gateway on: load-test compose override present" \
+            || fail "gateway on: docker-compose.load.yml missing"
     fi
 else
     [ ! -d "$GEN_SRC/api" ] \
@@ -648,10 +688,34 @@ else
     grep -q '^httpx' "$GEN_ROOT/requirements.txt" \
         && pass "gateway off: httpx still a base dependency (remote agents)" \
         || fail "gateway off: httpx missing from requirements.txt"
+    # The load harness presupposes an HTTP server.
+    ! grep -q '^load = ' "$GEN_ROOT/pyproject.toml" \
+        && pass "gateway off: pyproject has no [load] extra" \
+        || fail "gateway off: pyproject still ships the [load] extra"
+    [ ! -d "$GEN_ROOT/tests/load" ] \
+        && pass "gateway off: tests/load/ excluded" \
+        || fail "gateway off: tests/load/ still generated"
     if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
+        # gateway-off + deployment-on: the image CMD prints usage and
+        # exits, so nothing may publish port 8000 or restart-loop it.
         ! grep -q 'localhost:8000/health' "$GEN_ROOT/Dockerfile" \
             && pass "gateway off: Dockerfile has no HTTP HEALTHCHECK" \
             || fail "gateway off: Dockerfile still HEALTHCHECKs /health"
+        ! grep -q '"8000:8000"' "$GEN_ROOT/docker-compose.yml" \
+            && pass "gateway off: compose publishes no port" \
+            || fail "gateway off: compose still publishes port 8000"
+        grep -q 'command:' "$GEN_ROOT/docker-compose.yml" \
+            && pass "gateway off: compose documents the command: override" \
+            || fail "gateway off: compose lacks the command: override note"
+        [ ! -f "$GEN_ROOT/deploy/k8s/service.yaml" ] \
+            && pass "gateway off: k8s Service excluded" \
+            || fail "gateway off: k8s Service still generated"
+        ! grep -q 'containerPort' "$GEN_ROOT/deploy/k8s/deployment.yaml" \
+            && pass "gateway off: k8s deployment exposes no containerPort" \
+            || fail "gateway off: k8s deployment still exposes containerPort"
+        [ ! -f "$GEN_ROOT/docker-compose.load.yml" ] \
+            && pass "gateway off: load-test compose override excluded" \
+            || fail "gateway off: docker-compose.load.yml still generated"
     fi
 fi
 
