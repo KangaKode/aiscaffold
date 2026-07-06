@@ -27,7 +27,7 @@ The codebase follows strict layered architecture with enforced dependency direct
 
 ### Additional Modules (outside the layer stack)
 
-These modules are not part of the dependency chain above. This table is descriptive (measured from the import graph), not test-enforced -- `tests/test_architecture.py` checks the layer directories above, which start empty, and does not currently scan `src/`:
+These modules are not part of the dependency chain above. This table is measured from the actual import graph and is **test-enforced**: `TestSrcPackageDependencies` in `tests/test_architecture.py` fails when a `src/{{ project_slug }}` module imports outside its measured allowance (`SRC_ALLOWED_IMPORTS`), and when any src file exceeds 800 lines. Adding a legitimate dependency means extending both the test table and this document in the same change.
 
 | Module | Imports From | Imported By | Purpose |
 |--------|-------------|-------------|---------|
@@ -38,14 +38,16 @@ These modules are not part of the dependency chain above. This table is descript
 | `agents/` | `security/`, `llm/`, `enforcement/`, `orchestration/` (protocol types) | `orchestration/`, `api/` | Agent implementations, registry, identity |
 | `connectors/` | `security/` | `orchestration/`, `api/` | MCP client + per-tenant server registry |
 {% if include_api_gateway -%}
-| `api/` | All modules | (external HTTP) | FastAPI gateway, routes, middleware |
+| `api/` | All modules except `enforcement/` | (external HTTP) | FastAPI gateway, routes, middleware |
 {% endif -%}
 {% if include_learning -%}
 | `learning/` | `security/` | `api/`, `harness/`, `orchestration/` | Feedback, trust, preferences, RAG |
 {% endif -%}
 | `harness/` | `learning/` (optional) | `api/` | Session lifecycle + sequence detector |
 
-Note the `agents/` <-> `orchestration/` cycle: agent protocol types currently live in `orchestration/round_table.py`, so `agents/` imports them back. It is a known wart, documented rather than hidden.
+Note the `agents/` <-> `orchestration/` cycle: agent protocol types currently live in `orchestration/round_table.py`, so `agents/` imports them back. It is a known wart -- tracked debt encoded as-is in `SRC_ALLOWED_IMPORTS`, documented rather than hidden.
+
+**Two scopes, one wart.** The layer directories above (`{{ layers }}`) live at the project root and are *not* part of the installed package: `pip install -e .` installs only `src/{{ project_slug }}/`. Code inside the layers can import the package (`from {{ project_slug }}.llm import ...`), but the package never imports the layers, and the layers are importable only when running from the project root (pytest and the Makefile both do). This src-layout split is a known wart, documented rather than restructured.
 
 ### Dependency Direction Rules
 
@@ -186,7 +188,6 @@ FastAPI application with route modules:
 - `routes/chat.py` -- Chat messages with SSE streaming
 - `routes/agents.py` -- Agent registry CRUD
 - `routes/sessions.py` -- Session thread management
-- `routes/webhooks.py` -- Async agent result delivery
 - `routes/feedback.py` -- User feedback signals
 - `routes/preferences.py` -- Learned preference management
 - `routes/checkins.py` -- Permission-based adaptation gates
@@ -226,8 +227,8 @@ Prompt injection is defended in 3 layers: static pattern matching in `prompt_gua
 - `reflector.py` -- Deterministic process-level lessons after each round table (agent effectiveness, evidence patterns, challenge impact, dissent value); capped, structured-fields-only, read via `GET /api/v1/reflections`
 - `error_schemata.py` -- Generalizes clusters of approved corrections (>= 3, >= 2 distinct proposers) into reusable error schemas injected into single-shot context
 - `contradiction.py` -- Pure-Python TF-IDF + negation heuristic flagging approved corrections that likely disagree; findings go to integrity flags
-- `rag/` -- Vector store adapter, embeddings, semantic preference search
-- `rag/transcript_indexer.py` -- Indexes round table results for semantic search over past deliberations
+- `rag/` -- Vector store adapter, embeddings, semantic preference search. Search is truly semantic only with a real embedding provider (`EMBEDDING_PROVIDER=local|openai|auto`); the default hash fallback is deterministic filler whose vectors carry no meaning, so with the in-memory store retrieval then uses keyword matching instead of pretending cosine similarity works (Chroma has no keyword path -- hash vectors are stored as-is there, and ranking stays noise until a real provider is set)
+- `rag/transcript_indexer.py` -- Indexes round table results for search over past deliberations (semantic with a real provider, keyword with the default fallback)
 {% endif -%}
 
 ---

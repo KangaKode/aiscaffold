@@ -80,7 +80,6 @@ async def register_agent(
         base_url=registration.base_url,
         api_key=registration.api_key,
         capabilities=registration.capabilities,
-        mode=registration.mode,
         access_scopes=registration.access_scopes,
         max_calls_per_hour=registration.max_calls_per_hour,
         is_meta_agent=registration.is_meta_agent,
@@ -94,7 +93,6 @@ async def register_agent(
         agent_type="remote",
         base_url=registration.base_url,
         capabilities=registration.capabilities,
-        mode=registration.mode,
         visibility=registration.visibility,
         tenant_id=auth.tenant_id,
     )

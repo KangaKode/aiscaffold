@@ -54,7 +54,6 @@ from .routes import (
     resolve,
     round_table,
     sessions,
-    webhooks,
 )
 
 logger = logging.getLogger(__name__)
@@ -271,9 +270,6 @@ def create_app(
     )
     application.include_router(
         sessions.router, prefix="/api/v1", tags=["Sessions"]
-    )
-    application.include_router(
-        webhooks.router, prefix="/api/v1", tags=["Webhooks"]
     )
     application.include_router(
         chat.router, prefix="/api/v1", tags=["Chat"]

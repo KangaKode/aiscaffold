@@ -14,7 +14,8 @@ Security:
   - invoke responses are sanitized before they leave the platform
   - Requires app.state.mcp_registry / mcp_client (503 when not configured)
 
-Keep this file under 250 lines.
+Keep this file under 300 lines. (Raised from 250: store-correctness
+hardening of the registry routes grew the module.)
 """
 
 from __future__ import annotations

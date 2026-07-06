@@ -273,8 +273,7 @@ curl -X POST https://platform.example.com/api/v1/agents \
     "domain": "application security",
     "base_url": "https://your-agent.example.com",
     "api_key": "your-agent-secret",
-    "capabilities": ["security", "owasp", "code_review"],
-    "mode": "sync"
+    "capabilities": ["security", "owasp", "code_review"]
   }'
 ```
 

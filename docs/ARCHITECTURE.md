@@ -38,7 +38,7 @@ Generated projects use a layered layout with a safety-first multi-agent runtime:
     learning/         # Feedback, trust, preferences, RAG, corrections, integrity analytics
     llm/              # Provider-aware LLM client with prompt caching
     orchestration/    # Round table, chat orchestrator, routing
-    security/         # Prompt guard, injection defense, SSRF validation, webhook verification
+    security/         # Prompt guard, injection defense, SSRF validation
   docs/               # Generated project documentation
   evals/              # Capability and regression eval infrastructure
   tests/              # Architecture, security, API, and orchestration tests

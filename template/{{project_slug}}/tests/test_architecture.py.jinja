@@ -65,6 +65,46 @@ ALLOWED_ROOT_DIRS = {
     ".cursor", ".git", ".github", ".ruff_cache",
 }
 
+# =============================================================================
+# SHIPPED src/ PACKAGE RULES
+#
+# The scaffold ships a second scope: the installed package under
+# src/{{ project_slug }}/. The map below is MEASURED from the actual import
+# graph of the shipped code (module -> other src modules it may import),
+# not an aspirational design. If you add a legitimate dependency, extend
+# the entry here in the same PR -- the point is that changes to the
+# dependency structure are deliberate, not accidental.
+#
+# Known tracked debt: agents/ <-> orchestration/ form a cycle (agent
+# protocol types live in orchestration/round_table.py, so agents/ imports
+# them back). Documented in docs/ARCHITECTURE.md rather than hidden here.
+#
+# Modules NOT listed (e.g. new ones you create) are unconstrained until
+# you add an entry.
+# =============================================================================
+
+SRC_PACKAGE = os.path.join(PROJECT_ROOT, "src", "{{ project_slug }}")
+SRC_MAX_FILE_LINES = 800
+
+SRC_ALLOWED_IMPORTS = {
+    "agents": {"enforcement", "llm", "orchestration", "security"},
+    "api": {
+        "agents", "connectors", "harness", "learning", "llm",
+        "observability", "orchestration", "security",
+    },
+    "connectors": {"security"},
+    "enforcement": {"llm"},
+    "harness": {"learning"},
+    "learning": {"security"},
+    "llm": {"observability", "security"},
+    "observability": set(),
+    "orchestration": {
+        "agents", "connectors", "enforcement", "learning", "llm",
+        "observability", "security",
+    },
+    "security": set(),
+}
+
 
 # =============================================================================
 # HELPERS
@@ -85,7 +125,7 @@ def _get_python_files(directory: str) -> list[str]:
 def _get_imports(filepath: str) -> list[tuple[str, int]]:
     imports = []
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, encoding="utf-8") as f:
             tree = ast.parse(f.read(), filename=filepath)
     except SyntaxError:
         return imports
@@ -100,10 +140,48 @@ def _get_imports(filepath: str) -> list[tuple[str, int]]:
 
 def _count_lines(filepath: str) -> int:
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, encoding="utf-8") as f:
             return sum(1 for _ in f)
     except Exception:
         return 0
+
+
+def _src_module_imports(filepath: str, package_modules: set[str]) -> set[str]:
+    """Top-level src modules imported by one file (absolute AND relative,
+    including imports inside function bodies -- lazy imports still create
+    the dependency)."""
+    try:
+        with open(filepath, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=filepath)
+    except SyntaxError:
+        return set()
+
+    rel_parts = os.path.relpath(filepath, SRC_PACKAGE).split(os.sep)
+    file_pkg = rel_parts[:-1]  # package path of this file inside src/
+
+    package_name = os.path.basename(SRC_PACKAGE)
+
+    def _top_module(dotted: str) -> str:
+        parts = dotted.split(".")
+        if parts[0] == package_name and len(parts) > 1:
+            return parts[1]  # absolute self-import: {{ project_slug }}.<module>
+        return parts[0]
+
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level and node.level > 0:
+                base = file_pkg[: len(file_pkg) - (node.level - 1)]
+                target = base + (node.module.split(".") if node.module else [])
+                if target and target[0] in package_modules:
+                    imported.add(target[0])
+            elif node.module and _top_module(node.module) in package_modules:
+                imported.add(_top_module(node.module))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if _top_module(alias.name) in package_modules:
+                    imported.add(_top_module(alias.name))
+    return imported
 
 
 # =============================================================================
@@ -149,6 +227,65 @@ class TestFileSizeLimits:
                 f"\n{len(oversized)} file(s) exceed {MAX_FILE_LINES} lines:\n"
                 + "\n".join(oversized),
                 stacklevel=2,
+            )
+
+
+class TestSrcPackageDependencies:
+    """Import-dependency map for the shipped src/{{ project_slug }} package.
+
+    Complements TestDependencyDirections (which governs the user-facing
+    layer directories): this class governs the scaffold code itself.
+    """
+
+    @pytest.mark.p0
+    def test_src_import_map(self):
+        """Every src module's cross-module imports stay within its
+        measured allowance (SRC_ALLOWED_IMPORTS)."""
+        if not os.path.isdir(SRC_PACKAGE):
+            pytest.skip("src package not present")
+
+        present = {
+            d for d in os.listdir(SRC_PACKAGE)
+            if os.path.isdir(os.path.join(SRC_PACKAGE, d)) and d != "__pycache__"
+        }
+        violations = []
+        for module, allowed in SRC_ALLOWED_IMPORTS.items():
+            module_dir = os.path.join(SRC_PACKAGE, module)
+            if not os.path.isdir(module_dir):
+                continue  # optional trees (e.g. api/ with the gateway off)
+            for filepath in _get_python_files(module_dir):
+                extra = _src_module_imports(filepath, present) - allowed - {module}
+                for target in sorted(extra):
+                    rel = os.path.relpath(filepath, PROJECT_ROOT)
+                    violations.append(
+                        f"  {rel} imports '{target}' (allowed: "
+                        f"{sorted(allowed) or 'nothing'})"
+                    )
+        if violations:
+            pytest.fail(
+                f"\n{len(violations)} src import(s) outside the measured map:\n"
+                + "\n".join(violations)
+                + "\n\nIf the dependency is deliberate, extend SRC_ALLOWED_IMPORTS"
+                "\nand docs/ARCHITECTURE.md in the same change."
+            )
+
+    @pytest.mark.p1
+    def test_src_file_sizes(self):
+        """No shipped src module may exceed the hard cap (800 lines)."""
+        if not os.path.isdir(SRC_PACKAGE):
+            pytest.skip("src package not present")
+        oversized = []
+        for filepath in _get_python_files(SRC_PACKAGE):
+            lc = _count_lines(filepath)
+            if lc > SRC_MAX_FILE_LINES:
+                oversized.append(
+                    f"  {os.path.relpath(filepath, PROJECT_ROOT)}: {lc} lines"
+                )
+        if oversized:
+            pytest.fail(
+                f"\n{len(oversized)} src file(s) exceed {SRC_MAX_FILE_LINES} lines:\n"
+                + "\n".join(oversized)
+                + "\n\nSplit the module (docs/ARCHITECTURE.md, file-size policy)."
             )
 
 

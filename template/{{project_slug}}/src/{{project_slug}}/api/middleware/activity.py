@@ -88,12 +88,16 @@ class ActivityTrackingMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _run_checks(request: Request, tracker, user_id: str) -> None:
-        """Sampled detection pass: burst thresholds + timing regularity.
-        Best-effort -- findings persist as integrity flags; failures are
-        logged and can never fail the request."""
+        """Sampled detection pass: burst thresholds + timing regularity,
+        plus the opt-in retention prune (ACTIVITY_RETENTION_DAYS -- a
+        no-op unless the operator sets it). Best-effort -- findings
+        persist as integrity flags; failures are logged and can never
+        fail the request."""
         tracker.check_thresholds(user_id)
         store = getattr(request.app.state, "learning_store", None)
         if store is not None:
+            from ...learning.retention import prune_activity_events
             from ...learning.timing_analysis import check_timing_regularity
 
             check_timing_regularity(store, user_id=user_id)
+            prune_activity_events(store)

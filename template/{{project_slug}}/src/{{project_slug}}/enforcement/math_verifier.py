@@ -4,7 +4,8 @@ MathVerifier -- validates numeric claims against ground truth.
 Uses a pluggable GroundTruthProvider protocol so projects can wire in
 their computed data. Ships with a no-op default that skips verification.
 
-Keep this file under 80 lines.
+Keep this file under 120 lines. (Raised from 80: security-review fixes
+grew the module past its original budget.)
 """
 
 import logging

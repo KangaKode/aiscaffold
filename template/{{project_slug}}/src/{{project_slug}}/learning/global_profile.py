@@ -11,7 +11,9 @@ Tracks:
 
 No domain-specific fields -- just vanilla interaction metadata.
 
-Keep this file under 200 lines.
+Keep this file under 250 lines. (Raised from 200: input validation and
+path-safety hardening grew the module; split storage I/O helpers out if
+it approaches the new cap.)
 """
 
 import logging

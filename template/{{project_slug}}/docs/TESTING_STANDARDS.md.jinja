@@ -33,11 +33,19 @@
 
 ## Architecture Tests
 
-`tests/test_architecture.py` enforces:
+`tests/test_architecture.py` enforces two scopes:
+
+**Your layer directories** (`{{ layers }}` -- start empty, rules bind what you add):
 - Dependency direction rules (lower layers never import from higher)
 - File size limits (warning at 500+ lines)
 - Root cleanliness (no stray files)
 - Core module existence
+
+**The shipped `src/{{ project_slug }}` package** (the scaffold code itself):
+- Import-dependency map (`SRC_ALLOWED_IMPORTS`, measured from the actual
+  import graph; the known `agents/` <-> `orchestration/` cycle is encoded
+  as tracked debt -- see docs/ARCHITECTURE.md)
+- Hard file-size cap: any src module over 800 lines fails
 
 ---
 

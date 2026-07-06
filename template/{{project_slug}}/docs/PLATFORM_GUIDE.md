@@ -140,7 +140,6 @@ Apply `require_role` to every route. Here's the recommended minimum:
 | `/preferences` | GET | viewer | Read-only |
 | `/checkins` | GET | viewer | Read-only |
 | `/checkins/{id}/respond` | POST | member | Approves/rejects |
-| `/webhooks/agents/{id}` | POST | member | Receives agent results |
 | `/reports/governance` | GET | admin | Aggregated oversight data (counts only, but org-wide) |
 | `/health` | GET | (public) | K8s probes, no auth |
 | `/health/ready` | GET | (public) | K8s probes, no auth |
@@ -296,14 +295,13 @@ See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the full HTTP contract with JSON 
 - **Response sanitization**: All agent responses are sanitized for prompt injection and size-limited (5MB body, 50K per field)
 - **Evidence enforcement**: The enforcement pipeline validates the agent's analysis before it enters the challenge phase
 - **Rate limiting**: Per-IP rate limits on all endpoints (per-tenant when you add tenant-based keying)
-- **HMAC webhooks**: For async agents, webhook payloads are signed with HMAC-SHA256
 
-> **SECURITY: HMAC Webhook Verification**
-> - Set `WEBHOOK_SECRET` in production. Without it, signature verification is skipped entirely.
-> - The platform signs the raw request body with `hmac.new(secret, body, sha256)` and sends the signature in `X-Webhook-Signature: sha256=<hex>`.
-> - Agents should verify the signature before processing the payload.
-> - For replay protection, include a timestamp in the payload and reject requests older than 5 minutes.
-> - Rotate `WEBHOOK_SECRET` periodically. When rotating, accept both old and new secrets during the transition window.
+Agent calls are synchronous: the orchestrator dispatches `/analyze`,
+`/challenge`, and `/vote` over HTTP and waits (with timeout and retries)
+for each response. There is no async callback path -- an earlier webhook
+receiver was removed because nothing ever consumed its results; if your
+agents need long-running work, poll or queue inside your agent behind
+the synchronous endpoint contract.
 
 ### Onboarding checklist for a new team
 
@@ -470,7 +468,7 @@ Because every caller goes through the protocol, enterprise deployments extend wi
 The learning layer reshapes agent behavior, so it gets its own integrity controls. All findings are persisted as integrity flags and surfaced through `GET /api/v1/activity/anomalies` (resolve via `POST /api/v1/activity/anomalies/{flag_id}/resolve`) -- nothing is auto-rejected or auto-suspended; a human closes every flag:
 
 - **Corrections lifecycle**: corrections only influence prompts after human approval, with a four-eyes rule (approver must differ from proposer; `require_four_eyes=False` for single-operator setups) and a check-in opened per proposal. The full lifecycle is exposed over HTTP at `/api/v1/corrections` (see the governance API routes above).
-- **Right to be forgotten**: `learning/erasure.py` hard-deletes a correction on request (GDPR Art. 17) -- an actual row delete, not a status flip -- with a per-tenant daily cap (`ERASURE_DAILY_CAP`, default 10) so a compromised credential cannot bulk-wipe learned knowledge, and a metadata-only audit event recording that the erasure happened.
+- **Right to be forgotten**: `learning/erasure.py` hard-deletes a correction on request (GDPR Art. 17) -- an actual row delete, not a status flip -- with a per-tenant daily cap (`ERASURE_DAILY_CAP`, default 10) so a compromised credential cannot bulk-wipe learned knowledge, and a metadata-only audit event recording that the erasure happened. Derived artifacts: error schemas citing the erased correction are deleted and re-extracted from the remaining corrections only (the erased text does not survive in generalized form), and the approval check-ins opened for the correction -- their prompts embed the original/corrected claim verbatim, and expiry alone never deletes them -- are hard-deleted whatever their status (the API passes the check-in manager through; library callers must do the same to get this sweep, and the response's `checkins_deleted` count reports what happened). Reflections and the RAG preference/transcript indexes are not derived from corrections and are untouched. Backups and text already sent to LLM providers remain out of scope (see GOVERNANCE.md Non-Claims).
 - **Context budget**: approved corrections render into prompts under a character budget (`CORRECTION_CONTEXT_BUDGET`, default 4000) with sanitized fields.
 - **Override screening**: each proposed correction is screened for prompt injection, safety-agent targeting ("ignore the skeptic"), and evidence-level inflation before it reaches a reviewer.
 - **Collusion detection** (shipped, you wire): pairwise vote-lockstep and reciprocal never-challenge analysis flags agent pairs that stop checking each other. The detector is implemented and tested, but the default runtime does not record votes into it -- call `CollusionDetector.record_votes` from your post-deliberation hook to activate it (see GOVERNANCE.md Non-Claims).

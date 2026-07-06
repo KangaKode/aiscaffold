@@ -193,7 +193,6 @@ API route modules expose the core workflow over HTTP:
 - `GET  /api/v1/reports/governance?from_date=&to_date=` -- Tenant-scoped governance report (counts only): deliberation outcomes, integrity flags, corrections lifecycle activity + stale-knowledge summary, reflections, budget spend
 - `GET  /api/v1/activity/anomalies` -- Behavioral integrity flags (+ `POST .../resolve`)
 - `POST /api/v1/sessions` -- Session lifecycle (turns, retrieval, listing)
-- `POST /api/v1/webhooks/agents/{agent_id}` -- HMAC-verified async agent callbacks
 - `GET  /health` -- Liveness
 - `GET  /health/ready` -- Readiness
 - `GET  /metrics` -- Basic operational metrics (JSON)
@@ -338,8 +337,7 @@ erDiagram
 - 3-layer prompt injection defense: static pattern detection (`prompt_guard`), homoglyph normalization / invisible-character stripping / encoding-attack detection (`injection_defense`), and semantic screening by the Sentinel agent -- applied per surface, with coverage that varies by surface (the honest per-surface breakdown lives in [SECURITY_MODEL.md](SECURITY_MODEL.md) and the generated GOVERNANCE.md Non-Claims)
 - Injection-defense golden set (when `include_evals`): `evals/tasks/test_injection_defense_golden.py` grades a ~50-case labeled dataset through Layers 1 and 2 (imported, not reimplemented) against a frozen per-category FP/FN baseline and fails on regression -- a deterministic regression smoke set, explicitly not a security benchmark and not Layer-3 (Sentinel) coverage. Malicious cases reference the shared adversarial corpus; benign look-alikes measure false positives
 - Input size limits on user-facing content endpoints (chat, tasks, sessions, feedback)
-- Rate limiting per client IP with stale-IP eviction and 10K IP hard cap
-- HMAC-SHA256 webhook signature verification for async agents
+- Rate limiting per client IP with stale-IP eviction and 10K IP hard cap (per process -- replicas multiply the effective limit; documented in the generated OPERATIONS.md)
 - API key auth with production enforcement (`AuthContext` with multi-tenancy structural prep)
 - CORS restricted to configured origins (wildcard rejected)
 - DNS TOCTOU limitation documented on URL validation
@@ -491,7 +489,7 @@ make validate         -- Generate test projects for all 4 profiles
                          (full / gateway-off / minimal / defaults) + full suite:
                          unrendered-template guard, ruff lint, bandit security,
                          import validation, red team, AI checks, agent review,
-                         pytest (784 tests collected, 780 passing, 86% coverage),
+                         pytest (815 tests collected, 811 passing, 87% coverage),
                          injection-defense golden set, file structure and
                          toggle-wiring verification
 make validate-matrix  -- Adds 2 more configurations (multi-agent/api-service)
@@ -525,7 +523,7 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 784 tests across 32 files: 780 pass, 3 skip without the
+  tests/              # 815 tests across 33 files: 811 pass, 3 skip without the
                       # [metrics] extra, 1 opt-in Postgres skip (+ tests/load/ Locust harness)
   evals/              # Eval infrastructure
 ```

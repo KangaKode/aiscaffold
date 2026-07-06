@@ -4,7 +4,10 @@ Quick validation checks -- runs directly on template files (~5 seconds).
 
 Checks:
   1. Banned patterns (eval, exec, pickle, hardcoded secrets)
-  2. File size limits (>500 lines warning, >800 lines FAIL)
+  2. File size limits (>500 lines warning, >800 lines FAIL); files that
+     declare their own cap ("Keep this file under N lines") FAIL when
+     they exceed it -- headers are honest budgets, not decoration. A
+     declared cap above the 800 hard limit is itself a failure.
   3. Jinja template syntax (parse without rendering)
   4. IP protection (no proprietary doc references)
   5. Basic Python syntax (compile check on non-Jinja .py files)
@@ -89,12 +92,31 @@ def check_ip_protection(filepath, content):
                 findings.append(f"        {line.strip()[:100]}")
 
 
+# Declared per-file budget, e.g. "Keep this file under 250 lines."
+LINE_CAP_HEADER_RE = re.compile(r"[Kk]eep this file under (\d+) lines")
+
+
 def check_file_size(filepath, content):
     lines = content.count("\n") + 1
     if lines > MAX_FILE_LINES_FAIL:
         findings.append(f"  FAIL: {rel(filepath)} -- {lines} lines (max {MAX_FILE_LINES_FAIL})")
     elif lines > MAX_FILE_LINES_WARN:
         warnings.append(f"  WARN: {rel(filepath)} -- {lines} lines (recommended max {MAX_FILE_LINES_WARN})")
+
+    match = LINE_CAP_HEADER_RE.search(content)
+    if not match:
+        return
+    declared_cap = int(match.group(1))
+    if declared_cap > MAX_FILE_LINES_FAIL:
+        findings.append(
+            f"  FAIL: {rel(filepath)} -- declares a {declared_cap}-line cap, above the "
+            f"{MAX_FILE_LINES_FAIL} hard limit (headers cannot raise the hard cap)"
+        )
+    if lines > declared_cap:
+        findings.append(
+            f"  FAIL: {rel(filepath)} -- {lines} lines exceeds its declared cap of "
+            f"{declared_cap} (split the file or raise the header with a justification)"
+        )
 
 
 def check_jinja_syntax(filepath, content):
@@ -202,7 +224,7 @@ def check_src_layout_install_instructions():
 
 
 def main():
-    print(f"Scanning template files...")
+    print("Scanning template files...")
 
     py_count = scan_directory(TEMPLATE_SRC, extensions=(".py",))
     jinja_count = scan_directory(TEMPLATE_DIR, extensions=(".jinja",))
@@ -246,7 +268,7 @@ def main():
         for f in findings:
             print(f)
         print()
-        print(f"\033[31m✗ Quick checks FAILED\033[0m")
+        print("\033[31m✗ Quick checks FAILED\033[0m")
         sys.exit(1)
     else:
         print(f"\033[32m✓ {total} files checked, 0 failures, {len(warnings)} warnings\033[0m")

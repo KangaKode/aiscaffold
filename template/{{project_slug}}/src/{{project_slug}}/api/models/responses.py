@@ -100,7 +100,6 @@ class AgentInfo(BaseModel):
     agent_type: str = "local"
     base_url: str | None = None
     capabilities: list[str] = Field(default_factory=list)
-    mode: str = "sync"
     visibility: str = "public"
     tenant_id: str = "default"
     healthy: bool = True

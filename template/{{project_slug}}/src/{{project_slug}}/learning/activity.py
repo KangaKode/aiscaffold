@@ -52,6 +52,14 @@ WINDOW_FETCH_CAP = 2000
 # Status codes counted as authentication failures.
 AUTH_FAILURE_CODES = (401, 403)
 
+# Ops/infra routes excluded from the requests_per_hour burst count:
+# liveness/readiness pollers and metric scrapers legitimately hit these
+# on tight schedules (a 10s liveness probe alone is 360 req/h) and would
+# otherwise drown the 300/h default threshold in infrastructure noise.
+# They still count toward failed-auth (a 401 on /metrics is meaningful)
+# and are still recorded as activity_events.
+OPS_ROUTES = ("/health", "/health/ready", "/metrics", "/metrics/prometheus")
+
 
 def _now_iso() -> str:
     return datetime.now().isoformat()
@@ -111,7 +119,9 @@ class ActivityTracker:
         agent_registrations_per_day=20 (override any subset via the
         thresholds dict). Windows are rolling, computed by fetching the
         most recent rows and filtering by timestamp in Python (see module
-        docstring for the tradeoff).
+        docstring for the tradeoff). Ops/infra routes (OPS_ROUTES) are
+        excluded from the requests_per_hour count so health probes and
+        metric scrapes cannot trip the burst flag.
 
         Breaches are persisted as integrity_flags
         (flag_type="user_activity_anomaly", subject_id=user_id) with a
@@ -140,7 +150,9 @@ class ActivityTracker:
         last_hour = [r for r in rows if r.get("created_at", "") >= hour_cutoff]
         last_day = [r for r in rows if r.get("created_at", "") >= day_cutoff]
 
-        requests_hour = len(last_hour)
+        requests_hour = sum(
+            1 for r in last_hour if r.get("route", "") not in OPS_ROUTES
+        )
         failed_auth_hour = sum(
             1 for r in last_hour if r.get("status_code") in AUTH_FAILURE_CODES
         )

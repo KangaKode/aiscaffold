@@ -17,7 +17,9 @@ Security:
   - Documents are sanitized before indexing (size-limited)
   - Project isolation prevents cross-project data leakage
 
-Keep this file under 250 lines.
+Keep this file under 400 lines. (Raised from 250: the Chroma
+persistence-preservation logic and the in-memory fallback both live
+here; if a third backend is added, split the adapters apart.)
 """
 
 import logging
@@ -144,6 +146,19 @@ class VectorStore:
                 "[VectorStore] ChromaDB not installed -- using in-memory fallback. "
                 "For production with Postgres, add a pgvector-backed adapter."
             )
+
+    @property
+    def supports_keyword_search(self) -> bool:
+        """True when search() can rank by keyword overlap (in-memory store).
+
+        Chroma has no keyword path -- every stored document and every
+        query needs an embedding (omitting one makes Chroma compute its
+        own default-model embedding, which breaks dimension consistency
+        with previously stored vectors). Retrievers use this to decide
+        whether skipping non-semantic hash embeddings is safe: only the
+        in-memory store can fall back to keyword ranking.
+        """
+        return self._collection is None
 
     def add(
         self,

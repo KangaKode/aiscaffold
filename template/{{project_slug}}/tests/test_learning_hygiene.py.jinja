@@ -1,0 +1,513 @@
+"""Learning-store hygiene: ops-route burst exclusion, opt-in activity
+retention pruning, erasure of derived artifacts, and hash-fallback
+retrieval honesty."""
+
+import json
+import uuid
+from datetime import datetime, timedelta
+
+import pytest
+
+from {{project_slug}}.learning.activity import OPS_ROUTES, ActivityTracker
+from {{project_slug}}.learning.erasure import erase_correction
+from {{project_slug}}.learning.error_schemata import extract_error_schemas
+from {{project_slug}}.learning.rag.embedding_service import EmbeddingService
+from {{project_slug}}.learning.rag.vector_store import VectorStore
+from {{project_slug}}.learning.retention import prune_activity_events, retention_days
+from {{project_slug}}.learning.store import SqliteLearningStore
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
+
+
+def seed_events(store, timestamps, user_id="user1", tenant_id="default",
+                route="/api/v1/chat", method="GET", status_code=200):
+    for ts in timestamps:
+        store.insert("activity_events", {
+            "id": str(uuid.uuid4())[:12],
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "route": route,
+            "method": method,
+            "status_code": status_code,
+            "created_at": ts.isoformat(),
+        })
+
+
+# --- Ops routes excluded from burst counting ---------------------------------
+
+
+class TestOpsRouteBurstExclusion:
+    def test_health_probe_traffic_does_not_trip_burst(self, store):
+        """A liveness probe polling every 10s (360 req/h) must not trip
+        the 300/h default threshold: regression for infra-noise flags."""
+        now = datetime.now()
+        times = [now - timedelta(seconds=10 * i) for i in range(360)]
+        seed_events(store, times, route="/health")
+        flags = ActivityTracker(store).check_thresholds("user1")
+        assert flags == []
+
+    def test_all_ops_routes_excluded(self, store):
+        now = datetime.now()
+        per_route = 100  # 4 routes x 100 = 400 > 300 if wrongly counted
+        for route in OPS_ROUTES:
+            seed_events(
+                store,
+                [now - timedelta(seconds=i) for i in range(per_route)],
+                route=route,
+            )
+        flags = ActivityTracker(store).check_thresholds("user1")
+        assert flags == []
+
+    def test_real_traffic_still_trips_burst(self, store):
+        now = datetime.now()
+        seed_events(
+            store,
+            [now - timedelta(seconds=i) for i in range(301)],
+            route="/api/v1/chat",
+        )
+        flags = ActivityTracker(store).check_thresholds("user1")
+        assert any("requests_per_hour" in f for f in flags)
+
+    def test_failed_auth_on_ops_routes_still_counts(self, store):
+        """401s against /metrics remain security signal, not noise."""
+        now = datetime.now()
+        seed_events(
+            store,
+            [now - timedelta(seconds=i) for i in range(11)],
+            route="/metrics",
+            status_code=401,
+        )
+        flags = ActivityTracker(store).check_thresholds("user1")
+        assert any("failed_auth_per_hour" in f for f in flags)
+
+
+# --- Opt-in activity retention ------------------------------------------------
+
+
+class TestActivityRetention:
+    def test_off_by_default(self, store, monkeypatch):
+        monkeypatch.delenv("ACTIVITY_RETENTION_DAYS", raising=False)
+        seed_events(store, [datetime.now() - timedelta(days=400)])
+        assert retention_days() == 0
+        assert prune_activity_events(store) == 0
+        assert store.count("activity_events", {}) == 1
+
+    @pytest.mark.parametrize("raw", ["", "0", "-5", "abc"])
+    def test_invalid_env_means_off(self, store, monkeypatch, raw):
+        monkeypatch.setenv("ACTIVITY_RETENTION_DAYS", raw)
+        seed_events(store, [datetime.now() - timedelta(days=400)])
+        assert prune_activity_events(store) == 0
+        assert store.count("activity_events", {}) == 1
+
+    def test_prunes_old_keeps_recent(self, store, monkeypatch):
+        monkeypatch.setenv("ACTIVITY_RETENTION_DAYS", "90")
+        now = datetime.now()
+        seed_events(store, [now - timedelta(days=120), now - timedelta(days=91)])
+        seed_events(store, [now - timedelta(days=89), now - timedelta(hours=1)])
+        assert prune_activity_events(store) == 2
+        remaining = store.query("activity_events", {})
+        assert len(remaining) == 2
+        cutoff = (now - timedelta(days=90)).isoformat()
+        assert all(r["created_at"] >= cutoff for r in remaining)
+
+    def test_batch_limit_bounds_one_pass(self, store, monkeypatch):
+        monkeypatch.setenv("ACTIVITY_RETENTION_DAYS", "30")
+        old = datetime.now() - timedelta(days=60)
+        seed_events(store, [old - timedelta(seconds=i) for i in range(5)])
+        assert prune_activity_events(store, batch_limit=3) == 3
+        assert store.count("activity_events", {}) == 2
+        # The next sampled pass drains the rest.
+        assert prune_activity_events(store, batch_limit=3) == 2
+
+    def test_no_store_is_noop(self, monkeypatch):
+        monkeypatch.setenv("ACTIVITY_RETENTION_DAYS", "30")
+        assert prune_activity_events(None) == 0
+
+    def test_store_failure_swallowed(self, monkeypatch):
+        monkeypatch.setenv("ACTIVITY_RETENTION_DAYS", "30")
+
+        class BrokenStore:
+            def query(self, *a, **k):
+                raise RuntimeError("db gone")
+
+        assert prune_activity_events(BrokenStore()) == 0
+
+
+# --- Erasure cleans derived error schemas -------------------------------------
+
+
+def seed_correction(store, cid, reason, corrected_claim, created_by,
+                    agent_id="agent_a", evidence_level="VERIFIED",
+                    tenant_id="default"):
+    now = datetime.now().isoformat()
+    store.insert("corrections", {
+        "id": cid,
+        "tenant_id": tenant_id,
+        "agent_id": agent_id,
+        "session_id": "",
+        "original_claim": "",
+        "corrected_claim": corrected_claim,
+        "reason": reason,
+        "evidence_level": evidence_level,
+        "status": "approved",
+        "created_by": created_by,
+        "approved_by": "approver",
+        "created_at": now,
+        "updated_at": now,
+        "last_validated_at": "",
+        "last_validated_by": "",
+    })
+
+
+class TestErasureDerivedArtifacts:
+    def seed_cluster(self, store, n=4):
+        """n approved corrections from 2 creators -> one error schema."""
+        for i in range(n):
+            seed_correction(
+                store,
+                cid=f"corr_{i}",
+                reason=f"distinctive reason text number {i}",
+                corrected_claim=f"distinctive mitigation step {i}",
+                created_by=f"user_{i % 2}",
+            )
+        schemas = extract_error_schemas(store)
+        assert len(schemas) == 1
+        return schemas[0]
+
+    def test_erasure_deletes_citing_schema_and_rebuilds(self, store):
+        self.seed_cluster(store, n=4)
+        result = erase_correction(store, "corr_0")
+
+        assert result["derived_schemas_deleted"] == 1
+        # 3 corrections from 2 creators still qualify -> rebuilt.
+        assert result["derived_schemas_rebuilt"] == 1
+        rebuilt = store.query("error_schemas", {"tenant_id": "default"})
+        assert len(rebuilt) == 1
+        # The erased correction's text must not survive generalization.
+        row_text = json.dumps(rebuilt[0])
+        assert "number 0" not in row_text
+        assert "step 0" not in row_text
+        assert "corr_0" not in row_text
+
+    def test_erasure_removes_schema_when_cluster_no_longer_qualifies(self, store):
+        """3-correction cluster drops to 2 (< MIN_CLUSTER_SIZE): the old
+        schema must be gone, not left active with the erased text."""
+        for i in range(3):
+            seed_correction(
+                store,
+                cid=f"corr_{i}",
+                reason=f"distinctive reason text number {i}",
+                corrected_claim=f"distinctive mitigation step {i}",
+                created_by=f"user_{i % 2}",
+            )
+        assert len(extract_error_schemas(store)) == 1
+        result = erase_correction(store, "corr_1")
+        assert result["derived_schemas_deleted"] == 1
+        assert result["derived_schemas_rebuilt"] == 0
+        assert store.query("error_schemas", {"tenant_id": "default"}) == []
+
+    def test_erasure_leaves_unrelated_schemas_alone(self, store):
+        self.seed_cluster(store, n=4)
+        # A second cluster for a different agent.
+        for i in range(3):
+            seed_correction(
+                store,
+                cid=f"other_{i}",
+                reason=f"other agent reason {i}",
+                corrected_claim=f"other agent step {i}",
+                created_by=f"user_{i % 2}",
+                agent_id="agent_b",
+            )
+        extract_error_schemas(store)
+        result = erase_correction(store, "other_0")
+        remaining = store.query("error_schemas", {"tenant_id": "default"})
+        agent_a = [s for s in remaining if s["agent_id"] == "agent_a"]
+        assert len(agent_a) == 1  # untouched
+        # Only agent_b's schema was deleted, and its cluster dropped below
+        # MIN_CLUSTER_SIZE: nothing was rebuilt. agent_a's untouched (but
+        # still qualifying) cluster must NOT inflate the rebuilt count.
+        assert result["derived_schemas_deleted"] == 1
+        assert result["derived_schemas_rebuilt"] == 0
+
+    def test_rebuilt_counts_only_clusters_that_lost_a_schema(self, store):
+        """Erase from a cluster that still qualifies, alongside an
+        unrelated qualifying cluster: exactly one schema is rebuilt."""
+        self.seed_cluster(store, n=4)
+        for i in range(4):
+            seed_correction(
+                store,
+                cid=f"other_{i}",
+                reason=f"other agent reason {i}",
+                corrected_claim=f"other agent step {i}",
+                created_by=f"user_{i % 2}",
+                agent_id="agent_b",
+            )
+        extract_error_schemas(store)
+        result = erase_correction(store, "corr_0")
+        assert result["derived_schemas_deleted"] == 1
+        assert result["derived_schemas_rebuilt"] == 1  # agent_a only
+
+    def test_derived_cleanup_failure_does_not_fail_erasure(self, store, monkeypatch):
+        self.seed_cluster(store, n=4)
+        original_query = store.query
+
+        def flaky_query(table, *a, **k):
+            if table == "error_schemas":
+                raise RuntimeError("schema table unavailable")
+            return original_query(table, *a, **k)
+
+        monkeypatch.setattr(store, "query", flaky_query)
+        result = erase_correction(store, "corr_0")
+        assert result["erased"] is True
+        assert result["derived_schemas_deleted"] == 0
+        # The source correction is gone regardless.
+        assert original_query("corrections", {"id": "corr_0"}) == []
+
+
+# --- Erasure sweeps check-ins that embed the correction text ------------------
+
+
+class TestErasureCheckIns:
+    @pytest.fixture
+    def checkin_manager(self, tmp_path):
+        from {{project_slug}}.learning.checkin_manager import CheckInManager
+
+        return CheckInManager(db_path=tmp_path / "checkins.db")
+
+    def _propose(self, store, checkin_manager):
+        from {{project_slug}}.learning.corrections import CorrectionsManager
+
+        manager = CorrectionsManager(store, checkin_manager=checkin_manager)
+        return manager.propose(
+            agent_id="agent_a",
+            original_claim="the erasable original claim",
+            corrected_claim="the corrected replacement claim",
+            reason="verifiable reason text",
+            evidence_level="documented",
+            created_by="alice",
+        )
+
+    def test_erasure_removes_checkins_embedding_the_text(
+        self, store, checkin_manager, tmp_path
+    ):
+        """Regression: proposing opens a check-in whose prompt embeds the
+        correction verbatim; erasing the correction must not leave that
+        text behind in the check-ins store."""
+        import sqlite3
+
+        correction = self._propose(store, checkin_manager)
+        pending = checkin_manager.get_pending()
+        assert any("erasable original claim" in c.prompt for c in pending)
+
+        result = erase_correction(
+            store, correction.id, checkin_manager=checkin_manager
+        )
+        assert result["checkins_deleted"] == 1
+
+        conn = sqlite3.connect(tmp_path / "checkins.db")
+        rows = conn.execute(
+            "SELECT prompt, suggested_action, context_json FROM checkins"
+        ).fetchall()
+        conn.close()
+        flattened = " ".join(str(v) for row in rows for v in row)
+        assert "erasable original claim" not in flattened
+        assert correction.id not in flattened
+
+    def test_erasure_sweeps_resolved_checkins_too(self, store, checkin_manager):
+        """Expiry/response only flips status -- the sweep must catch
+        non-pending rows as well."""
+        correction = self._propose(store, checkin_manager)
+        pending = checkin_manager.get_pending()
+        checkin_manager.respond(pending[0].id, approved=True)
+
+        result = erase_correction(
+            store, correction.id, checkin_manager=checkin_manager
+        )
+        assert result["checkins_deleted"] == 1
+        assert checkin_manager.get(pending[0].id) is None
+
+    def test_no_manager_means_zero_and_no_error(self, store, checkin_manager):
+        correction = self._propose(store, checkin_manager)
+        result = erase_correction(store, correction.id)  # no manager passed
+        assert result["erased"] is True
+        assert result["checkins_deleted"] == 0
+
+    def test_checkin_sweep_failure_does_not_fail_erasure(
+        self, store, checkin_manager, monkeypatch
+    ):
+        correction = self._propose(store, checkin_manager)
+        monkeypatch.setattr(
+            checkin_manager,
+            "erase_for_correction",
+            lambda cid: (_ for _ in ()).throw(RuntimeError("checkins db gone")),
+        )
+        result = erase_correction(
+            store, correction.id, checkin_manager=checkin_manager
+        )
+        assert result["erased"] is True
+        assert result["checkins_deleted"] == 0
+
+
+# --- Hash-fallback embeddings must not defeat keyword retrieval ---------------
+
+
+class TestFallbackRetrievalHonesty:
+    DOCS = {
+        "style_pref": "style: verbosity = user prefers concise responses",
+        "db_pref": "infra: database = postgres connection pooling enabled",
+        "auth_pref": "security: tokens = rotate authentication tokens monthly",
+    }
+
+    @pytest.fixture
+    def fallback_embedder(self, monkeypatch):
+        monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("ROUNDTABLE_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        return EmbeddingService(preferred_provider="fallback")
+
+    def test_fallback_provider_declares_itself_non_semantic(self, fallback_embedder):
+        assert fallback_embedder.provider == "fallback"
+        assert fallback_embedder.is_semantic is False
+
+    def test_hash_vectors_defeat_keyword_ranking(self, fallback_embedder):
+        """The measured bug this guards against: querying with hash
+        embeddings ranks by meaningless cosine noise instead of keyword
+        overlap, so the keyword-relevant doc can lose to an unrelated
+        one."""
+        store = VectorStore(project_id="t1", use_chroma=False)
+        for doc_id, text in self.DOCS.items():
+            store.add(doc_id, text, {},
+                      embedding=fallback_embedder.embed(text).embedding)
+        query = "how concise should responses be"
+        hash_ranked = store.search(
+            query, query_embedding=fallback_embedder.embed(query).embedding
+        )
+        keyword_ranked = store.search(query)
+        # Keyword matching finds the right doc; that is the behavior the
+        # retrievers must get when the provider is the fallback.
+        assert keyword_ranked.results[0].id == "style_pref"
+        # And hash-cosine scores are noise, not keyword-aligned ranking
+        # (scores exist but do not reflect term overlap).
+        assert hash_ranked.results != keyword_ranked.results
+
+    def test_transcript_indexer_uses_keywords_with_fallback(self, fallback_embedder):
+        from {{project_slug}}.learning.rag.transcript_indexer import TranscriptIndexer
+
+        indexer = TranscriptIndexer(
+            vector_store=VectorStore(project_id="t2", use_chroma=False),
+            embedding_service=fallback_embedder,
+        )
+
+        class FakeResult:
+            def __init__(self, task_id, finding):
+                self.task_id = task_id
+                self.analyses = []
+                self.synthesis = type(
+                    "S", (), {"recommended_direction": finding}
+                )()
+                self.consensus_reached = True
+                self.approval_rate = 1.0
+                self.duration_seconds = 1.0
+
+        indexer.index_result(FakeResult("t-1", "use connection pooling for postgres"))
+        indexer.index_result(FakeResult("t-2", "prefer concise summaries in replies"))
+        results = indexer.search("concise summaries")
+        assert results.results
+        assert results.results[0].id.endswith("t-2")
+
+    def test_chroma_backend_still_gets_hash_embeddings(
+        self, fallback_embedder, monkeypatch, tmp_path
+    ):
+        """Regression: skipping the hash embedding is only safe on the
+        in-memory store. On Chroma, embedding=None would make Chroma
+        compute its own default-model vectors (different dimensions than
+        stored hash vectors -> upsert errors, empty searches), so the
+        fallback embedding must keep flowing to add() and search()."""
+        import sys
+        import types
+
+        from {{project_slug}}.learning.models import UserPreference
+        from {{project_slug}}.learning.rag.preference_retriever import (
+            PreferenceRetriever,
+        )
+
+        class FakeCollection:
+            def __init__(self):
+                self.upserts = []
+                self.queries = []
+
+            def upsert(self, **kwargs):
+                self.upserts.append(kwargs)
+
+            def query(self, **kwargs):
+                self.queries.append(kwargs)
+                return {"ids": [[]], "documents": [[]],
+                        "metadatas": [[]], "distances": [[]]}
+
+            def count(self):
+                return len(self.upserts)
+
+        collection = FakeCollection()
+
+        class FakeClient:
+            def get_or_create_collection(self, **kwargs):
+                return collection
+
+        monkeypatch.setitem(
+            sys.modules,
+            "chromadb",
+            types.SimpleNamespace(PersistentClient=lambda path: FakeClient()),
+        )
+        chroma_store = VectorStore(
+            project_id="t4",
+            persist_dir=str(tmp_path / "chroma"),
+            use_chroma=True,
+        )
+        assert chroma_store.supports_keyword_search is False
+
+        retriever = PreferenceRetriever(
+            vector_store=chroma_store,
+            embedding_service=fallback_embedder,
+            db_path=tmp_path / "unused.db",
+        )
+        retriever.index_preference(UserPreference(
+            id="p1", preference_type="style", key="verbosity",
+            value="concise responses preferred",
+        ))
+        assert "embeddings" in collection.upserts[-1]
+        assert collection.upserts[-1]["embeddings"][0]  # the hash vector
+
+        retriever.search("how concise should responses be")
+        assert "query_embeddings" in collection.queries[-1]
+
+    def test_in_memory_store_supports_keyword_search(self):
+        store = VectorStore(project_id="t5", use_chroma=False)
+        assert store.supports_keyword_search is True
+
+    def test_preference_retriever_uses_keywords_with_fallback(
+        self, fallback_embedder, tmp_path
+    ):
+        from {{project_slug}}.learning.models import UserPreference
+        from {{project_slug}}.learning.rag.preference_retriever import (
+            PreferenceRetriever,
+        )
+
+        retriever = PreferenceRetriever(
+            vector_store=VectorStore(project_id="t3", use_chroma=False),
+            embedding_service=fallback_embedder,
+            db_path=tmp_path / "unused.db",
+        )
+        retriever.index_preference(UserPreference(
+            id="p1", preference_type="style", key="verbosity",
+            value="concise responses preferred",
+        ))
+        retriever.index_preference(UserPreference(
+            id="p2", preference_type="infra", key="database",
+            value="postgres pooling enabled",
+        ))
+        results = retriever.search("how concise should responses be")
+        assert results.results
+        assert results.results[0].id == "p1"

@@ -115,12 +115,6 @@ class AgentRegistration(BaseModel):
         description="Who can see this agent: 'public' (all tenants), "
         "'team' (registering tenant only), or 'private'",
     )
-    mode: str = Field(
-        "sync", description="Communication mode: 'sync' (wait) or 'async' (webhook)"
-    )
-    webhook_url: str | None = Field(
-        None, description="URL to receive results (async mode only)"
-    )
 
 
 # =============================================================================
@@ -141,15 +135,3 @@ class AddTurnRequest(BaseModel):
     metadata: dict = Field(default_factory=dict)
 
 
-# =============================================================================
-# WEBHOOK
-# =============================================================================
-
-
-class WebhookPayload(BaseModel):
-    """Payload pushed by an async external agent when its work is done."""
-
-    task_id: str
-    phase: str = Field(..., description="Phase: 'analyze', 'challenge', or 'vote'")
-    agent_name: str
-    result: dict = Field(..., description="Phase-specific result payload")
