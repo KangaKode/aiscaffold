@@ -167,15 +167,23 @@ async def run_voting_phase(
     synthesis: Any,
     registry: Any,
     component: str = "RoundTable",
+    midrun_names: set[str] | None = None,
 ) -> tuple[list, int]:
     """Phase 3b: agents vote on the synthesis. Dissent is valuable.
 
     Dispatch passes the same gates as Phase 1. Gated agents cast no
     vote and consensus divides by votes actually cast, so callers must
-    mark the result degraded when the returned skipped count is
+    mark the result degraded when the returned gated-out count is
     non-zero -- otherwise one surviving approver could present as 100%
     consensus. Note the asymmetry: a vote() that RAISES records a
     dissent, a gated-out voter is excluded from the denominator.
+
+    midrun_names scopes the returned count to MID-RUN losses: when
+    given (the round table passes the Phase 1 analysis contributors),
+    only gated-out agents in that set are counted. Roster members that
+    were already excluded before deliberation (e.g. suspended before
+    the run) fail the same gates again here, and counting them would
+    flag a clean consensus as degraded for a voter that never existed.
 
     Returns (votes, gated_out_count).
     """
@@ -183,9 +191,15 @@ async def run_voting_phase(
 
     rate_limiter = getattr(registry, "rate_limiter", None)
     gated, skipped = gate_agents(agents, task, registry, rate_limiter, component)
+    if midrun_names is not None:
+        gated_names = {agent.name for agent, _, _ in gated}
+        skipped = sum(
+            1 for agent in agents
+            if agent.name not in gated_names and agent.name in midrun_names
+        )
     if skipped:
         logger.warning(
-            "[%s] %d agent(s) blocked by dispatch gates at vote phase",
+            "[%s] %d mid-run agent(s) blocked by dispatch gates at vote phase",
             component, skipped,
         )
     results = await asyncio.gather(

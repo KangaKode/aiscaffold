@@ -146,8 +146,10 @@ class RoundTableResult:
     domain (non-core) agents than config.min_quorum produced analyses AND
     at least one agent was skipped by a dispatch gate or failed.
 
-    vote_gated_count: voters excluded by the Phase 3 dispatch gates
-    (suspension, rate limit). Any vote-phase gate-out also sets
+    vote_gated_count: voters excluded MID-RUN by the Phase 3 dispatch
+    gates (suspension, rate limit) after contributing a Phase 1
+    analysis; roster members already excluded before deliberation are
+    not counted. Any mid-run vote-phase gate-out also sets
     degraded=True: the approval rate divides by votes actually cast, so
     a silently shrunken voter set must never present as a clean result.
     """
@@ -321,11 +323,15 @@ class RoundTable:
         )
         self._write_artifact(task.id, "phase3_synthesis", asdict(result.synthesis))
 
+        # Scope the gated-out count to agents that actually analyzed:
+        # a roster member excluded before Phase 1 fails the same gates
+        # again here and is not a mid-run voter loss.
+        analyzed_names = {a.agent_name for a in result.analyses}
         result.votes, result.vote_gated_count = await self._phase_voting(
-            task, result.synthesis
+            task, result.synthesis, analyzed_names
         )
         if result.vote_gated_count:
-            # A shrunken voter set must never present as a clean result.
+            # A mid-run shrunken voter set must never present as clean.
             result.degraded = True
             logger.warning(
                 f"[RoundTable] Degraded result: {result.vote_gated_count} voter(s) "
@@ -445,16 +451,20 @@ class RoundTable:
         )
 
     async def _phase_voting(
-        self, task: RoundTableTask, synthesis: SynthesisResult
+        self, task: RoundTableTask, synthesis: SynthesisResult,
+        analyzed_names: set[str] | None = None,
     ) -> tuple[list[AgentVote], int]:
         """Phase 3b dispatch -- same gates as Phase 1, re-checked.
 
-        Returns (votes, gated_out_count); a non-zero count marks the
-        result degraded (see dispatch_helpers.run_voting_phase)."""
+        Returns (votes, gated_out_count) where the count covers only
+        MID-RUN losses (agents that produced a Phase 1 analysis but are
+        gated out here); a non-zero count marks the result degraded
+        (see dispatch_helpers.run_voting_phase)."""
         from .dispatch_helpers import run_voting_phase
 
         return await run_voting_phase(
-            self.agents, task, synthesis, self._registry
+            self.agents, task, synthesis, self._registry,
+            midrun_names=analyzed_names,
         )
 
     def _write_artifact(self, task_id: str, phase: str, data: Any) -> None:

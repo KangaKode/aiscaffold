@@ -524,6 +524,39 @@ class TestChallengeVoteGating:
         assert result.degraded is False
 
     @pytest.mark.asyncio
+    async def test_pre_run_suspension_does_not_inflate_vote_gated_count(
+        self, tmp_path
+    ):
+        """Regression: a roster member suspended BEFORE the run fails
+        the same gates again at Phase 3 and was counted in
+        vote_gated_count, flagging a clean two-voter consensus as
+        degraded for a voter that never existed. Only agents that
+        analyzed and were then gated out are mid-run losses."""
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        agents = [
+            TrackingAgent("steady_a"),
+            TrackingAgent("steady_b"),
+            TrackingAgent("benched"),
+        ]
+        for agent in agents:
+            registry.register_local(agent)
+        registry.suspend("benched")  # excluded before deliberation
+
+        rt = RoundTable(agents=agents, config=_config(tmp_path),
+                        registry=registry)
+        result = await rt.run(_task())
+
+        # Never analyzed, never voted -- and never counted as a
+        # mid-run voter loss.
+        assert len(result.analyses) == 2
+        assert {v.agent_name for v in result.votes} == {"steady_a", "steady_b"}
+        assert result.vote_gated_count == 0
+        assert result.approval_rate == 1.0
+        # Quorum is met (2 domain analyses >= min_quorum), so the
+        # pre-run exclusion must not degrade the result either.
+        assert result.degraded is False
+
+    @pytest.mark.asyncio
     async def test_scope_filter_applies_to_challenge_and_vote(self, tmp_path):
         """Later phases receive the scope-filtered task exactly as
         Phase 1 does: context keys outside the agent's access_scopes
