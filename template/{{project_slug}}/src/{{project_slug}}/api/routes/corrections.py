@@ -24,9 +24,15 @@ Security:
   - Proposals are screened by the override detector (results returned to
     the caller and flagged for review) on top of the manager's built-in
     PII redaction and content-policy gate.
-  - Status-transition violations map to 409, not 500.
+  - Status-transition violations (including a lifecycle write lost to a
+    concurrent operator) map to 409, not 500.
+
+Event loop: the manager and store are synchronous (SQLite by default),
+so every store-touching call below runs via asyncio.to_thread -- the
+loop stays responsive while rows are read and written.
 """
 
+import asyncio
 import logging
 import re
 
@@ -144,11 +150,11 @@ def _validated_id(correction_id: str) -> str:
     return correction_id
 
 
-def _get_tenant_correction(
+async def _get_tenant_correction(
     manager: CorrectionsManager, correction_id: str, tenant_id: str
 ) -> Correction:
     """404 for missing AND cross-tenant ids -- no existence leak."""
-    correction = manager.get(_validated_id(correction_id))
+    correction = await asyncio.to_thread(manager.get, _validated_id(correction_id))
     if correction is None or correction.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Correction not found")
     return correction
@@ -167,7 +173,8 @@ async def propose_correction(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     try:
-        correction = manager.propose(
+        correction = await asyncio.to_thread(
+            manager.propose,
             agent_id=proposal.agent_id,
             original_claim=proposal.original_claim,
             corrected_claim=proposal.corrected_claim,
@@ -186,8 +193,8 @@ async def propose_correction(
     detector = getattr(request.app.state, "override_detector", None)
     if detector is not None:
         try:
-            override_flags = detector.screen_and_flag(
-                correction, tenant_id=auth.tenant_id
+            override_flags = await asyncio.to_thread(
+                detector.screen_and_flag, correction, tenant_id=auth.tenant_id
             )
         except Exception as e:
             logger.warning(f"[CorrectionsAPI] Override screening failed: {e}")
@@ -225,7 +232,8 @@ async def list_corrections(
     manager = _get_manager(request)
     guard_mode = ""
     try:
-        guard = evaluate_extraction_mode(
+        guard = await asyncio.to_thread(
+            evaluate_extraction_mode,
             getattr(request.app.state, "learning_store", None),
             user_id=auth.user_id,
             tenant_id=auth.tenant_id,
@@ -261,7 +269,8 @@ async def list_corrections(
             )
         status = STATUS_APPROVED
     page_limit = max(1, min(limit, 500))
-    corrections = manager.list(
+    corrections = await asyncio.to_thread(
+        manager.list,
         tenant_id=auth.tenant_id,
         status=status,
         agent_id=agent_id,
@@ -310,9 +319,11 @@ async def approve_correction(
     flags).
     """
     manager = _get_manager(request)
-    _get_tenant_correction(manager, correction_id, auth.tenant_id)
+    await _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
-        approved = manager.approve(correction_id, approved_by=auth.user_id)
+        approved = await asyncio.to_thread(
+            manager.approve, correction_id, approved_by=auth.user_id
+        )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     record_correction_lifecycle("approve")
@@ -322,19 +333,25 @@ async def approve_correction(
         try:
             from ...learning.error_schemata import extract_error_schemas
 
-            extract_error_schemas(store, tenant_id=auth.tenant_id)
+            await asyncio.to_thread(
+                extract_error_schemas, store, tenant_id=auth.tenant_id
+            )
         except Exception as e:
             logger.warning(f"[CorrectionsAPI] Schema extraction failed (non-fatal): {e}")
         try:
             from ...learning.contradiction import scan_corrections
 
-            scan_corrections(store, tenant_id=auth.tenant_id)
+            await asyncio.to_thread(
+                scan_corrections, store, tenant_id=auth.tenant_id
+            )
         except Exception as e:
             logger.warning(f"[CorrectionsAPI] Contradiction scan failed (non-fatal): {e}")
         try:
             from ...learning.approval_patterns import check_pair_dominance
 
-            check_pair_dominance(store, tenant_id=auth.tenant_id)
+            await asyncio.to_thread(
+                check_pair_dominance, store, tenant_id=auth.tenant_id
+            )
         except Exception as e:
             logger.warning(f"[CorrectionsAPI] Pair check failed (non-fatal): {e}")
 
@@ -349,9 +366,11 @@ async def reject_correction(
 ) -> CorrectionResponse:
     """Reject a proposed correction (terminal)."""
     manager = _get_manager(request)
-    _get_tenant_correction(manager, correction_id, auth.tenant_id)
+    await _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
-        rejected = manager.reject(correction_id, rejected_by=auth.user_id)
+        rejected = await asyncio.to_thread(
+            manager.reject, correction_id, rejected_by=auth.user_id
+        )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     record_correction_lifecycle("reject")
@@ -366,9 +385,9 @@ async def retire_correction(
 ) -> CorrectionResponse:
     """Retire an approved correction (stops influencing prompts)."""
     manager = _get_manager(request)
-    _get_tenant_correction(manager, correction_id, auth.tenant_id)
+    await _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
-        retired = manager.retire(correction_id)
+        retired = await asyncio.to_thread(manager.retire, correction_id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     record_correction_lifecycle("retire")
@@ -391,9 +410,11 @@ async def revalidate_correction(
     own proposer (self-revalidation echoes the four-eyes concern).
     """
     manager = _get_manager(request)
-    _get_tenant_correction(manager, correction_id, auth.tenant_id)
+    await _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
-        revalidated = manager.revalidate(correction_id, validated_by=auth.user_id)
+        revalidated = await asyncio.to_thread(
+            manager.revalidate, correction_id, validated_by=auth.user_id
+        )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     record_correction_lifecycle("revalidate")
@@ -409,7 +430,8 @@ async def erase_correction_endpoint(
     """GDPR Article 17 hard-delete. Daily-capped; leaves an audit event."""
     manager = _get_manager(request)
     try:
-        result = erase_correction(
+        result = await asyncio.to_thread(
+            erase_correction,
             manager.store,
             _validated_id(correction_id),
             tenant_id=auth.tenant_id,

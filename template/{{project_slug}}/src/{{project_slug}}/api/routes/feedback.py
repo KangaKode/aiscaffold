@@ -12,6 +12,7 @@ Security:
   - Auth required for mutations
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -92,11 +93,12 @@ async def record_feedback(
         metadata=fb.metadata,
         session_id=fb.session_id,
     )
-    recorded = tracker.record(signal)
+    # Both writes hit SQLite synchronously: run them off the event loop.
+    recorded = await asyncio.to_thread(tracker.record, signal)
 
     trust_mgr = getattr(request.app.state, "trust_manager", None)
     if trust_mgr and signal.agent_id:
-        trust_mgr.update_from_signal(signal)
+        await asyncio.to_thread(trust_mgr.update_from_signal, signal)
 
     return FeedbackResponse(
         id=recorded.id,

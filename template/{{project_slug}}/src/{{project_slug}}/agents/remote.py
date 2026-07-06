@@ -15,10 +15,16 @@ Security:
   - Prompt injection patterns in agent output are detected and logged
   - Response size is capped to prevent memory exhaustion
   - String fields are truncated to safe limits
+  - DNS is re-validated just before every request (anti-rebinding): a
+    hostname that passed SSRF validation at registration but now
+    resolves to a private/loopback address is refused. Resolution runs
+    off the event loop; a small resolve-then-connect TOCTOU remains
+    (see security/validators.py, revalidate_url_at_connect).
 
 Reference: src/api/models/requests.py for the contract.
 """
 
+import asyncio
 import logging
 from dataclasses import asdict
 from typing import Any
@@ -33,6 +39,7 @@ from ..orchestration.round_table import (
     SynthesisResult,
 )
 from ..security.prompt_guard import detect_injection_attempt, sanitize_for_prompt
+from ..security.validators import ValidationError, revalidate_url_at_connect
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +124,26 @@ class RemoteAgent:
             sanitized.append(clean)
         return sanitized
 
+    async def _recheck_dns(self, context: str) -> None:
+        """Re-resolve the base URL against the SSRF blocklist just before
+        connecting (DNS rebinding defense). Runs in a thread so the
+        blocking getaddrinfo never stalls the event loop. Raises
+        ConnectionError on a rebound hostname."""
+        try:
+            await asyncio.to_thread(
+                revalidate_url_at_connect, self._base_url, "base_url"
+            )
+        except ValidationError as e:
+            raise ConnectionError(
+                f"RemoteAgent '{self._name}' refused {context}: {e}"
+            ) from e
+
     async def _post(self, endpoint: str, payload: dict) -> dict:
         """Send POST request with retries, size limits, and structured error handling."""
         url = f"{self._base_url}/{endpoint.lstrip('/')}"
         last_error: Exception | None = None
 
+        await self._recheck_dns(endpoint)
         for attempt in range(MAX_RETRIES + 1):
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -231,6 +253,7 @@ class RemoteAgent:
     async def health_check(self) -> bool:
         """Check if the remote agent is reachable."""
         try:
+            await self._recheck_dns("health check")
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.get(
                     f"{self._base_url}/health", headers=self._headers()

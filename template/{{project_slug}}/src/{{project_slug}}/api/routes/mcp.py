@@ -19,6 +19,7 @@ Keep this file under 250 lines.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -152,7 +153,10 @@ async def register_mcp_server(
 ) -> MCPServerResponse:
     """Register an MCP server for the caller's tenant."""
     try:
-        validate_url(body.server_url, field_name="server_url")
+        # validate_url resolves DNS (blocking getaddrinfo): off the loop.
+        await asyncio.to_thread(
+            validate_url, body.server_url, field_name="server_url"
+        )
         validate_identifier(body.name, field_name="name")
         validate_dict_size(
             body.default_arguments,
