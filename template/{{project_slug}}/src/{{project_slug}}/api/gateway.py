@@ -16,7 +16,7 @@ Security:
   - Rate limiting via middleware
   - All external input validated at boundary
 
-Keep this file under 300 lines. Route logic lives in routes/.
+Keep this file under 350 lines. Route logic lives in routes/.
 """
 
 import logging
@@ -50,6 +50,7 @@ from .routes import (
     health,
     preferences,
     reflections,
+    reports,
     resolve,
     round_table,
     sessions,
@@ -288,6 +289,9 @@ def create_app(
     )
     application.include_router(
         audit.router, prefix="/api/v1", tags=["Governance - Audit"]
+    )
+    application.include_router(
+        reports.router, prefix="/api/v1", tags=["Governance - Reports"]
     )
     application.include_router(
         corrections.router, prefix="/api/v1", tags=["Learning - Corrections"]

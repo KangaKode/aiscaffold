@@ -126,6 +126,75 @@ class TestSqliteStore:
         assert store.query("corrections", {}, order_by="created_at")[0]["id"] == "corr-0001"
 
 
+# --- Schema migrations (frozen v1 baseline + knowledge-aging ALTER) ----------
+
+
+class TestSchemaMigrations:
+    def test_fresh_install_has_aging_columns(self, store, tmp_path):
+        """Fresh DB: baseline creates the v1 shape, the ALTER adds aging."""
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / "learning_store.db"))
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(corrections)")}
+        conn.close()
+        assert {"last_validated_at", "last_validated_by"} <= cols
+
+        row = correction_row(1, "fresh install")
+        row["last_validated_at"] = "2026-01-02T00:00:00"
+        row["last_validated_by"] = "carol"
+        store.insert("corrections", row)
+        assert store.query("corrections", {"id": "corr-0001"})[0][
+            "last_validated_by"
+        ] == "carol"
+
+    def test_baseline_ddl_is_frozen_at_v1_columns(self):
+        """The v1 baseline must never learn post-v1 columns (see tables.py)."""
+        from {{project_slug}}.learning.tables import MIGRATIONS
+
+        baseline = " ".join(MIGRATIONS[0])
+        assert "last_validated_at" not in baseline
+        assert "last_validated_by" not in baseline
+
+    def test_upgrade_path_adds_columns_without_error(self, tmp_path):
+        """A pre-aging DB (stamped at v4) upgrades cleanly via ensure_schema."""
+        import sqlite3
+
+        from {{project_slug}}.learning.tables import MIGRATIONS, SCHEMA_VERSION_DDL
+
+        db_path = tmp_path / "pre_aging.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(SCHEMA_VERSION_DDL)
+        # Replay v1..v4 only: the frozen baseline recreates the exact
+        # pre-aging schema this migration must upgrade.
+        for version, statements in enumerate(MIGRATIONS[:4], start=1):
+            for stmt in statements:
+                conn.execute(stmt)
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (version, "2026-01-01T00:00:00"),
+            )
+        legacy = correction_row(1, "legacy claim")
+        conn.execute(
+            f"INSERT INTO corrections ({', '.join(legacy)})"
+            f" VALUES ({', '.join('?' for _ in legacy)})",
+            list(legacy.values()),
+        )
+        conn.commit()
+        conn.close()
+
+        upgraded = SqliteLearningStore(db_path=db_path)  # applies v5
+        fetched = upgraded.query("corrections", {"id": "corr-0001"})[0]
+        assert fetched["corrected_claim"] == "legacy claim"
+        assert fetched["last_validated_at"] == ""
+
+        row = correction_row(2, "post-upgrade")
+        row["last_validated_by"] = "carol"
+        upgraded.insert("corrections", row)
+        assert upgraded.query("corrections", {"id": "corr-0002"})[0][
+            "last_validated_by"
+        ] == "carol"
+
+
 @pytest.mark.skipif(not POSTGRES_TEST_DSN, reason="LEARNING_POSTGRES_TEST_DSN not set (opt-in)")
 class TestPostgresParity:
     def test_round_trip_parity(self):

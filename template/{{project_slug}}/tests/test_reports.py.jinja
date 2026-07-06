@@ -1,0 +1,272 @@
+"""Tests for the governance report -- whitelist-only output, visibility
+horizon disclosure, daily rate cap, tenant scoping, date validation, and
+self-revalidation flagging."""
+
+import json
+from datetime import datetime, timedelta
+
+import pytest
+
+from {{project_slug}}.learning import governance_report
+from {{project_slug}}.learning.governance_report import (
+    REPORT_EVENT_TYPE,
+    ReportCapExceededError,
+    build_governance_report,
+    enforce_report_cap,
+    record_report_event,
+)
+from {{project_slug}}.learning.store import SqliteLearningStore
+
+NOW = datetime.now()
+WINDOW = (NOW - timedelta(days=30), NOW + timedelta(days=1))
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
+
+
+def correction_row(idx: int, tenant: str = "default", **overrides) -> dict:
+    stamp = (NOW - timedelta(hours=idx)).isoformat()
+    row = {
+        "id": f"corr-{idx:04d}",
+        "tenant_id": tenant,
+        "agent_id": "analyst",
+        "session_id": "",
+        "original_claim": f"SECRET-ORIGINAL-{idx}",
+        "corrected_claim": f"SECRET-CORRECTED-{idx}",
+        "reason": "SECRET-REASON",
+        "evidence_level": "documented",
+        "status": "approved",
+        "created_by": "alice",
+        "approved_by": "bob",
+        "last_validated_at": "",
+        "last_validated_by": "",
+        "created_at": stamp,
+        "updated_at": stamp,
+        "metadata_json": "{}",
+    }
+    row.update(overrides)
+    return row
+
+
+def flag_row(idx: int, tenant: str = "default", **overrides) -> dict:
+    row = {
+        "id": f"flag-{idx:04d}",
+        "flag_type": "override_attempt",
+        "subject_id": f"corr-{idx:04d}",
+        "tenant_id": tenant,
+        "severity": "warning",
+        "detail_json": json.dumps({"note": "SECRET-FLAG-DETAIL"}),
+        "created_at": (NOW - timedelta(hours=idx)).isoformat(),
+        "resolved": 0,
+    }
+    row.update(overrides)
+    return row
+
+
+def audit_row(idx: int, tenant: str = "default", **overrides) -> dict:
+    row = {
+        "id": f"evt-{idx:04d}",
+        "correlation_id": f"run-{idx:04d}",
+        "event_type": "deliberation_completed",
+        "tenant_id": tenant,
+        "phase": "",
+        "agent_count": 3,
+        "duration_seconds": 1.0,
+        "outcome": "consensus",
+        "detail_json": json.dumps({"note": "SECRET-AUDIT-DETAIL"}),
+        "created_at": (NOW - timedelta(hours=idx)).isoformat(),
+    }
+    row.update(overrides)
+    return row
+
+
+# --- Report builder ----------------------------------------------------------
+
+
+class TestReportBuilder:
+    def test_sections_are_tenant_scoped(self, store):
+        store.insert("corrections", correction_row(1, tenant="team-b"))
+        store.insert("integrity_flags", flag_row(1, tenant="team-b"))
+        store.insert("audit_events", audit_row(1, tenant="team-b"))
+
+        report = build_governance_report(store, "default", *WINDOW)
+        sections = report["sections"]
+        assert sections["corrections"]["by_status"] == {}
+        assert sections["integrity_flags"]["by_type"] == {}
+        assert sections["deliberation"]["total_events"] == 0
+
+    def test_output_is_whitelist_only(self, store):
+        store.insert("corrections", correction_row(1))
+        store.insert("integrity_flags", flag_row(1))
+        store.insert("audit_events", audit_row(1))
+        store.insert("reflections", {
+            "id": "refl-0001", "tenant_id": "default", "source_task_id": "t1",
+            "reflection_type": "agent_effectiveness",
+            "title": "SECRET-TITLE", "detail": "SECRET-REFLECTION",
+            "quality_metrics_json": "{}", "status": "recorded",
+            "created_at": NOW.isoformat(),
+        })
+
+        rendered = json.dumps(build_governance_report(store, "default", *WINDOW))
+        assert "SECRET-" not in rendered
+        assert "detail_json" not in rendered
+
+    def test_counts_by_status_flag_type_and_outcome(self, store):
+        store.insert("corrections", correction_row(1, status="approved"))
+        store.insert("corrections", correction_row(2, status="proposed"))
+        store.insert("integrity_flags", flag_row(1, resolved=1))
+        store.insert("integrity_flags", flag_row(2, flag_type="timing_regularity_anomaly"))
+        store.insert("audit_events", audit_row(1, outcome="consensus"))
+        store.insert("audit_events", audit_row(2, outcome="no_consensus"))
+        store.insert("budget_spend", {
+            "id": "spend-1", "tenant_id": "default", "amount_usd": 0.5,
+            "model": "claude", "created_at": NOW.isoformat(),
+        })
+
+        sections = build_governance_report(store, "default", *WINDOW)["sections"]
+        assert sections["corrections"]["by_status"] == {"approved": 1, "proposed": 1}
+        assert sections["integrity_flags"]["resolved"] == 1
+        assert sections["integrity_flags"]["unresolved"] == 1
+        assert sections["integrity_flags"]["by_type"]["timing_regularity_anomaly"] == 1
+        assert sections["deliberation"]["deliberation_outcomes"] == {
+            "consensus": 1, "no_consensus": 1,
+        }
+        assert sections["budget"]["total_usd"] == pytest.approx(0.5)
+
+    def test_stale_and_self_revalidation_summary(self, store):
+        old = "2020-01-01T00:00:00"
+        # Stale: never revalidated, ancient updated_at.
+        store.insert("corrections", correction_row(1, updated_at=old, created_at=old))
+        # Fresh ONLY because of revalidation -- and self-revalidated
+        # (last validator == proposer), which the report must flag.
+        store.insert("corrections", correction_row(
+            2, updated_at=old, created_at=old,
+            last_validated_at=NOW.isoformat(), last_validated_by="alice",
+        ))
+        # Genuinely fresh row, no revalidation.
+        store.insert("corrections", correction_row(3))
+
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["corrections"]
+        assert section["stale_approved_now"] == 1
+        assert section["fresh_only_via_revalidation"] == 1
+        assert section["self_revalidated_ids"] == ["corr-0002"]
+
+    def test_horizon_annotated_when_fetch_cap_hit(self, store, monkeypatch):
+        monkeypatch.setattr(governance_report, "SECTION_FETCH_CAP", 3)
+        for idx in range(1, 6):
+            store.insert("integrity_flags", flag_row(idx))
+
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["integrity_flags"]
+        # Only the 3 newest rows are visible; the requested window starts
+        # earlier, so the section must disclose partial coverage.
+        assert section["coverage_partial"] is True
+        assert section["coverage_from"] == (NOW - timedelta(hours=3)).isoformat()
+        assert sum(section["by_type"].values()) == 3
+
+    def test_horizon_full_when_under_cap(self, store):
+        store.insert("integrity_flags", flag_row(1))
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["integrity_flags"]
+        assert section["coverage_partial"] is False
+        assert section["coverage_from"] == WINDOW[0].isoformat()
+
+
+# --- Daily rate cap ----------------------------------------------------------
+
+
+class TestReportCap:
+    def test_cap_counts_only_this_user_and_raises_at_cap(self, store, monkeypatch):
+        monkeypatch.setenv("REPORT_DAILY_CAP", "2")
+        record_report_event(store, "default", "user-a")
+        record_report_event(store, "default", "user-b")
+        assert enforce_report_cap(store, "default", "user-a") == 1
+
+        record_report_event(store, "default", "user-a")
+        with pytest.raises(ReportCapExceededError):
+            enforce_report_cap(store, "default", "user-a")
+        # The other user is unaffected.
+        assert enforce_report_cap(store, "default", "user-b") == 1
+
+    def test_report_events_are_metadata_only(self, store):
+        record_report_event(store, "default", "user-a")
+        events = store.query("audit_events", {"event_type": REPORT_EVENT_TYPE})
+        assert len(events) == 1
+        assert events[0]["outcome"] == "generated"
+        assert events[0]["correlation_id"] == "govreport-user-a"
+
+
+{% if include_api_gateway -%}
+# --- Governance report API ----------------------------------------------------
+
+
+class TestGovernanceReportAPI:
+    @pytest.fixture
+    async def api(self, tmp_path, monkeypatch):
+        """(client, store) pair -- gateway wired to a tmp-path learning store."""
+        from httpx import ASGITransport, AsyncClient
+
+        from {{project_slug}}.agents.registry import AgentRegistry
+        from {{project_slug}}.api.gateway import create_app
+
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.delenv("ENV", raising=False)
+        monkeypatch.setenv("ACTIVITY_TRACKING_ENABLED", "false")
+        monkeypatch.chdir(tmp_path)
+
+        app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
+        api_store = SqliteLearningStore(db_path=tmp_path / "api_learning.db")
+        app.state.learning_store = api_store
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client, api_store
+
+    async def test_report_round_trip_and_audit_event(self, api):
+        client, api_store = api
+        api_store.insert("corrections", correction_row(1))
+
+        r = await client.get("/api/v1/reports/governance")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["tenant_id"] == "default"
+        assert body["sections"]["corrections"]["by_status"] == {"approved": 1}
+        assert body["reports_today"] == 1
+        assert "SECRET-" not in r.text
+
+        events = api_store.query("audit_events", {"event_type": REPORT_EVENT_TYPE})
+        assert len(events) == 1
+
+    async def test_tenant_scoping_via_api(self, api):
+        client, api_store = api
+        api_store.insert("corrections", correction_row(1, tenant="team-b"))
+
+        r = await client.get("/api/v1/reports/governance")
+        assert r.status_code == 200
+        assert r.json()["sections"]["corrections"]["by_status"] == {}
+
+    async def test_date_validation(self, api):
+        client, _ = api
+        r = await client.get("/api/v1/reports/governance?from_date=not-a-date")
+        assert r.status_code == 422
+        r = await client.get(
+            "/api/v1/reports/governance?from_date=2026-02-01&to_date=2026-01-01"
+        )
+        assert r.status_code == 422
+        r = await client.get(
+            "/api/v1/reports/governance?from_date=2020-01-01&to_date=2026-01-01"
+        )
+        assert r.status_code == 422
+
+    async def test_daily_cap_returns_429(self, api, monkeypatch):
+        client, _ = api
+        monkeypatch.setenv("REPORT_DAILY_CAP", "2")
+        assert (await client.get("/api/v1/reports/governance")).status_code == 200
+        assert (await client.get("/api/v1/reports/governance")).status_code == 200
+        r = await client.get("/api/v1/reports/governance")
+        assert r.status_code == 429
+        assert "cap" in r.json()["detail"].lower()
+{% endif -%}

@@ -2,10 +2,13 @@
 Corrections API -- the full correction lifecycle over HTTP.
 
   POST   /api/v1/corrections                    -- Propose a correction
-  GET    /api/v1/corrections                    -- List (filter by status/agent)
+  GET    /api/v1/corrections                    -- List (filter by status/agent,
+                                                   ?stale=true for aging review)
   POST   /api/v1/corrections/{id}/approve       -- Approve (four-eyes)
   POST   /api/v1/corrections/{id}/reject        -- Reject (terminal)
   POST   /api/v1/corrections/{id}/retire        -- Retire an approved one
+  POST   /api/v1/corrections/{id}/revalidate    -- Re-confirm an approved one
+                                                   (refreshes staleness clock)
   DELETE /api/v1/corrections/{id}               -- GDPR Art. 17 hard-delete
 
 API-first: this is the only write path a non-Python client needs to
@@ -30,6 +33,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ...learning.aging import is_stale
 from ...learning.corrections import (
     STATUS_APPROVED,
     STATUS_PROPOSED,
@@ -84,6 +88,8 @@ class CorrectionResponse(BaseModel):
     status: str
     created_by: str
     approved_by: str
+    last_validated_at: str
+    last_validated_by: str
     created_at: str
     updated_at: str
     override_flags: list[str] = []
@@ -123,6 +129,8 @@ def _to_response(
         status=correction.status,
         created_by=correction.created_by,
         approved_by=correction.approved_by,
+        last_validated_at=correction.last_validated_at,
+        last_validated_by=correction.last_validated_by,
         created_at=correction.created_at,
         updated_at=correction.updated_at,
         override_flags=override_flags or [],
@@ -191,9 +199,18 @@ async def list_corrections(
     status: str = "",
     agent_id: str = "",
     limit: int = 100,
+    stale: bool = False,
     auth: AuthContext = Depends(verify_api_key),
 ) -> list[CorrectionResponse]:
     """List this tenant's corrections, newest first.
+
+    stale=true restricts the listing to APPROVED corrections whose
+    freshness timestamp (last_validated_at, falling back to updated_at
+    for rows that predate revalidation) is older than
+    CORRECTION_STALE_DAYS -- the knowledge-aging review queue. The
+    staleness filter is applied in Python over the (limit-clamped)
+    approved listing, so a page of results may contain fewer than
+    `limit` entries.
 
     The extraction guard evaluates knowledge-read volume on every call
     (detection-only: elevated/capped write integrity flags). The ONLY
@@ -232,12 +249,25 @@ async def list_corrections(
             validate_identifier(agent_id, "agent_id")
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if stale:
+        if status and status != STATUS_APPROVED:
+            raise HTTPException(
+                status_code=400,
+                detail="stale=true only applies to approved corrections",
+            )
+        status = STATUS_APPROVED
     corrections = manager.list(
         tenant_id=auth.tenant_id,
         status=status,
         agent_id=agent_id,
         limit=max(1, min(limit, 500)),
     )
+    if stale:
+        corrections = [
+            c
+            for c in corrections
+            if is_stale(c.last_validated_at, c.updated_at, c.created_at)
+        ]
     return [_to_response(c) for c in corrections]
 
 
@@ -314,6 +344,31 @@ async def retire_correction(
     _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
         return _to_response(manager.retire(correction_id))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.post(
+    "/corrections/{correction_id}/revalidate", response_model=CorrectionResponse
+)
+async def revalidate_correction(
+    correction_id: str,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+) -> CorrectionResponse:
+    """Re-confirm an approved correction is still true (knowledge aging).
+
+    Sets last_validated_at/by to the authenticated caller and now,
+    resetting the staleness clock. Status is unchanged. Note the
+    governance report flags corrections whose last validator is their
+    own proposer (self-revalidation echoes the four-eyes concern).
+    """
+    manager = _get_manager(request)
+    _get_tenant_correction(manager, correction_id, auth.tenant_id)
+    try:
+        return _to_response(
+            manager.revalidate(correction_id, validated_by=auth.user_id)
+        )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 

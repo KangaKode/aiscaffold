@@ -185,11 +185,12 @@ API route modules expose the core workflow over HTTP:
 - `GET  /api/v1/preferences/search?q=` -- Semantic preference search
 - `GET  /api/v1/checkins` -- List pending check-ins
 - `POST /api/v1/mcp/servers` -- Register an MCP tool server (per-tenant, scope-gated, optional `[mcp]` extra)
-- `POST /api/v1/corrections` (+ `/approve`, `/reject`, `/retire`, `DELETE`) -- Four-eyes correction lifecycle, including hard-delete erasure
+- `POST /api/v1/corrections` (+ `/approve`, `/reject`, `/retire`, `/revalidate`, `DELETE`) -- Four-eyes correction lifecycle, including knowledge-aging revalidation and hard-delete erasure (`GET ?stale=true` lists the aging review queue)
 - `GET  /api/v1/reflections` -- Deterministic lessons distilled from each deliberation
 - `GET/POST /api/v1/graduation/...` -- Candidates, propose (opens check-ins), apply (requires approved check-in)
 - `GET/PUT /api/v1/budgets/{tenant_id}` -- Read and set per-tenant spend budgets
 - `GET  /api/v1/audit/deliberations/{correlation_id}` -- Full audit trail for one deliberation, with reasoning-chain hash
+- `GET  /api/v1/reports/governance?from_date=&to_date=` -- Tenant-scoped governance report (counts only): deliberation outcomes, integrity flags, corrections lifecycle + stale-knowledge summary, reflections, budget spend
 - `GET  /api/v1/activity/anomalies` -- Behavioral integrity flags (+ `POST .../resolve`)
 - `POST /api/v1/sessions` -- Session lifecycle (turns, retrieval, listing)
 - `POST /api/v1/webhooks/agents/{agent_id}` -- HMAC-verified async agent callbacks
@@ -276,6 +277,8 @@ erDiagram
         string status "proposed / approved / rejected / retired"
         string created_by
         string approved_by "four-eyes: must differ"
+        string last_validated_at "knowledge aging (v5 migration)"
+        string last_validated_by
     }
     error_schemas {
         string id PK
@@ -470,7 +473,7 @@ The scaffold itself is validated by a 16-check pipeline:
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
                          ruff lint, bandit security, import validation, red team,
-                         AI checks, agent review, pytest (643 tests, 85% coverage),
+                         AI checks, agent review, pytest (666 tests, 85% coverage),
                          file structure verification
 make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
 ```
@@ -502,6 +505,6 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 643 tests across 26 test files
+  tests/              # 666 tests across 27 test files
   evals/              # Eval infrastructure
 ```
