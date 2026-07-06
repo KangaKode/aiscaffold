@@ -78,6 +78,14 @@ class TestUpdateIf:
         with pytest.raises(ValueError, match="at least one expected"):
             store.update_if("corrections", "x", {"status": "a"}, {})
 
+    def test_none_expected_values_are_rejected(self, store):
+        """SQL 'col = ?' never matches NULL, so expecting None would make
+        the conditional update silently never apply -- refuse it loudly."""
+        with pytest.raises(ValueError, match="cannot be None"):
+            store.update_if(
+                "corrections", "x", {"status": "a"}, {"approved_by": None}
+            )
+
 
 class TestLifecycleRace:
     """The read-check-write TOCTOU in approve/reject/retire is closed:
@@ -274,6 +282,89 @@ class TestBudgetCapPersistence:
             "max_budget_usd"
         ] == pytest.approx(2.0)
 
+    def test_cap_change_converges_across_managers_within_ttl(
+        self, store, monkeypatch
+    ):
+        """Regression: get_budget cached caps forever per process, so a
+        cap changed by another replica never became visible. The TTL
+        re-read (BUDGET_CONFIG_TTL_SECONDS) must converge it."""
+        monkeypatch.setenv("BUDGET_CONFIG_TTL_SECONDS", "0")  # expire instantly
+        writer = BudgetManager(store=store)
+        reader = BudgetManager(store=store)
+        writer.set_budget("acme", max_budget_usd=1.0)
+        assert reader.get_budget("acme")["max_budget_usd"] == pytest.approx(1.0)
+
+        writer.set_budget("acme", max_budget_usd=5.0)  # "another process"
+        assert reader.get_budget("acme")["max_budget_usd"] == pytest.approx(5.0)
+
+    def test_unconfigured_tenant_lookups_are_cached_within_ttl(
+        self, store, monkeypatch
+    ):
+        """Regression: tenants with no configured cap missed the cache
+        entirely, so every budget check -- i.e. every LLM call -- ran a
+        blocking config query against the store. Negative lookups must
+        be cached under the same TTL."""
+        monkeypatch.delenv("BUDGET_CONFIG_TTL_SECONDS", raising=False)
+        manager = BudgetManager(store=store)  # default TTL (60s)
+        config_queries = []
+        real_query = store.query
+
+        def counting_query(table, filters, order_by="", limit=0):
+            if table == "budget_configs":
+                config_queries.append(filters)
+            return real_query(table, filters, order_by, limit)
+
+        store.query = counting_query
+        for _ in range(5):
+            assert manager.check("unconfigured") == BudgetStatus.ALLOWED
+        assert len(config_queries) == 1  # first miss only, then cached
+
+    def test_persist_config_converges_after_losing_insert_race(self, store):
+        """Regression: two processes racing a tenant's first cap insert --
+        the loser hit the PK conflict, logged a bogus 'in-memory only'
+        warning, and left the winner's value in the store. It must
+        converge by retrying the write as an update."""
+        manager = BudgetManager(store=store)
+        real_insert = store.insert
+
+        def losing_insert(table, row):
+            if table == "budget_configs":
+                # Another process wins the first insert...
+                real_insert(table, {**row, "max_budget_usd": 99.0})
+                # ...so this one hits the primary-key conflict.
+                raise sqlite3.IntegrityError("UNIQUE constraint failed")
+            return real_insert(table, row)
+
+        store.insert = losing_insert
+        manager.set_budget("acme", max_budget_usd=2.0)
+        assert BudgetManager(store=store).get_budget("acme")[
+            "max_budget_usd"
+        ] == pytest.approx(2.0)
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_still_propagates_from_llm_call(self, store):
+        """Budget enforcement moved off the event loop (asyncio.to_thread)
+        -- BudgetExceededError must still reach the caller of call()."""
+        from {{project_slug}}.llm.budget_manager import (
+            BudgetExceededError,
+            _tenant_context,
+            set_tenant_context,
+        )
+        from {{project_slug}}.llm.client import LLMClient
+
+        manager = BudgetManager(store=store)
+        manager.set_budget("acme", max_budget_usd=0.01)
+        manager.record_spend("acme", 0.02, model="m")
+        token = set_tenant_context("acme")
+        try:
+            client = LLMClient(
+                provider="anthropic", api_key="test-key", budget_manager=manager
+            )
+            with pytest.raises(BudgetExceededError):
+                await client.call("hello")
+        finally:
+            _tenant_context.reset(token)
+
 
 class TestSumAggregate:
     def test_sum_amount_totals_and_windows(self, store):
@@ -422,6 +513,151 @@ class TestConnectTimeDnsRevalidation:
         )
         assert await agent.health_check() is False
         assert hits == []
+
+    @pytest.mark.asyncio
+    async def test_allow_private_endpoint_opts_out_of_recheck(
+        self, monkeypatch, sample_task
+    ):
+        """Regression: directly constructed agents pointing at private
+        hostnames on purpose (docker-compose service names, corp-internal
+        DNS) worked before the connect-time re-check and were broken by
+        it. allow_private_endpoint=True restores them."""
+        from {{project_slug}}.agents.remote import RemoteAgent
+
+        hits = []
+        _mock_remote_http(monkeypatch, hits)
+        _private_resolver(monkeypatch)
+
+        agent = RemoteAgent(
+            name="internal", domain="t", base_url="http://backend-svc:9000",
+            allow_private_endpoint=True,
+        )
+        analysis = await agent.analyze(sample_task)
+        assert analysis.agent_name == "internal"
+        assert len(hits) == 1
+
+        # The default is still locked down.
+        locked = RemoteAgent(
+            name="default", domain="t", base_url="http://backend-svc:9000"
+        )
+        with pytest.raises(ConnectionError, match="private|rebind"):
+            await locked.analyze(sample_task)
+
+    @pytest.mark.asyncio
+    async def test_resolver_error_fails_closed_at_connect_time(
+        self, monkeypatch, sample_task
+    ):
+        """Regression: a resolver error at re-check time returned 'not
+        private' and passed the guard (fail open). The connect-time path
+        must refuse when it cannot verify the destination."""
+        from {{project_slug}}.agents.remote import RemoteAgent
+
+        hits = []
+        _mock_remote_http(monkeypatch, hits)
+
+        def resolver_down(host, port, *args, **kwargs):
+            raise socket.gaierror("resolver unavailable")
+
+        monkeypatch.setattr(socket, "getaddrinfo", resolver_down)
+        agent = RemoteAgent(
+            name="dark", domain="t", base_url="http://agent.example.com"
+        )
+        with pytest.raises(ConnectionError, match="re-resolved"):
+            await agent.analyze(sample_task)
+        assert hits == []
+
+    @pytest.mark.asyncio
+    async def test_dns_recheck_runs_before_every_retry_attempt(
+        self, monkeypatch, sample_task
+    ):
+        """Regression: the re-check ran once before the retry loop; with
+        retries and 120s timeouts the last attempt could fire minutes
+        later, unguarded. Every attempt must re-check."""
+        import httpx
+
+        from {{project_slug}}.agents import remote as remote_module
+        from {{project_slug}}.agents.remote import MAX_RETRIES, RemoteAgent
+
+        recheck_urls = []
+        monkeypatch.setattr(
+            remote_module, "revalidate_url_at_connect",
+            lambda url, field_name: recheck_urls.append(url),
+        )
+
+        def always_times_out(request):
+            raise httpx.TimeoutException("slow")
+
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            httpx, "AsyncClient",
+            lambda **kw: real_client(
+                transport=httpx.MockTransport(always_times_out), **kw
+            ),
+        )
+
+        agent = RemoteAgent(
+            name="slow", domain="t", base_url="http://agent.example.com"
+        )
+        with pytest.raises(ConnectionError, match="failed on"):
+            await agent.analyze(sample_task)
+        assert len(recheck_urls) == MAX_RETRIES + 1  # once per attempt
+
+
+# --- MCP client: URL validation off the event loop -----------------------------
+
+
+class TestMcpClientLoopResponsiveness:
+    @pytest.mark.asyncio
+    async def test_url_validation_runs_off_the_loop(self, monkeypatch):
+        """Regression: call_tool validated the server URL inline, running
+        blocking getaddrinfo DNS resolution on the event loop. Ten
+        concurrent calls against a slow resolver serialized the loop for
+        ~1s; a concurrent timer task must still tick on time."""
+        import asyncio
+        import time
+
+        from {{project_slug}}.connectors import mcp_client as mcp_module
+        from {{project_slug}}.connectors.mcp_client import MCPClient, MCPToolInfo
+
+        def slow_validate(url, field_name="url"):
+            time.sleep(0.1)  # simulated slow DNS; must run OFF the loop
+            return url
+
+        monkeypatch.setattr(mcp_module, "validate_url", slow_validate)
+
+        class StubTransport:
+            async def call_tool(
+                self, server_url, tool_name, arguments, headers, timeout
+            ):
+                return "ok"
+
+            async def list_tools(self, server_url, headers, timeout):
+                return [MCPToolInfo(name="t", description="")]
+
+        client = MCPClient(transport=StubTransport())
+        loop = asyncio.get_running_loop()
+        timer_elapsed = 0.0
+
+        async def timer():
+            nonlocal timer_elapsed
+            started = loop.time()
+            for _ in range(5):
+                await asyncio.sleep(0.05)
+            timer_elapsed = loop.time() - started
+
+        timer_task = asyncio.create_task(timer())
+        results = await asyncio.gather(*(
+            client.call_tool(
+                "http://mcp.example.com", "tool", {}, tenant_id="acme"
+            )
+            for _ in range(10)
+        ))
+        await timer_task
+
+        assert all(not r.is_error for r in results)
+        assert timer_elapsed < 0.7, (
+            f"event loop was blocked: 5x50ms timer took {timer_elapsed:.2f}s"
+        )
 
 
 {% if include_api_gateway -%}
