@@ -11,10 +11,10 @@ Reference: src/orchestration/round_table.py
 Reference: src/llm/client.py (CacheablePrompt)
 """
 
-import json
 import logging
 
 from ..llm import CacheablePrompt
+from ..llm.response_guard import llm_call_failed, parse_agent_json
 from ..orchestration.round_table import (
     AgentAnalysis,
     AgentChallenge,
@@ -84,16 +84,24 @@ class ExampleAgent:
 
         response = await self._llm.call(prompt=prompt, role="specialist")
 
-        try:
-            data = json.loads(response.content)
+        # Parse via the shared fail-closed helpers (llm/response_guard.py),
+        # not bare json.loads: an errored LLM call (budget exhausted,
+        # transport failure) must never be treated as analysis content,
+        # and live models often wrap JSON in markdown fences.
+        if llm_call_failed(response):
             return AgentAnalysis(
                 agent_name=self.name,
                 domain=self.domain,
-                observations=data.get("observations", []),
-                recommendations=data.get("recommendations", []),
-                raw_response=response.content,
+                observations=[{
+                    "finding": "Analysis unavailable (LLM call failed)",
+                    "evidence": response.content[:200],
+                    "severity": "warning",
+                    "confidence": 0.5,
+                }],
             )
-        except json.JSONDecodeError:
+
+        data = parse_agent_json(response)
+        if data is None:
             return AgentAnalysis(
                 agent_name=self.name,
                 domain=self.domain,
@@ -101,6 +109,13 @@ class ExampleAgent:
                                "severity": "info", "confidence": 0.5}],
                 raw_response=response.content,
             )
+        return AgentAnalysis(
+            agent_name=self.name,
+            domain=self.domain,
+            observations=data.get("observations", []),
+            recommendations=data.get("recommendations", []),
+            raw_response=response.content,
+        )
 
     async def challenge(
         self, task: RoundTableTask, other_analyses: list[AgentAnalysis]

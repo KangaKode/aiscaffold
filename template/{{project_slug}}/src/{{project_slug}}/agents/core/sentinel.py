@@ -13,7 +13,7 @@ import json
 import logging
 
 from ...llm import CacheablePrompt
-from ...security.prompt_guard import wrap_user_content
+from ...security.prompt_guard import sanitize_for_prompt, wrap_user_content
 from ...orchestration.round_table import (
     AgentAnalysis,
     AgentChallenge,
@@ -21,6 +21,7 @@ from ...orchestration.round_table import (
     RoundTableTask,
     SynthesisResult,
 )
+from ...llm.response_guard import llm_call_failed, parse_agent_json
 from ._shared_prompts import REFUSAL_POLICY
 
 logger = logging.getLogger(__name__)
@@ -119,59 +120,68 @@ class SentinelAgent:
         )
         response = await self._llm.call(prompt=prompt, role="sentinel_analysis")
 
-        try:
-            data = json.loads(response.content)
-            risk_level = data.get("risk_level", "ELEVATED")
-            if risk_level not in _VALID_RISK_LEVELS:
-                risk_level = "ELEVATED"
-
-            logger.info("[Sentinel] Input screening: %s", risk_level)
-
+        if llm_call_failed(response):
+            # Transport/LLM failure (budget exhausted, client not
+            # initialized, call failed): the input was never screened,
+            # so screening fails CLOSED.
+            logger.warning(
+                "[Sentinel] LLM unavailable -- fail-closed: %s", response.content[:200]
+            )
             return AgentAnalysis(
                 agent_name=self.name,
                 domain=self.domain,
                 observations=[{
-                    "finding": f"Input screening: {risk_level}",
-                    "evidence": data.get("reasoning", ""),
-                    "severity": (
-                        "critical" if risk_level == "HIGH"
-                        else "warning" if risk_level == "ELEVATED" else "info"
-                    ),
-                    "confidence": 0.9 if risk_level == "HIGH" else 0.7,
-                    "risk_level": risk_level,
-                    "indicators": data.get("indicators", []),
-                    "recommended_action": data.get("recommended_action", "proceed"),
+                    "finding": "Sentinel unavailable — fail-closed",
+                    "evidence": response.content[:200],
+                    "severity": "critical",
+                    "confidence": 1.0,
                 }],
-                premise_valid=data.get("premise_valid", True),
-                refusal_reason=data.get("refusal_reason", ""),
+                premise_valid=False,
+                refusal_reason="sentinel_unavailable",
             )
-        except json.JSONDecodeError:
-            is_llm_failure = (
-                getattr(response, "is_error", False)
-                or response.content.startswith("[LLM call failed")
-            )
-            if is_llm_failure:
-                logger.warning(
-                    "[Sentinel] LLM unavailable -- fail-closed: %s", response.content[:200]
-                )
+
+        data = parse_agent_json(response)
+        if data is None:
+            # Real model output that failed to parse: degrade to a
+            # warning -- malformed JSON from a live model is a formatting
+            # quirk, not a screening failure.
             return AgentAnalysis(
                 agent_name=self.name,
                 domain=self.domain,
                 observations=[{
-                    "finding": (
-                        "Sentinel unavailable — fail-closed"
-                        if is_llm_failure else response.content[:500]
-                    ),
-                    "evidence": (
-                        response.content[:200]
-                        if is_llm_failure else "raw sentinel response (parse failed)"
-                    ),
-                    "severity": "critical" if is_llm_failure else "warning",
-                    "confidence": 1.0 if is_llm_failure else 0.5,
+                    # Raw model output flows into the synthesis prompt later,
+                    # so it is sanitized, never embedded verbatim.
+                    "finding": sanitize_for_prompt(response.content, max_length=500),
+                    "evidence": "raw sentinel response (parse failed)",
+                    "severity": "warning",
+                    "confidence": 0.5,
                 }],
-                premise_valid=False if is_llm_failure else True,
-                refusal_reason="sentinel_unavailable" if is_llm_failure else "",
             )
+
+        risk_level = data.get("risk_level", "ELEVATED")
+        if risk_level not in _VALID_RISK_LEVELS:
+            risk_level = "ELEVATED"
+
+        logger.info("[Sentinel] Input screening: %s", risk_level)
+
+        return AgentAnalysis(
+            agent_name=self.name,
+            domain=self.domain,
+            observations=[{
+                "finding": f"Input screening: {risk_level}",
+                "evidence": data.get("reasoning", ""),
+                "severity": (
+                    "critical" if risk_level == "HIGH"
+                    else "warning" if risk_level == "ELEVATED" else "info"
+                ),
+                "confidence": 0.9 if risk_level == "HIGH" else 0.7,
+                "risk_level": risk_level,
+                "indicators": data.get("indicators", []),
+                "recommended_action": data.get("recommended_action", "proceed"),
+            }],
+            premise_valid=data.get("premise_valid", True),
+            refusal_reason=data.get("refusal_reason", ""),
+        )
 
     async def challenge(
         self, task: RoundTableTask, other_analyses: list[AgentAnalysis]
@@ -200,22 +210,25 @@ class SentinelAgent:
         )
         response = await self._llm.call(prompt=prompt, role="sentinel_challenge")
 
-        try:
-            data = json.loads(response.content)
-            risk_level = data.get("risk_level", "SAFE")
-            if risk_level not in _VALID_RISK_LEVELS:
-                risk_level = "ELEVATED"
-
-            logger.info("[Sentinel] Output screening: %s", risk_level)
-
-            return AgentChallenge(
-                agent_name=self.name,
-                challenges=data.get("challenges", []),
-                concessions=[],
+        data = parse_agent_json(response)
+        if data is None:
+            logger.warning(
+                "[Sentinel] Output screening produced no result (%s)",
+                "LLM call failed" if llm_call_failed(response) else "unparseable response",
             )
-        except json.JSONDecodeError:
-            logger.warning("[Sentinel] Output screening response unparseable")
             return AgentChallenge(agent_name=self.name)
+
+        risk_level = data.get("risk_level", "SAFE")
+        if risk_level not in _VALID_RISK_LEVELS:
+            risk_level = "ELEVATED"
+
+        logger.info("[Sentinel] Output screening: %s", risk_level)
+
+        return AgentChallenge(
+            agent_name=self.name,
+            challenges=data.get("challenges", []),
+            concessions=[],
+        )
 
     async def vote(
         self, task: RoundTableTask, synthesis: SynthesisResult
@@ -240,14 +253,18 @@ class SentinelAgent:
         )
         response = await self._llm.call(prompt=prompt, role="sentinel_vote")
 
-        try:
-            data = json.loads(response.content)
-            return AgentVote(
-                agent_name=self.name,
-                approve=data.get("approve", False),
-                conditions=data.get("conditions", []),
-                dissent_reason=data.get("dissent_reason"),
+        data = parse_agent_json(response)
+        if data is None:
+            reason = (
+                "Cannot evaluate synthesis for security risk (LLM call failed)"
+                if llm_call_failed(response)
+                else "Could not evaluate synthesis for security risk"
             )
-        except json.JSONDecodeError:
             return AgentVote(agent_name=self.name, approve=False,
-                             dissent_reason="Could not evaluate synthesis for security risk")
+                             dissent_reason=reason)
+        return AgentVote(
+            agent_name=self.name,
+            approve=data.get("approve", False),
+            conditions=data.get("conditions", []),
+            dissent_reason=data.get("dissent_reason"),
+        )

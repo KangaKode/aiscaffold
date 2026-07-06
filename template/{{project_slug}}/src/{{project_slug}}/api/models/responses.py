@@ -82,8 +82,9 @@ class RoundTableResultResponse(BaseModel):
     synthesis: SynthesisResponse | None = None
     votes: list[VoteResponse] = Field(default_factory=list)
     duration_seconds: float = 0.0
-    degraded: bool = False  # Quorum of domain-agent analyses not met
+    degraded: bool = False  # Analysis quorum not met, or voters gated out at Phase 3
     failed_agent_count: int = 0  # Agents skipped by dispatch gates or failed
+    vote_gated_count: int = 0  # Voters excluded by Phase 3 dispatch gates
 
 
 # =============================================================================

@@ -19,6 +19,7 @@ from ...orchestration.round_table import (
     RoundTableTask,
     SynthesisResult,
 )
+from ...llm.response_guard import llm_call_failed, parse_agent_json
 
 logger = logging.getLogger(__name__)
 
@@ -102,15 +103,14 @@ class CitationAgent:
         )
         response = await self._llm.call(prompt=prompt, role="citation_challenge")
 
-        try:
-            data = json.loads(response.content)
-            return AgentChallenge(
-                agent_name=self.name,
-                challenges=data.get("challenges", []),
-                concessions=data.get("concessions", []),
-            )
-        except json.JSONDecodeError:
+        data = parse_agent_json(response)
+        if data is None:
             return AgentChallenge(agent_name=self.name)
+        return AgentChallenge(
+            agent_name=self.name,
+            challenges=data.get("challenges", []),
+            concessions=data.get("concessions", []),
+        )
 
     async def vote(
         self, task: RoundTableTask, synthesis: SynthesisResult
@@ -131,14 +131,18 @@ class CitationAgent:
         )
         response = await self._llm.call(prompt=prompt, role="citation_vote")
 
-        try:
-            data = json.loads(response.content)
-            return AgentVote(
-                agent_name=self.name,
-                approve=data.get("approve", False),
-                conditions=data.get("conditions", []),
-                dissent_reason=data.get("dissent_reason"),
+        data = parse_agent_json(response)
+        if data is None:
+            reason = (
+                "Cannot verify citation quality (LLM call failed)"
+                if llm_call_failed(response)
+                else "Could not evaluate citation quality"
             )
-        except json.JSONDecodeError:
             return AgentVote(agent_name=self.name, approve=False,
-                             dissent_reason="Could not evaluate citation quality")
+                             dissent_reason=reason)
+        return AgentVote(
+            agent_name=self.name,
+            approve=data.get("approve", False),
+            conditions=data.get("conditions", []),
+            dissent_reason=data.get("dissent_reason"),
+        )

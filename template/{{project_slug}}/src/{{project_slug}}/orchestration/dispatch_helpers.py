@@ -2,7 +2,9 @@
 
 Standalone functions used by orchestrators around each agent call:
 identity verification, capability resolution, rate limiting, scope
-filtering, and call duration logging.
+filtering, and call duration logging -- plus the gated Phase 2/3
+runners (run_challenge_phase, run_voting_phase) so every deliberation
+phase passes the same gates.
 Registry and rate limiter are passed as arguments (no globals).
 """
 
@@ -77,41 +79,31 @@ async def _analyze_with_duration(agent: Any, task: Any) -> tuple[Any, float]:
     return result, time.monotonic() - start
 
 
-async def dispatch_with_gates(
+def gate_agents(
     agents: list,
     task: Any,
     registry: Any,
     rate_limiter: AgentRateLimiter | None,
     component: str,
-    baseline_tracker: Any = None,
-) -> tuple[list[Any], int, int]:
-    """Run analyze() on all agents in parallel with per-agent dispatch gates.
+) -> tuple[list[tuple[Any, Any, AgentCapability | None]], int]:
+    """Run the per-agent dispatch gates and scope-filter the task.
 
-    Before each agent's analyze():
-      1. Identity verification (suspended / tokenless-remote / invalid token
-         agents are skipped, never fatal).
+    The single gate sequence shared by every deliberation phase
+    (analyze, challenge, vote):
+      1. Identity verification (suspended / tokenless-remote / invalid
+         token agents are skipped, never fatal).
       2. Rate limit check against the agent's capability.
       3. Scope filtering of the task's ``context`` dict (agents with a
-         capability declaring non-empty access_scopes see only those keys;
-         ``agent_focus_areas`` is orchestrator metadata and always passes).
+         capability declaring non-empty access_scopes see only those
+         keys; ``agent_focus_areas`` is orchestrator metadata and
+         always passes).
 
-    After analyze(), findings citing data sources outside the agent's
-    scopes are logged (analysis is kept -- flags are advisory).
-
-    baseline_tracker: optional AgentBaselineTracker. When provided, each
-    successful dispatch records stats (duration, refused = premise_valid
-    is False, confidence attr when present, scope violation count) --
-    best-effort, never fatal. Callers that don't pass it are unaffected.
-
-    Returns (analyses, skipped_count, failed_count) where skipped_count is
-    agents blocked by a gate and failed_count is agents whose analyze()
-    raised. Works with registry=None (all gates pass; no filtering by
-    registry capability).
+    Returns ([(agent, scope_filtered_task, capability), ...], skipped)
+    where skipped counts agents blocked by a gate. Works with
+    registry=None (all gates pass; no capability filtering).
     """
     scope_filter = ScopeFilter()
-    coros = []
-    dispatched: list[Any] = []
-    capabilities: list[AgentCapability | None] = []
+    gated: list[tuple[Any, Any, AgentCapability | None]] = []
     skipped = 0
     for agent in agents:
         if not verify_agent_identity(agent, registry, component):
@@ -132,9 +124,132 @@ async def dispatch_with_gates(
                 filtered = {**filtered, "agent_focus_areas": context["agent_focus_areas"]}
             agent_task = replace(task, context=filtered)
 
-        dispatched.append(agent)
-        capabilities.append(capability)
-        coros.append(_analyze_with_duration(agent, agent_task))
+        gated.append((agent, agent_task, capability))
+    return gated, skipped
+
+
+async def run_challenge_phase(
+    agents: list,
+    task: Any,
+    analyses: list,
+    registry: Any,
+    component: str = "RoundTable",
+) -> list:
+    """Phase 2: agents challenge each other (mediated hub-and-spoke).
+
+    Dispatch passes the same gates as Phase 1 (identity/suspension,
+    rate limit, scope-filtered task) -- gates are re-checked, so an
+    agent suspended mid-run is excluded here.
+    """
+    rate_limiter = getattr(registry, "rate_limiter", None)
+    gated, skipped = gate_agents(agents, task, registry, rate_limiter, component)
+    if skipped:
+        logger.warning(
+            "[%s] %d agent(s) blocked by dispatch gates at challenge phase",
+            component, skipped,
+        )
+    results = await asyncio.gather(
+        *[agent.challenge(agent_task, analyses) for agent, agent_task, _ in gated],
+        return_exceptions=True,
+    )
+    challenges = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            logger.error("[%s] %s challenge failed: %s", component, gated[i][0].name, r)
+            continue
+        challenges.append(r)
+    return challenges
+
+
+async def run_voting_phase(
+    agents: list,
+    task: Any,
+    synthesis: Any,
+    registry: Any,
+    component: str = "RoundTable",
+    midrun_names: set[str] | None = None,
+) -> tuple[list, int]:
+    """Phase 3b: agents vote on the synthesis. Dissent is valuable.
+
+    Dispatch passes the same gates as Phase 1. Gated agents cast no
+    vote and consensus divides by votes actually cast, so callers must
+    mark the result degraded when the returned gated-out count is
+    non-zero -- otherwise one surviving approver could present as 100%
+    consensus. Note the asymmetry: a vote() that RAISES records a
+    dissent, a gated-out voter is excluded from the denominator.
+
+    midrun_names scopes the returned count to MID-RUN losses: when
+    given (the round table passes the Phase 1 analysis contributors),
+    only gated-out agents in that set are counted. Roster members that
+    were already excluded before deliberation (e.g. suspended before
+    the run) fail the same gates again here, and counting them would
+    flag a clean consensus as degraded for a voter that never existed.
+
+    Returns (votes, gated_out_count).
+    """
+    from .round_table import AgentVote  # deferred: avoids an import cycle
+
+    rate_limiter = getattr(registry, "rate_limiter", None)
+    gated, skipped = gate_agents(agents, task, registry, rate_limiter, component)
+    if midrun_names is not None:
+        gated_names = {agent.name for agent, _, _ in gated}
+        skipped = sum(
+            1 for agent in agents
+            if agent.name not in gated_names and agent.name in midrun_names
+        )
+    if skipped:
+        logger.warning(
+            "[%s] %d mid-run agent(s) blocked by dispatch gates at vote phase",
+            component, skipped,
+        )
+    results = await asyncio.gather(
+        *[agent.vote(agent_task, synthesis) for agent, agent_task, _ in gated],
+        return_exceptions=True,
+    )
+    votes = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            logger.error("[%s] %s vote failed: %s", component, gated[i][0].name, r)
+            votes.append(AgentVote(agent_name=gated[i][0].name, dissent_reason=str(r)))
+            continue
+        votes.append(r)
+    return votes, skipped
+
+
+async def dispatch_with_gates(
+    agents: list,
+    task: Any,
+    registry: Any,
+    rate_limiter: AgentRateLimiter | None,
+    component: str,
+    baseline_tracker: Any = None,
+) -> tuple[list[Any], int, int]:
+    """Run analyze() on all agents in parallel with per-agent dispatch gates.
+
+    Each agent passes the shared gate sequence (see ``gate_agents``)
+    before its analyze() is dispatched with the scope-filtered task.
+
+    After analyze(), findings citing data sources outside the agent's
+    scopes are logged (analysis is kept -- flags are advisory).
+
+    baseline_tracker: optional AgentBaselineTracker. When provided, each
+    successful dispatch records stats (duration, refused = premise_valid
+    is False, confidence attr when present, scope violation count) --
+    best-effort, never fatal. Callers that don't pass it are unaffected.
+
+    Returns (analyses, skipped_count, failed_count) where skipped_count is
+    agents blocked by a gate and failed_count is agents whose analyze()
+    raised. Works with registry=None (all gates pass; no filtering by
+    registry capability).
+    """
+    scope_filter = ScopeFilter()
+    gated, skipped = gate_agents(agents, task, registry, rate_limiter, component)
+    dispatched = [agent for agent, _, _ in gated]
+    capabilities = [capability for _, _, capability in gated]
+    coros = [
+        _analyze_with_duration(agent, agent_task)
+        for agent, agent_task, _ in gated
+    ]
 
     results = await asyncio.gather(*coros, return_exceptions=True)
     analyses = []

@@ -87,7 +87,14 @@ class TokenUsage:
 
 @dataclass
 class LLMResponse:
-    """Response from an LLM call -- drop-in compatible with existing code."""
+    """Response from an LLM call -- drop-in compatible with existing code.
+
+    is_error/error_type implement an explicit ok/error contract (pattern
+    borrowed from a sibling platform's response contract): every error
+    return from the client sets is_error=True with a machine-readable
+    error_type, so callers can fail closed instead of parsing bracketed
+    error strings out of ``content``.
+    """
 
     content: str
     usage: TokenUsage = field(default_factory=TokenUsage)
@@ -95,6 +102,8 @@ class LLMResponse:
     provider: str = ""
     latency_ms: float = 0.0
     cached: bool = False
+    is_error: bool = False
+    error_type: str = ""
 
 
 # =============================================================================
@@ -224,6 +233,8 @@ class LLMClient:
                 content=f"[Budget exhausted: ${self._max_cost_usd} limit reached]",
                 provider=self._provider,
                 model=self._model,
+                is_error=True,
+                error_type="budget_exhausted",
             )
 
         # Budget checks read the spend ledger (blocking store I/O) -- run
@@ -235,6 +246,8 @@ class LLMClient:
                 content="[LLM client not initialized -- check API key and dependencies]",
                 provider=self._provider,
                 model=self._model,
+                is_error=True,
+                error_type="client_not_initialized",
             )
 
         start = time.time()
@@ -280,6 +293,8 @@ class LLMClient:
             content=f"[LLM call failed: {type(last_error).__name__}]",
             provider=self._provider,
             model=self._model,
+            is_error=True,
+            error_type="call_failed",
         )
 
     def _sanitize_prompt(self, prompt: CacheablePrompt) -> CacheablePrompt:

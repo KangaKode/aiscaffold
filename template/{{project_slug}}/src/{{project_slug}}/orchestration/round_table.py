@@ -17,7 +17,6 @@ Key design principles from 2026 research:
 Reference: docs/REFERENCES.md
 """
 
-import asyncio
 import logging
 import json
 from dataclasses import asdict, dataclass, field
@@ -146,6 +145,13 @@ class RoundTableResult:
     degraded/failed_agent_count: quorum tracking. degraded=True when fewer
     domain (non-core) agents than config.min_quorum produced analyses AND
     at least one agent was skipped by a dispatch gate or failed.
+
+    vote_gated_count: voters excluded MID-RUN by the Phase 3 dispatch
+    gates (suspension, rate limit) after contributing a Phase 1
+    analysis; roster members already excluded before deliberation are
+    not counted. Any mid-run vote-phase gate-out also sets
+    degraded=True: the approval rate divides by votes actually cast, so
+    a silently shrunken voter set must never present as a clean result.
     """
 
     task_id: str
@@ -159,6 +165,7 @@ class RoundTableResult:
     duration_seconds: float = 0.0
     degraded: bool = False
     failed_agent_count: int = 0
+    vote_gated_count: int = 0
     requires_approval: bool = False  # Human must approve before acting on this
 
     @property
@@ -316,7 +323,21 @@ class RoundTable:
         )
         self._write_artifact(task.id, "phase3_synthesis", asdict(result.synthesis))
 
-        result.votes = await self._phase_voting(task, result.synthesis)
+        # Scope the gated-out count to agents that actually analyzed:
+        # a roster member excluded before Phase 1 fails the same gates
+        # again here and is not a mid-run voter loss.
+        analyzed_names = {a.agent_name for a in result.analyses}
+        result.votes, result.vote_gated_count = await self._phase_voting(
+            task, result.synthesis, analyzed_names
+        )
+        if result.vote_gated_count:
+            # A mid-run shrunken voter set must never present as clean.
+            result.degraded = True
+            logger.warning(
+                f"[RoundTable] Degraded result: {result.vote_gated_count} voter(s) "
+                f"gated out at Phase 3 -- consensus computed over "
+                f"{len(result.votes)} remaining vote(s)"
+            )
         self._write_artifact(task.id, "phase3_votes", [asdict(v) for v in result.votes])
 
         result.consensus_reached = result.approval_rate >= self.config.consensus_threshold
@@ -330,6 +351,8 @@ class RoundTable:
             "approval_rate": result.approval_rate,
             "duration": result.duration_seconds,
             "requires_approval": result.requires_approval,
+            "degraded": result.degraded,
+            "vote_gated_count": result.vote_gated_count,
         })
 
         logger.info(
@@ -419,35 +442,30 @@ class RoundTable:
     async def _phase_challenge(
         self, task: RoundTableTask, analyses: list[AgentAnalysis]
     ) -> list[AgentChallenge]:
-        """Phase 2: Agents challenge each other (mediated hub-and-spoke)."""
-        results = await asyncio.gather(
-            *[agent.challenge(task, analyses) for agent in self.agents],
-            return_exceptions=True,
+        """Phase 2 dispatch -- same gates as Phase 1, re-checked
+        (see dispatch_helpers.run_challenge_phase)."""
+        from .dispatch_helpers import run_challenge_phase
+
+        return await run_challenge_phase(
+            self.agents, task, analyses, self._registry
         )
-        challenges = []
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                logger.error(f"[RoundTable] {self.agents[i].name} challenge failed: {r}")
-                continue
-            challenges.append(r)
-        return challenges
 
     async def _phase_voting(
-        self, task: RoundTableTask, synthesis: SynthesisResult
-    ) -> list[AgentVote]:
-        """Phase 3b: Agents vote on synthesis. Dissent is valuable."""
-        results = await asyncio.gather(
-            *[agent.vote(task, synthesis) for agent in self.agents],
-            return_exceptions=True,
+        self, task: RoundTableTask, synthesis: SynthesisResult,
+        analyzed_names: set[str] | None = None,
+    ) -> tuple[list[AgentVote], int]:
+        """Phase 3b dispatch -- same gates as Phase 1, re-checked.
+
+        Returns (votes, gated_out_count) where the count covers only
+        MID-RUN losses (agents that produced a Phase 1 analysis but are
+        gated out here); a non-zero count marks the result degraded
+        (see dispatch_helpers.run_voting_phase)."""
+        from .dispatch_helpers import run_voting_phase
+
+        return await run_voting_phase(
+            self.agents, task, synthesis, self._registry,
+            midrun_names=analyzed_names,
         )
-        votes = []
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                logger.error(f"[RoundTable] {self.agents[i].name} vote failed: {r}")
-                votes.append(AgentVote(agent_name=self.agents[i].name, dissent_reason=str(r)))
-                continue
-            votes.append(r)
-        return votes
 
     def _write_artifact(self, task_id: str, phase: str, data: Any) -> None:
         """Write intermediate results to filesystem for auditability."""

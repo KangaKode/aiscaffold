@@ -12,6 +12,7 @@ Keep this file under 150 lines.
 import logging
 from typing import Any
 
+from ..llm.response_guard import llm_call_failed
 from .citation_validator import CitationValidator, SourceRegistry
 from .evidence_levels import EvidenceLevelEnforcer
 from .fact_checker import FactChecker
@@ -135,7 +136,14 @@ class EvidenceEnforcementPipeline:
             response = await self._llm.call(
                 prompt=prompt, role="enforcement_rewrite", temperature=0.1
             )
-            return response.content if response and response.content else None
+            if response is None or not response.content:
+                return None
+            if llm_call_failed(response):
+                # An errored call yields a bracketed error string that passes
+                # every validator -- accepting it launders the rejected response.
+                logger.warning("[Enforcement] Rewrite LLM call failed -- no rewrite")
+                return None
+            return response.content
         except Exception as e:
             logger.warning(f"[Enforcement] Rewrite failed: {e}")
             return None
