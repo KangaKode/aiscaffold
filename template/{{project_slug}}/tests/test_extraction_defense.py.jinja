@@ -415,7 +415,7 @@ class TestPairEscalation:
 
 # --- API-level wiring -----------------------------------------------------------
 
-
+{% if include_api_gateway %}
 @pytest.fixture
 async def api(tmp_path, monkeypatch):
     """HTTP client + app with activity tracking enabled and low guard
@@ -538,3 +538,6 @@ class TestPairCheckWiredIntoApproval:
         flags = flags_of_type(app.state.learning_store, FLAG_TYPE_PAIR)
         assert len(flags) == 1
         assert flags[0]["subject_id"] == "alice->anon"
+{% else %}
+# API-level wiring tests skipped: include_api_gateway is false
+{% endif %}

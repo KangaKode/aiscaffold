@@ -449,13 +449,12 @@ Cursor IDE agent definitions that assist during development (not runtime agents)
 |--------|---------|-------------|
 | `project_type` | `web-app` | `web-app`, `cli-tool`, `multi-agent`, `api-service` |
 | `llm_provider` | `anthropic` | `anthropic`, `openai`, `google`, `multi` |
-| `persistence` | `sqlite` | `sqlite`, `postgres`, `none` |
-| `include_evals` | `true` | Eval infrastructure |
-| `include_state_management` | `true` | Task tracker + progress notes |
-| `include_llm_client` | `true` | LLM client with prompt caching |
-| `include_api_gateway` | `true` | FastAPI gateway + external agent support |
-| `include_deployment` | `true` | Dockerfile, docker-compose, K8s manifests |
-| `include_learning` | `false` | Optional RAG dependencies + learning docs (the learning modules themselves ship in every project) |
+| `persistence` | `sqlite` | App-database scaffolding for your own code (driver dep, compose db service, `DATABASE_URL`/`DATABASE_PATH` plumbing). No shipped runtime module reads these; the learning store is configured by `learning_backend` |
+| `learning_backend` | `sqlite` | Storage backend for the built-in learning store (`sqlite` or `postgres`) |
+| `include_evals` | `true` | Eval infrastructure (`evals/` tree excluded when false) |
+| `include_api_gateway` | `true` | FastAPI gateway + external agent support (`src/<slug>/api/` tree excluded when false) |
+| `include_deployment` | `true` | Dockerfile, docker-compose, K8s manifests (all excluded when false, including the Makefile docker/k8s targets) |
+| `include_learning` | `false` | Optional RAG dependency guidance + learning docs (the learning modules themselves ship in every project) |
 
 ---
 

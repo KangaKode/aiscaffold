@@ -3,20 +3,22 @@ three resolution tiers, tenant-scoped round-table agent selection, approval
 auto-triggers (schema extraction + contradiction scan), and the
 check-in-gated graduation API."""
 
-from types import SimpleNamespace
-
 import pytest
 
-from {{project_slug}}.learning.contradiction import FLAG_TYPE_CONTRADICTION
 from {{project_slug}}.learning.corrections import CorrectionsManager
 from {{project_slug}}.learning.error_schemata import extract_error_schemas
 from {{project_slug}}.learning.knowledge_context import build_knowledge_context
 from {{project_slug}}.learning.store import SqliteLearningStore
+{% if include_api_gateway -%}
+from types import SimpleNamespace
+
+from {{project_slug}}.learning.contradiction import FLAG_TYPE_CONTRADICTION
 from {{project_slug}}.orchestration.round_table import (
     AgentAnalysis,
     AgentChallenge,
     AgentVote,
 )
+{% endif -%}
 
 
 @pytest.fixture
@@ -80,6 +82,7 @@ class TestBuildKnowledgeContext:
         ) == ""
 
 
+{% if include_api_gateway -%}
 class TestChatKnowledgeHelper:
     def test_appends_knowledge_to_context(self, store, manager):
         from {{project_slug}}.api.routes.chat import _with_knowledge_context
@@ -340,3 +343,6 @@ class TestGraduationAPI:
         r = await client.post("/api/v1/graduation/apply",
                               json={"checkin_id": checkin.id})
         assert r.status_code == 404
+{% else %}
+# Chat-helper and API-level wiring tests skipped: include_api_gateway is false
+{% endif %}

@@ -205,6 +205,7 @@ class TestChatOrchestrator:
         assert orchestrator.history_length == 0
 
 
+{% if include_api_gateway -%}
 class TestSessionKey:
     def test_session_key_binds_to_tenant_and_user(self):
         from {{project_slug}}.api.routes.chat import _session_key
@@ -219,6 +220,7 @@ class TestSessionKey:
         auth = AuthContext()
         key = _session_key("my_session", auth)
         assert key == f"{auth_scope_key(auth)}:my_session"
+{% endif -%}
 
 
 # =============================================================================
