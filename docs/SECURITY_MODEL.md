@@ -15,9 +15,9 @@ flowchart TD
     Req[Incoming request] --> Auth["API-key auth + per-IP rate limiting"]
     Auth --> Tenant["Tenant context via AuthContext (tenant_id on every route)"]
     Tenant --> Inj["Injection defense, per surface:<br/>user messages: delimiter wrapping with fence-break neutralization (resolve + premise paths; chat and round-table prompts embed content unwrapped)<br/>remote-agent / MCP output: sanitization + Layer 1 static pattern scan<br/>knowledge writes: + Layer 2 Unicode/encoding normalization"]
-    Inj --> Dispatch["Agent dispatch gates: JWT identity verified, per-agent rate limits, capability scopes filter context"]
+    Inj --> Dispatch["Agent dispatch gates: JWT identity verified, per-agent rate limits, capability scopes filter context - re-checked before every deliberation phase (analyze, challenge, vote)"]
     Dispatch --> Delib["Multi-agent deliberation"]
-    Delib --> L3["Layer 3 inside the deliberation: Sentinel semantic screen - fails closed without an LLM"]
+    Delib --> L3["Layer 3 inside the deliberation: Sentinel semantic screen - fails closed without an LLM or on an errored LLM call"]
     L3 --> Enforce["Evidence enforcement: unsupported-confidence claims rejected"]
     Enforce --> Gate["Autonomy policy / human approval gate"]
     Gate --> Audit["Metadata-only audit trail + reasoning-chain hash"]
@@ -37,7 +37,7 @@ flowchart TD
     L2 -->|"catches evasion: Cyrillic homoglyphs, zero-width chars, base64/rot13-encoded payloads"| Wrap["Boundary wrapping (wrap_user_content): fence-break tag neutralization (canary token opt-in, off by default)<br/>runs on: user content in resolve and premise prompts, and Sentinel's screening prompt"]
     Wrap --> L3["Layer 3 - Sentinel semantic screen (agents/core/sentinel.py)<br/>runs on: every deliberation, as a participating agent"]
     L3 -->|"catches meaning: social engineering, methodology extraction, context poisoning, privilege probing"| Delib["Deliberation proceeds"]
-    L3 -.->|"no LLM available"| Closed["FAILS CLOSED: Sentinel refuses (sentinel_unavailable) instead of passing unscreened input"]
+    L3 -.->|"no LLM available, or the LLM call errors (budget exhausted, not initialized, transport failure)"| Closed["FAILS CLOSED: Sentinel refuses (sentinel_unavailable) instead of passing unscreened input; malformed JSON from a live model degrades to a warning instead"]
     Delib --> OutGate["Sentinel OUTPUT gate (challenge phase): screens peer analyses for system-prompt leakage, architecture disclosure, methodology exposure"]
     OutGate --> Vote["Sentinel casts a dissent vote when synthesis leaks internals - dissent is preserved in the result"]
 ```
@@ -63,7 +63,7 @@ The last row of that table deserves its own section, because it is the scaffold'
 
 | Control | What it does | Where it lives |
 |---------|--------------|----------------|
-| Identity | Per-agent JWT verified at dispatch; tokens are SHA-256 hashed and only the hash is persisted -- the raw token is issued once and held in memory, and a reloaded agent must rotate credentials before it passes verification | `agents/identity.py`, `agents/registry_persistence.py` |
+| Identity | Per-agent JWT verified before every deliberation phase dispatch (analyze, challenge, vote); tokens are SHA-256 hashed and only the hash is persisted -- the raw token is issued once and held in memory, and a reloaded agent must rotate credentials before it passes verification | `agents/identity.py`, `agents/registry_persistence.py`, `orchestration/dispatch_helpers.py` |
 | Least privilege | Capability scopes filter what each agent sees; out-of-scope findings are flagged | `agents/capability.py`, `orchestration/scope_filter.py` |
 | Behavioral baselines | Refusal rate, confidence, latency, and scope discipline compared against each agent's own history -- valid credentials with anomalous behavior still get flagged. Shipped as a tested detector library; the default runtime does not invoke it -- you wire it into dispatch (stated Non-Claim) | `learning/activity.py` |
 | Multi-step patterns | Sequences of individually-benign actions that add up to extraction are detected across a window. Shipped as a tested detector library; not wired into the default runtime (stated Non-Claim) | `harness/sequence_detector.py` |
@@ -71,7 +71,7 @@ The last row of that table deserves its own section, because it is the scaffold'
 | Extraction volume | Successful knowledge-endpoint reads (corrections and reflections listings; failed requests such as 401s and guard 429s never count) are counted per user and tenant-wide over a rolling window; elevated/capped volume is flagged on either listing, with an opt-in 429 on the corrections listing as the only enforcement | `learning/extraction_guard.py` |
 | Approval-pair dominance | Directed proposer->approver pairs that dominate correction approvals -- four-eyes satisfied, but always by the same two accounts -- are flagged with escalating severity | `learning/approval_patterns.py` |
 | Collusion | Lockstep agreement between agents that should be independent is flagged (e.g. two agents defeating four-eyes review). Shipped as a tested detector library; nothing records votes into it at runtime yet (stated Non-Claim) | `learning/collusion.py` |
-| Containment | Suspension removes an agent from dispatch and listings without deleting its record | `agents/registry.py` |
+| Containment | Suspension removes an agent from dispatch and listings without deleting its record; gates are re-checked per deliberation phase, so a mid-run suspension excludes the agent from the remaining phases and the consensus math shrinks to the votes actually cast | `agents/registry.py` |
 | Accountability | Reasoning-chain hashes make after-the-fact edits detectable; corrections that shape future behavior need two humans | `security/reasoning_chain_hash.py`, `learning/corrections.py` |
 
 The lifecycle, end to end:
@@ -89,7 +89,7 @@ flowchart LR
 
 ## Posture Decisions
 
-- **Fail closed.** When a control cannot run -- Sentinel has no LLM, persisted metadata fails validation, an identity token is missing -- the system dissents, skips, or blocks. It never silently passes.
+- **Fail closed.** When a control cannot run -- Sentinel has no LLM or its LLM call errors (budget exhausted, client not initialized, transport failure; the client marks these with an explicit `is_error`/`error_type` contract), persisted metadata fails validation, an identity token is missing -- the system dissents, skips, or blocks. It never silently passes. Malformed JSON from a *live* model is the deliberate exception: that degrades to a warning rather than a refusal, so formatting quirks don't hard-fail deliberations.
 - **Secrets never persist in the clear.** Raw identity tokens live in memory only; disk gets SHA-256 hashes. Agent API keys come from environment variables, never from persistence files.
 - **Audit without content.** The deliberation audit trail is structurally metadata-only (phases, counts, durations, outcomes) so prompt and response content cannot leak through it. Each run stores a reasoning-chain hash making after-the-fact edits detectable.
 - **Human gates on state that shapes behavior.** Corrections require four-eyes approval; integrity findings are flagged for human review, never auto-actioned; restricted autonomy levels force check-ins before results are acted on.
