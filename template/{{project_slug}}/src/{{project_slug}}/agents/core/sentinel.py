@@ -13,7 +13,7 @@ import json
 import logging
 
 from ...llm import CacheablePrompt
-from ...security.prompt_guard import wrap_user_content
+from ...security.prompt_guard import sanitize_for_prompt, wrap_user_content
 from ...orchestration.round_table import (
     AgentAnalysis,
     AgentChallenge,
@@ -21,7 +21,7 @@ from ...orchestration.round_table import (
     RoundTableTask,
     SynthesisResult,
 )
-from ._fail_closed import llm_call_failed, parse_agent_json
+from ...llm.response_guard import llm_call_failed, parse_agent_json
 from ._shared_prompts import REFUSAL_POLICY
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,9 @@ class SentinelAgent:
                 agent_name=self.name,
                 domain=self.domain,
                 observations=[{
-                    "finding": response.content[:500],
+                    # Raw model output flows into the synthesis prompt later,
+                    # so it is sanitized, never embedded verbatim.
+                    "finding": sanitize_for_prompt(response.content, max_length=500),
                     "evidence": "raw sentinel response (parse failed)",
                     "severity": "warning",
                     "confidence": 0.5,
