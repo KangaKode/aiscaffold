@@ -8,9 +8,19 @@ placeholders.
 
 Schema changes go through MIGRATIONS (forward-only, tracked in the
 schema_version table). Every statement must be idempotent
-(IF NOT EXISTS) and valid on both SQLite and Postgres.
+(IF NOT EXISTS) or guarded by a new schema version (ALTER TABLE ADD
+COLUMN), and valid on both SQLite and Postgres.
 
-Keep this file under 250 lines.
+BASELINE FREEZE RULE: the v1 baseline DDL must keep creating the
+ORIGINAL column set forever. When you add a column to an existing
+table, (1) add it to TABLE_COLUMNS (insert/query validation), (2) add
+a frozen pre-change snapshot of that table to _BASELINE_COLUMN_FREEZE
+so the baseline keeps creating the old shape, and (3) append an ALTER
+TABLE ADD COLUMN migration. If the baseline created the new column on
+fresh installs, the version-guarded ALTER would then fail with a
+duplicate-column error (SQLite has no ADD COLUMN IF NOT EXISTS).
+
+Keep this file under 300 lines.
 """
 
 TABLE_COLUMNS: dict[str, dict[str, str]] = {
@@ -29,6 +39,9 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
         "created_at": "TEXT NOT NULL",
         "updated_at": "TEXT NOT NULL",
         "metadata_json": "TEXT DEFAULT '{}'",
+        # Knowledge aging (added in migration v5 -- NOT in the v1 baseline)
+        "last_validated_at": "TEXT DEFAULT ''",
+        "last_validated_by": "TEXT DEFAULT ''",
     },
     "activity_events": {
         "id": "TEXT PRIMARY KEY",
@@ -128,11 +141,40 @@ SCHEMA_VERSION_DDL = (
     " (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
 )
 
+# Frozen v1 snapshots for tables whose live TABLE_COLUMNS entry has grown
+# since the baseline shipped (see BASELINE FREEZE RULE in the module
+# docstring). These are literal copies, NOT references into TABLE_COLUMNS:
+# the baseline must keep creating the original column set so that the
+# version-guarded ALTER migrations apply cleanly on fresh installs too.
+_BASELINE_COLUMN_FREEZE: dict[str, dict[str, str]] = {
+    "corrections": {
+        "id": "TEXT PRIMARY KEY",
+        "tenant_id": "TEXT NOT NULL DEFAULT 'default'",
+        "agent_id": "TEXT DEFAULT ''",
+        "session_id": "TEXT DEFAULT ''",
+        "original_claim": "TEXT DEFAULT ''",
+        "corrected_claim": "TEXT DEFAULT ''",
+        "reason": "TEXT DEFAULT ''",
+        "evidence_level": "TEXT DEFAULT ''",
+        "status": "TEXT DEFAULT 'proposed'",
+        "created_by": "TEXT DEFAULT ''",
+        "approved_by": "TEXT DEFAULT ''",
+        "created_at": "TEXT NOT NULL",
+        "updated_at": "TEXT NOT NULL",
+        "metadata_json": "TEXT DEFAULT '{}'",
+    },
+}
+
 
 def _baseline_statements() -> list[str]:
-    """DDL for migration version 1: create all tables and indexes."""
+    """DDL for migration version 1: create all tables and indexes.
+
+    Frozen tables use their _BASELINE_COLUMN_FREEZE snapshot; columns
+    added after v1 arrive exclusively via later ALTER migrations.
+    """
     statements = []
     for table, columns in TABLE_COLUMNS.items():
+        columns = _BASELINE_COLUMN_FREEZE.get(table, columns)
         cols = ", ".join(f"{name} {ddl}" for name, ddl in columns.items())
         statements.append(f"CREATE TABLE IF NOT EXISTS {table} ({cols})")
     statements.extend(INDEX_STATEMENTS)
@@ -173,5 +215,13 @@ MIGRATIONS: list[list[str]] = [
         " ON reflections(tenant_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_error_schemas_tenant"
         " ON error_schemas(tenant_id, status, created_at)",
+    ],
+    # v5 -- corrections knowledge aging (last_validated_at/by). The v1
+    # baseline is frozen at the pre-aging column set (see
+    # _BASELINE_COLUMN_FREEZE), so this ALTER runs exactly once on both
+    # fresh installs and upgraded databases.
+    [
+        "ALTER TABLE corrections ADD COLUMN last_validated_at TEXT DEFAULT ''",
+        "ALTER TABLE corrections ADD COLUMN last_validated_by TEXT DEFAULT ''",
     ],
 ]

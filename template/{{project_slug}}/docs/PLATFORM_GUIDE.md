@@ -141,6 +141,7 @@ Apply `require_role` to every route. Here's the recommended minimum:
 | `/checkins` | GET | viewer | Read-only |
 | `/checkins/{id}/respond` | POST | member | Approves/rejects |
 | `/webhooks/agents/{id}` | POST | member | Receives agent results |
+| `/reports/governance` | GET | admin | Aggregated oversight data (counts only, but org-wide) |
 | `/health` | GET | (public) | K8s probes, no auth |
 | `/health/ready` | GET | (public) | K8s probes, no auth |
 | `/metrics` | GET | admin | Operational data |

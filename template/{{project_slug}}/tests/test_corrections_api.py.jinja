@@ -99,6 +99,48 @@ class TestErasure:
         assert manager.get_approved_for_context() == ""
 
 
+# --- Revalidation + staleness (knowledge aging) ------------------------------
+
+
+class TestRevalidation:
+    def test_revalidate_sets_freshness_fields(self, manager):
+        correction = propose(manager)
+        manager.approve(correction.id, approved_by="bob")
+        updated_at_after_approval = manager.get(correction.id).updated_at
+
+        revalidated = manager.revalidate(correction.id, validated_by="carol")
+        assert revalidated.last_validated_by == "carol"
+        assert revalidated.last_validated_at != ""
+
+        stored = manager.get(correction.id)
+        assert stored.status == STATUS_APPROVED
+        assert stored.last_validated_by == "carol"
+        # Revalidation is not a lifecycle change: updated_at must not move
+        # (the report's fresh_only_via_revalidation metric and the
+        # updated_at-windowed pattern checks depend on this).
+        assert stored.updated_at == updated_at_after_approval
+
+    def test_revalidate_requires_approved(self, manager):
+        correction = propose(manager)
+        with pytest.raises(ValueError, match="can be revalidated"):
+            manager.revalidate(correction.id, validated_by="carol")
+
+    def test_staleness_uses_updated_at_fallback(self):
+        from datetime import datetime
+
+        from {{project_slug}}.learning.aging import is_stale
+
+        now = datetime.now().isoformat()
+        # Legacy pre-aging row with an old updated_at -> stale.
+        assert is_stale("", "2020-01-01T00:00:00") is True
+        # Recently revalidated -> fresh, even with an ancient updated_at.
+        assert is_stale(now, "2020-01-01T00:00:00") is False
+        # Young legacy row -> not stale on day one.
+        assert is_stale("", now) is False
+        # Undatable rows are never flagged.
+        assert is_stale("", "not-a-timestamp") is False
+
+
 # --- Manager list helper -----------------------------------------------------
 
 
@@ -235,6 +277,59 @@ class TestCorrectionsAPI:
         client, _ = api
         r = await client.post("/api/v1/corrections/no-such-id/approve")
         assert r.status_code == 404
+
+    async def test_revalidate_lifecycle_via_api(self, api):
+        client, app = api
+        manager = app.state.corrections_manager
+        correction = propose(manager, created_by="alice")
+        r = await client.post(f"/api/v1/corrections/{correction.id}/approve")
+        assert r.status_code == 200
+
+        r = await client.post(f"/api/v1/corrections/{correction.id}/revalidate")
+        assert r.status_code == 200
+        assert r.json()["last_validated_by"] == "anon"
+        assert r.json()["last_validated_at"] != ""
+        assert r.json()["status"] == STATUS_APPROVED
+
+    async def test_revalidate_requires_approved(self, api):
+        client, _ = api
+        r = await client.post("/api/v1/corrections", json=PROPOSAL)
+        correction_id = r.json()["id"]
+        r = await client.post(f"/api/v1/corrections/{correction_id}/revalidate")
+        assert r.status_code == 409
+
+    async def test_revalidate_cross_tenant_is_404(self, api):
+        client, app = api
+        correction = propose(
+            app.state.corrections_manager, tenant_id="team-a"
+        )
+        r = await client.post(f"/api/v1/corrections/{correction.id}/revalidate")
+        assert r.status_code == 404
+
+    async def test_stale_listing_uses_updated_at_fallback(self, api):
+        client, app = api
+        manager = app.state.corrections_manager
+
+        fresh = propose(manager, original="fresh claim", created_by="alice")
+        await client.post(f"/api/v1/corrections/{fresh.id}/approve")
+
+        legacy = propose(manager, original="legacy claim", created_by="alice")
+        await client.post(f"/api/v1/corrections/{legacy.id}/approve")
+        # Simulate a pre-aging legacy row: old updated_at, never revalidated.
+        manager.store.update(
+            "corrections",
+            legacy.id,
+            {"updated_at": "2020-01-01T00:00:00", "last_validated_at": ""},
+        )
+
+        r = await client.get("/api/v1/corrections?stale=true")
+        assert r.status_code == 200
+        assert [c["id"] for c in r.json()] == [legacy.id]
+
+    async def test_stale_conflicts_with_other_status_filter(self, api):
+        client, _ = api
+        r = await client.get("/api/v1/corrections?stale=true&status=proposed")
+        assert r.status_code == 400
 
     async def test_propose_rejects_unsafe_agent_id(self, api):
         client, _ = api

@@ -46,7 +46,7 @@ For simpler questions, the **chat orchestrator** selects 1-3 relevant agents, co
 
 When your team uses the learning features, the platform accumulates institutional knowledge instead of starting from zero every session. When you accept or reject an answer, the responsible agent's trust score moves, and future questions route toward the agents you have found reliable. When an answer was wrong, a reviewer can record the correct one as a **correction** -- a second person must approve it before it takes effect -- and from then on every answer path (quick answers, chat, and full team analyses) is grounded in those approved corrections. Each approval also automatically distills recurring mistakes into reusable "error schemas" and checks the knowledge base for contradictions.
 
-Two guardrails keep this trustworthy: nothing adapts silently (behavior changes go through an explicit check-in you approve or dismiss), and learned knowledge is governed (corrections are policy-screened, four-eyes approved, auditable, and erasable).
+Two guardrails keep this trustworthy: nothing adapts silently (behavior changes go through an explicit check-in you approve or dismiss), and learned knowledge is governed (corrections are policy-screened, four-eyes approved, auditable, and erasable). Knowledge also ages: corrections that nobody has re-confirmed recently are surfaced as stale for review, and a built-in governance report summarizes deliberation outcomes, integrity flags, and knowledge health for any date range.
 
 ---
 

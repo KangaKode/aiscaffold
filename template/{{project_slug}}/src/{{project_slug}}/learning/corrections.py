@@ -7,6 +7,10 @@ get rendered into a prompt-injectable block so agents stop repeating the
 original claim.
 
 Lifecycle: PROPOSED -> APPROVED -> RETIRED (REJECTED is a terminal branch).
+APPROVED corrections can additionally be REVALIDATED in place: a human
+confirms the knowledge is still true, refreshing last_validated_at /
+last_validated_by without changing status (see learning/aging.py for
+how staleness is derived from those fields).
 
 Four-eyes rule: by default the approver must be a different person than the
 proposer (require_four_eyes=True). Single-operator deployments can pass
@@ -18,7 +22,7 @@ sanitize_for_prompt so stored content cannot inject into prompts.
 Rendering respects a character budget (CORRECTION_CONTEXT_BUDGET env
 override). An optional ContentPolicy can gate propose().
 
-Keep this file under 450 lines.
+Keep this file under 500 lines.
 """
 
 import json
@@ -44,6 +48,35 @@ STATUS_RETIRED = "retired"
 
 DEFAULT_CONTEXT_BUDGET_CHARS = 4000
 MAX_FIELD_RENDER_CHARS = 500
+# Row-fetch cap for get_approved_for_context (newest first). The char
+# budget stops rendering long before this in practice; the cap bounds
+# the query itself so a huge knowledge base cannot make every prompt
+# build fetch every approved row. Env override:
+# CORRECTION_CONTEXT_FETCH_CAP. When a fetch saturates the cap, older
+# approved corrections are silently absent from grounding -- a single
+# warning per process says so.
+DEFAULT_CONTEXT_FETCH_CAP = 500
+_fetch_cap_warned = False
+
+
+def _context_fetch_cap() -> int:
+    raw = os.environ.get("CORRECTION_CONTEXT_FETCH_CAP", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return DEFAULT_CONTEXT_FETCH_CAP
+
+
+def _warn_fetch_cap_once(cap: int) -> None:
+    global _fetch_cap_warned
+    if _fetch_cap_warned:
+        return
+    _fetch_cap_warned = True
+    logger.warning(
+        f"[Corrections] get_approved_for_context fetched {cap} rows (the "
+        "fetch cap): older approved corrections may be missing from prompt "
+        "grounding. Raise CORRECTION_CONTEXT_FETCH_CAP or retire stale "
+        "knowledge."
+    )
 
 
 @dataclass
@@ -68,6 +101,8 @@ class Correction:
     status: str = STATUS_PROPOSED
     created_by: str = ""
     approved_by: str = ""
+    last_validated_at: str = ""
+    last_validated_by: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:12])
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -291,6 +326,40 @@ class CorrectionsManager:
         logger.info(f"[Corrections] Retired {correction_id}")
         return correction
 
+    def revalidate(self, correction_id: str, validated_by: str) -> Correction:
+        """
+        Re-validate an APPROVED correction: a human confirms it is still
+        true, refreshing its staleness clock (last_validated_at/by) while
+        leaving status AND updated_at untouched. updated_at must stay a
+        pure lifecycle-change timestamp: bumping it here would zero the
+        governance report's fresh_only_via_revalidation metric and drag
+        old approvals back into updated_at-windowed pattern checks
+        (approval_patterns).
+
+        Raises ValueError if the correction is missing or not APPROVED.
+        """
+        correction = self._get_or_raise(correction_id)
+        if correction.status != STATUS_APPROVED:
+            raise ValueError(
+                f"Correction {correction_id} is '{correction.status}', "
+                f"only '{STATUS_APPROVED}' corrections can be revalidated"
+            )
+        now = datetime.now().isoformat()
+        correction.last_validated_at = now
+        correction.last_validated_by = validated_by
+        self._store.update(
+            "corrections",
+            correction_id,
+            {
+                "last_validated_at": now,
+                "last_validated_by": validated_by,
+            },
+        )
+        logger.info(
+            f"[Corrections] Revalidated {correction_id} by '{validated_by}'"
+        )
+        return correction
+
     def get(self, correction_id: str) -> Correction | None:
         """Fetch a correction by id, or None."""
         rows = self._store.query("corrections", {"id": correction_id}, limit=1)
@@ -339,7 +408,15 @@ class CorrectionsManager:
         filters: dict[str, Any] = {"tenant_id": tenant_id, "status": STATUS_APPROVED}
         if agent_id:
             filters["agent_id"] = agent_id
-        rows = self._store.query("corrections", filters, order_by="created_at DESC")
+        fetch_cap = _context_fetch_cap()
+        rows = self._store.query(
+            "corrections",
+            filters,
+            order_by="created_at DESC",
+            limit=fetch_cap,
+        )
+        if len(rows) >= fetch_cap:
+            _warn_fetch_cap_once(fetch_cap)
         if not rows:
             return ""
 
@@ -387,6 +464,8 @@ class CorrectionsManager:
             "status": correction.status,
             "created_by": correction.created_by,
             "approved_by": correction.approved_by,
+            "last_validated_at": correction.last_validated_at,
+            "last_validated_by": correction.last_validated_by,
             "created_at": correction.created_at,
             "updated_at": correction.updated_at,
             "metadata_json": json.dumps(correction.metadata, default=str),
@@ -411,6 +490,8 @@ class CorrectionsManager:
             status=row.get("status", STATUS_PROPOSED),
             created_by=row.get("created_by", ""),
             approved_by=row.get("approved_by", ""),
+            last_validated_at=row.get("last_validated_at") or "",
+            last_validated_by=row.get("last_validated_by") or "",
             metadata=metadata,
             created_at=row.get("created_at", ""),
             updated_at=row.get("updated_at", ""),
