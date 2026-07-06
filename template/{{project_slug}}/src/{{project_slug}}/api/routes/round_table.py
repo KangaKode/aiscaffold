@@ -10,6 +10,7 @@ Security:
   - Agent IDs are validated as safe identifiers
 """
 
+import asyncio
 import logging
 import uuid
 from collections import OrderedDict
@@ -87,9 +88,10 @@ async def submit_task(
         raise HTTPException(status_code=400, detail=str(e))
 
     # Detect-only Layer 1 scan on the submitted task content (logs +
-    # integrity flag; never blocks, never mutates -- see
-    # orchestration/ingest_scan.py).
-    scan_user_message(
+    # integrity flag; never blocks, never mutates). Off-loop: the flag
+    # write is blocking store I/O.
+    await asyncio.to_thread(
+        scan_user_message,
         task_request.content,
         surface="round_table",
         store=getattr(request.app.state, "learning_store", None),

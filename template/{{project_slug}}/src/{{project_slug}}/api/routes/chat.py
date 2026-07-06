@@ -13,6 +13,7 @@ Security:
   - Prompt sanitization via ChatOrchestrator
 """
 
+import asyncio
 import json
 import logging
 from collections import OrderedDict
@@ -163,8 +164,9 @@ async def send_message(
         raise HTTPException(status_code=400, detail=str(e))
 
     # Detect-only Layer 1 scan (logs + integrity flag; never blocks,
-    # never mutates -- see orchestration/ingest_scan.py).
-    scan_user_message(
+    # never mutates). Off-loop: the flag write is blocking store I/O.
+    await asyncio.to_thread(
+        scan_user_message,
         chat_request.message,
         surface="chat",
         store=getattr(request.app.state, "learning_store", None),
@@ -237,8 +239,9 @@ async def send_message_stream(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Same detect-only scan as the non-streaming route.
-    scan_user_message(
+    # Same detect-only scan as the non-streaming route, off-loop.
+    await asyncio.to_thread(
+        scan_user_message,
         chat_request.message,
         surface="chat",
         store=getattr(request.app.state, "learning_store", None),

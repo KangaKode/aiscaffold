@@ -20,6 +20,7 @@ The LLM call uses role "single_shot_resolution", which the model router
 call and the cheapest model.
 """
 
+import asyncio
 import logging
 import re
 import time
@@ -114,8 +115,12 @@ async def resolve_single_shot(
 
     # Detect-only Layer 1 scan on the user query (logs + integrity flag;
     # never blocks, never mutates -- see orchestration/ingest_scan.py).
-    # Runs before any escalation branch so every query gets scanned.
-    scan_user_message(query, surface="resolve", store=learning_store, tenant_id=tenant_id)
+    # Runs before any escalation branch so every query gets scanned;
+    # off-loop because the flag write is blocking store I/O.
+    await asyncio.to_thread(
+        scan_user_message, query,
+        surface="resolve", store=learning_store, tenant_id=tenant_id,
+    )
 
     if llm is None:
         return _escalate("No LLM client configured", start)
