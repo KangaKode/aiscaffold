@@ -1,11 +1,19 @@
 _min_copier_version: "9.0.0"
-_subdirectory: template
+
+# The template code lives in template/{{project_slug}} -- a literal folder
+# name, escaped below so copier does NOT render it as a path variable. The
+# copier destination directory therefore IS the generated project root
+# (git repo, .copier-answers.yml, Makefile all live together), which is
+# what makes `copier update` work. See docs/UPDATING.md.
+_subdirectory: "template/{% raw %}{{project_slug}}{% endraw %}"
 
 # Overriding _exclude replaces copier's defaults, so they are restated here.
-# The conditional entries exclude feature trees when their toggle is off:
-#   include_evals=false      -> no evals/ tree
+# Patterns are matched against destination paths relative to the project
+# root. The conditional entries exclude feature trees when their toggle is
+# off:
+#   include_evals=false       -> no evals/ tree
 #   include_api_gateway=false -> no src/<slug>/api/ tree
-#   include_deployment=false -> no Dockerfile, docker-compose*, .dockerignore, deploy/
+#   include_deployment=false  -> no Dockerfile, docker-compose*, .dockerignore, deploy/
 _exclude:
   - "copier.yml"
   - "copier.yaml"
@@ -17,17 +25,17 @@ _exclude:
   - ".git"
   - ".DS_Store"
   - ".svn"
-  - "{% if not include_evals %}*/evals{% endif %}"
-  - "{% if not include_evals %}*/evals/**{% endif %}"
-  - "{% if not include_api_gateway %}*/src/*/api{% endif %}"
-  - "{% if not include_api_gateway %}*/src/*/api/**{% endif %}"
-  - "{% if not include_deployment %}*/Dockerfile{% endif %}"
-  - "{% if not include_deployment %}*/Dockerfile.jinja{% endif %}"
-  - "{% if not include_deployment %}*/docker-compose*.yml{% endif %}"
-  - "{% if not include_deployment %}*/docker-compose*.yml.jinja{% endif %}"
-  - "{% if not include_deployment %}*/.dockerignore{% endif %}"
-  - "{% if not include_deployment %}*/deploy{% endif %}"
-  - "{% if not include_deployment %}*/deploy/**{% endif %}"
+  - "{% if not include_evals %}/evals{% endif %}"
+  - "{% if not include_evals %}/evals/**{% endif %}"
+  - "{% if not include_api_gateway %}/src/*/api{% endif %}"
+  - "{% if not include_api_gateway %}/src/*/api/**{% endif %}"
+  - "{% if not include_deployment %}/Dockerfile{% endif %}"
+  - "{% if not include_deployment %}/Dockerfile.jinja{% endif %}"
+  - "{% if not include_deployment %}/docker-compose*.yml{% endif %}"
+  - "{% if not include_deployment %}/docker-compose*.yml.jinja{% endif %}"
+  - "{% if not include_deployment %}/.dockerignore{% endif %}"
+  - "{% if not include_deployment %}/deploy{% endif %}"
+  - "{% if not include_deployment %}/deploy/**{% endif %}"
 
 # =============================================================================
 # PROJECT IDENTITY
@@ -192,13 +200,14 @@ include_learning:
 # POST-GENERATION
 # =============================================================================
 
+# Tasks run in the destination directory, which is the project root.
 _tasks:
   # Create architecture layer directories
-  - "cd {{ project_slug }} && python3 -c \"import os; [os.makedirs(l.strip(), exist_ok=True) or open(os.path.join(l.strip(), '__init__.py'), 'w').close() for l in '{{ layers }}'.split(',')]\""
+  - "python3 -c \"import os; [os.makedirs(l.strip(), exist_ok=True) or open(os.path.join(l.strip(), '__init__.py'), 'w').close() for l in '{{ layers }}'.split(',')]\""
   # Create evals directory if requested
-  - "{% if include_evals %}cd {{ project_slug }} && mkdir -p evals/capability evals/regression evals/graders evals/results && touch evals/__init__.py evals/graders/__init__.py{% else %}echo 'Evals skipped'{% endif %}"
-  # Init git
-  - "cd {{ project_slug }} && git init"
+  - "{% if include_evals %}mkdir -p evals/capability evals/regression evals/graders evals/results && touch evals/__init__.py evals/graders/__init__.py{% else %}echo 'Evals skipped'{% endif %}"
+  # Init git (idempotent; `copier update` runs inside the existing repo)
+  - "git init"
   # Summary
   - "echo ''"
   - "echo 'Project created!'"
@@ -215,7 +224,7 @@ _tasks:
   - "{% if include_learning %}echo '  Learning system (feedback, trust, preferences, RAG)'{% else %}echo ''{% endif %}"
   - "echo ''"
   - "echo 'Next steps:'"
-  - "echo '  cd {{ project_slug }}'"
+  - "echo '  cd {{ _folder_name }}'"
   - "echo '  python3 -m venv venv && source venv/bin/activate'"
   - "echo '  pip install -r requirements.txt'"
   - "echo '  pip install -e .       # Install the src-layout package'"

@@ -54,7 +54,7 @@ copier copy gh:KangaKode/roundtable my-project --trust
 # --trust permits the template's post-generation tasks (git init, file cleanup);
 # review them first in copier.yml if your policy requires it.
 
-cd my-project/<project_slug>   # use the exact path printed by Copier
+cd my-project   # the destination directory IS the project root
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 pip install -e .

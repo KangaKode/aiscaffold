@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
-# validate_generated.sh -- Generate a test project and run the full validation suite.
+# validate_generated.sh -- Generate test projects and run the full validation suite.
 #
-# Usage: bash scripts/validate_generated.sh [project_type] [llm_provider] [persistence]
-#   Default: web-app anthropic sqlite
+# Usage: bash scripts/validate_generated.sh [project_type] [llm_provider] [persistence] [profile]
+#   Default: web-app anthropic sqlite all
 #
-# Steps:
-#   0.   Quick checks on templates (no generation)
+# Profiles (generation configs):
+#   full        -- every toggle on (include_evals/api_gateway/deployment/learning=true)
+#   gateway-off -- include_api_gateway=false, everything else on: the project
+#                  must generate WITHOUT the api/ tree, import cleanly, and
+#                  pass its reduced test suite
+#   minimal     -- include_deployment=false + include_evals=false: generation
+#                  and exclusion checks only (proves the toggles' off state
+#                  actually removes Dockerfile/docker-compose/deploy/evals)
+#   defaults    -- pure copier defaults, no --data beyond project_name: what a
+#                  real user gets when accepting every default
+#   all         -- run all four profiles in sequence (default)
+#
+# Steps (per profile):
+#   0.   Quick checks on templates (no generation; full profile only)
 #   1.   Generate a test project via copier (non-interactive)
 #   1.5  Unrendered template check (no leftover jinja in generated .py)
 #   2.   Run ruff (linting)
@@ -14,9 +26,11 @@
 #   5.   Run red team checks
 #   6.   Run AI-specific checks
 #   7.   Run automated agent review
-#   8.   Unit tests (pytest on the generated project)
+#   8.   Unit tests (pytest on the generated project) + import sweep
+#        (skipped in the generation-only 'minimal' profile)
 #   9.   Injection-defense golden set
 #   10.  File structure check
+#   11.  Toggle wiring check (per-profile inclusion/exclusion assertions)
 #
 # Exit code 0 = all passed, non-zero = failures found.
 
@@ -25,9 +39,65 @@ set -uo pipefail
 PROJECT_TYPE="${1:-web-app}"
 LLM_PROVIDER="${2:-anthropic}"
 PERSISTENCE="${3:-sqlite}"
+PROFILE="${4:-all}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Profile dispatcher: "all" re-invokes this script once per profile.
+# ---------------------------------------------------------------------------
+if [ "$PROFILE" = "all" ]; then
+    OVERALL=0
+    SUMMARY=""
+    for p in full gateway-off minimal defaults; do
+        echo ""
+        echo "==================================================================="
+        echo "  PROFILE: $p"
+        echo "==================================================================="
+        if bash "${BASH_SOURCE[0]}" "$PROJECT_TYPE" "$LLM_PROVIDER" "$PERSISTENCE" "$p"; then
+            SUMMARY="$SUMMARY
+  $p: PASSED"
+        else
+            SUMMARY="$SUMMARY
+  $p: FAILED"
+            OVERALL=1
+        fi
+    done
+    echo ""
+    echo "==========================================="
+    echo "  PROFILE SUMMARY:$SUMMARY"
+    echo "==========================================="
+    exit $OVERALL
+fi
+
+# Per-profile toggle values. GENERATION_ONLY skips the unit-test step;
+# PURE_DEFAULTS generates with no --data beyond the project name.
+case "$PROFILE" in
+    full)
+        INCLUDE_API_GATEWAY=true;  INCLUDE_DEPLOYMENT=true
+        INCLUDE_EVALS=true;        INCLUDE_LEARNING=true
+        PURE_DEFAULTS=0; GENERATION_ONLY=0 ;;
+    gateway-off)
+        INCLUDE_API_GATEWAY=false; INCLUDE_DEPLOYMENT=true
+        INCLUDE_EVALS=true;        INCLUDE_LEARNING=true
+        PURE_DEFAULTS=0; GENERATION_ONLY=0 ;;
+    minimal)
+        INCLUDE_API_GATEWAY=true;  INCLUDE_DEPLOYMENT=false
+        INCLUDE_EVALS=false;       INCLUDE_LEARNING=false
+        PURE_DEFAULTS=0; GENERATION_ONLY=1 ;;
+    defaults)
+        # Mirrors copier.yml defaults; used by the checks below, but NOT
+        # passed to copier -- generation uses --defaults only.
+        INCLUDE_API_GATEWAY=true;  INCLUDE_DEPLOYMENT=true
+        INCLUDE_EVALS=true;        INCLUDE_LEARNING=false
+        PURE_DEFAULTS=1; GENERATION_ONLY=0
+        PROJECT_TYPE="web-app"; LLM_PROVIDER="anthropic"; PERSISTENCE="sqlite" ;;
+    *)
+        echo "Unknown profile: $PROFILE (expected full|gateway-off|minimal|defaults|all)"
+        exit 2 ;;
+esac
+
 TEST_DIR="$REPO_ROOT/.tmp-validation/aiscaffold_test_$(date +%s)_$$"
 PROJECT_NAME="test_project"
 PROJECT_SLUG="test_project"
@@ -51,17 +121,21 @@ trap cleanup EXIT
 # =========================================================================
 # Step 0: Quick checks on templates (no generation needed)
 # =========================================================================
-section "Step 0: Quick Checks (templates)"
-if python3 "$SCRIPT_DIR/quick_checks.py"; then
-    pass "Quick checks"
-else
-    fail "Quick checks -- see output above"
+# Template-level checks are generation-independent, so run them once (in
+# the 'full' profile) instead of once per profile.
+if [ "$PROFILE" = "full" ]; then
+    section "Step 0: Quick Checks (templates)"
+    if python3 "$SCRIPT_DIR/quick_checks.py"; then
+        pass "Quick checks"
+    else
+        fail "Quick checks -- see output above"
+    fi
 fi
 
 # =========================================================================
 # Step 1: Generate test project
 # =========================================================================
-section "Step 1: Generate Test Project ($PROJECT_TYPE / $LLM_PROVIDER / $PERSISTENCE)"
+section "Step 1: Generate Test Project ($PROJECT_TYPE / $LLM_PROVIDER / $PERSISTENCE / profile=$PROFILE)"
 mkdir -p "$TEST_DIR"
 
 if command -v copier &>/dev/null; then
@@ -102,29 +176,36 @@ PY
     esac
 
     COPIER_LOG="$TEST_DIR/copier.log"
-    (cd "$TEST_DIR" && copier copy "$COPIER_SOURCE" "$TEST_DIR/$PROJECT_SLUG" --trust --defaults \
-        --data project_name="$PROJECT_NAME" \
-        --data project_slug="$PROJECT_SLUG" \
-        --data project_description="Validation test project" \
-        --data author_name="CI" \
-        --data project_type="$PROJECT_TYPE" \
-        --data layers="$LAYERS" \
-        --data llm_provider="$LLM_PROVIDER" \
-        --data persistence="$PERSISTENCE" \
-        --data python_version="3.13" \
-        --data include_evals=true \
-        --data include_state_management=true \
-        --data include_llm_client=true \
-        --data include_api_gateway=true \
-        --data include_deployment=true \
-        --data include_learning=true \
-        >"$COPIER_LOG" 2>&1)
+    if [ "$PURE_DEFAULTS" = "1" ]; then
+        # Pure-defaults generation: what a real user gets when accepting
+        # every default. Only the required project name is provided.
+        (cd "$TEST_DIR" && copier copy "$COPIER_SOURCE" "$TEST_DIR/$PROJECT_SLUG" --trust --defaults \
+            --data project_name="$PROJECT_NAME" \
+            >"$COPIER_LOG" 2>&1)
+    else
+        (cd "$TEST_DIR" && copier copy "$COPIER_SOURCE" "$TEST_DIR/$PROJECT_SLUG" --trust --defaults \
+            --data project_name="$PROJECT_NAME" \
+            --data project_slug="$PROJECT_SLUG" \
+            --data project_description="Validation test project" \
+            --data author_name="CI" \
+            --data project_type="$PROJECT_TYPE" \
+            --data layers="$LAYERS" \
+            --data llm_provider="$LLM_PROVIDER" \
+            --data persistence="$PERSISTENCE" \
+            --data python_version="3.13" \
+            --data include_evals="$INCLUDE_EVALS" \
+            --data include_api_gateway="$INCLUDE_API_GATEWAY" \
+            --data include_deployment="$INCLUDE_DEPLOYMENT" \
+            --data include_learning="$INCLUDE_LEARNING" \
+            >"$COPIER_LOG" 2>&1)
+    fi
     COPIER_STATUS=$?
 
     if [ "$COPIER_STATUS" -ne 0 ] && [ "${ALLOW_COPIER_FALLBACK:-}" = "1" ]; then
         warn "copier failed; using direct Jinja render fallback for sandbox validation"
-        python3 - "$REPO_ROOT/template" "$TEST_DIR/$PROJECT_SLUG" \
-            "$PROJECT_NAME" "$PROJECT_SLUG" "$PROJECT_TYPE" "$LAYERS" "$LLM_PROVIDER" "$PERSISTENCE" <<'PY'
+        python3 - "$REPO_ROOT/template/{{project_slug}}" "$TEST_DIR/$PROJECT_SLUG" \
+            "$PROJECT_NAME" "$PROJECT_SLUG" "$PROJECT_TYPE" "$LAYERS" "$LLM_PROVIDER" "$PERSISTENCE" \
+            "$INCLUDE_EVALS" "$INCLUDE_API_GATEWAY" "$INCLUDE_DEPLOYMENT" "$INCLUDE_LEARNING" <<'PY'
 import sys
 from pathlib import Path
 
@@ -132,6 +213,9 @@ from jinja2 import Environment, StrictUndefined
 
 template_root = Path(sys.argv[1])
 destination_root = Path(sys.argv[2])
+
+def _flag(value):
+    return value.strip().lower() == "true"
 
 context = {
     "project_name": sys.argv[3],
@@ -142,20 +226,42 @@ context = {
     "layers": sys.argv[6],
     "llm_provider": sys.argv[7],
     "persistence": sys.argv[8],
+    "learning_backend": "sqlite",
     "python_version": "3.13",
-    "include_evals": True,
-    "include_state_management": True,
-    "include_llm_client": True,
-    "include_api_gateway": True,
-    "include_deployment": True,
-    "include_learning": True,
+    "include_evals": _flag(sys.argv[9]),
+    "include_api_gateway": _flag(sys.argv[10]),
+    "include_deployment": _flag(sys.argv[11]),
+    "include_learning": _flag(sys.argv[12]),
 }
 
 env = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
 
+
+def _excluded(relative: Path) -> bool:
+    """Mirror the conditional _exclude globs in copier.yml."""
+    parts = relative.parts
+    if not context["include_evals"] and "evals" in parts:
+        return True
+    if not context["include_api_gateway"] and "src" in parts and "api" in parts:
+        return True
+    if not context["include_deployment"]:
+        name = relative.name
+        if name in ("Dockerfile", "Dockerfile.jinja", ".dockerignore") or "deploy" in parts:
+            return True
+        if name.startswith("docker-compose"):
+            return True
+    return False
+
+
 for source in template_root.rglob("*"):
     relative = source.relative_to(template_root)
     if ".cursor" in relative.parts:
+        continue
+    if _excluded(relative):
+        continue
+    if "_copier_conf" in source.name:
+        # The answers-file template needs copier's own runtime context;
+        # a stub is written below instead.
         continue
     rendered_parts = [env.from_string(part).render(context) for part in relative.parts]
     output = destination_root / Path(*rendered_parts)
@@ -181,29 +287,45 @@ for source in template_root.rglob("*"):
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(rendered)
 
-generated_project_root = destination_root / context["project_slug"]
+# The destination directory is the project root (see _subdirectory in
+# copier.yml).
+generated_project_root = destination_root
+
+# Stub answers file (real content requires copier's runtime context).
+(generated_project_root / ".copier-answers.yml").write_text(
+    "# Stub written by the sandbox fallback renderer (copier unavailable)\n"
+)
 
 for layer in context["layers"].split(","):
     layer_dir = generated_project_root / layer.strip()
     layer_dir.mkdir(parents=True, exist_ok=True)
     (layer_dir / "__init__.py").touch()
 
-for eval_dir in ["evals/capability", "evals/regression", "evals/graders", "evals/results"]:
-    (generated_project_root / eval_dir).mkdir(parents=True, exist_ok=True)
-(generated_project_root / "evals" / "__init__.py").touch()
-(generated_project_root / "evals" / "graders" / "__init__.py").touch()
+if context["include_evals"]:
+    for eval_dir in ["evals/capability", "evals/regression", "evals/graders", "evals/results"]:
+        (generated_project_root / eval_dir).mkdir(parents=True, exist_ok=True)
+    (generated_project_root / "evals" / "__init__.py").touch()
+    (generated_project_root / "evals" / "graders" / "__init__.py").touch()
 PY
     fi
     
-    # Copier creates: TEST_DIR/PROJECT_SLUG/PROJECT_SLUG/ (nested)
-    GENERATED_DIR="$TEST_DIR/$PROJECT_SLUG/$PROJECT_SLUG"
+    # The copier destination IS the project root (see _subdirectory in
+    # copier.yml): TEST_DIR/PROJECT_SLUG/
+    GENERATED_DIR="$TEST_DIR/$PROJECT_SLUG"
     if [ ! -d "$GENERATED_DIR/src/$PROJECT_SLUG" ]; then
-        # Try without nesting (some copier versions)
-        GENERATED_DIR="$TEST_DIR/$PROJECT_SLUG"
+        # Legacy nested layout (older template revisions)
+        GENERATED_DIR="$TEST_DIR/$PROJECT_SLUG/$PROJECT_SLUG"
     fi
 
     if [ -d "$GENERATED_DIR/src/$PROJECT_SLUG" ]; then
         pass "Project generated at $GENERATED_DIR"
+        # Cache-leak check must run BEFORE ruff/pytest execute inside the
+        # project (they create their own caches at runtime).
+        if [ ! -d "$GENERATED_DIR/.ruff_cache" ] && [ ! -d "$GENERATED_DIR/.pytest_cache" ]; then
+            pass "no cache directories generated into the project"
+        else
+            fail "cache directories (.ruff_cache/.pytest_cache) generated into the project"
+        fi
     else
         fail "Project generation failed -- src/ directory not found"
         if [ -s "$COPIER_LOG" ]; then
@@ -369,10 +491,13 @@ else
 fi
 
 # =========================================================================
-# Step 8: Unit Tests (run pytest on generated project)
+# Step 8: Unit Tests (run pytest on generated project) + import sweep
 # =========================================================================
 section "Step 8: Unit Tests"
-if [ -d "$GEN_ROOT/tests" ]; then
+if [ "$GENERATION_ONLY" = "1" ]; then
+    echo "  (skipped: generation-only profile '$PROFILE' proves file exclusions;"
+    echo "   the full/gateway-off/defaults profiles run the test suite)"
+elif [ -d "$GEN_ROOT/tests" ]; then
     cd "$GEN_ROOT"
     # Install project dependencies quietly (skip LLM providers to avoid API key issues)
     pip install -q pytest pytest-asyncio pytest-cov fastapi uvicorn httpx pydantic python-dotenv 2>/dev/null
@@ -402,6 +527,36 @@ if [ -d "$GEN_ROOT/tests" ]; then
     else
         warn "No unit test files found in generated project"
     fi
+
+    # Import sweep: every module in the generated package must import
+    # cleanly with only the base dependencies installed (proves e.g. a
+    # gateway-off project is importable end to end).
+    IMPORT_SWEEP=$(python3 - "$PROJECT_SLUG" <<'PY'
+import importlib
+import pkgutil
+import sys
+
+package = importlib.import_module(sys.argv[1])
+failures = []
+for module in pkgutil.walk_packages(package.__path__, prefix=package.__name__ + "."):
+    name = module.name
+    if name.endswith("__main__"):
+        continue
+    try:
+        importlib.import_module(name)
+    except Exception as exc:  # noqa: BLE001 -- report every import failure
+        failures.append(f"{name}: {type(exc).__name__}: {exc}")
+for line in failures:
+    print(line)
+sys.exit(1 if failures else 0)
+PY
+)
+    if [ $? -eq 0 ]; then
+        pass "Import sweep: all package modules import cleanly"
+    else
+        fail "Import sweep: modules failed to import:"
+        echo "$IMPORT_SWEEP" | sed 's/^/    /'
+    fi
     cd "$REPO_ROOT"
 else
     warn "tests/ directory not found in generated project"
@@ -423,15 +578,20 @@ if [ -f "$GOLDEN_SET" ]; then
         fail "Golden set: regression or schema error (exit $GOLDEN_EXIT)"
     fi
     cd "$REPO_ROOT"
+elif [ "$INCLUDE_EVALS" = "false" ]; then
+    pass "Golden set correctly absent (include_evals=false)"
 else
-    warn "Golden set not present (include_evals=false?) -- skipped"
+    fail "Golden set missing although include_evals=true"
 fi
 
 # =========================================================================
 # Step 10: File Structure Check
 # =========================================================================
 section "Step 10: File Structure"
-EXPECTED_DIRS="agents api harness llm orchestration security"
+EXPECTED_DIRS="agents harness llm orchestration security"
+if [ "$INCLUDE_API_GATEWAY" = "true" ]; then
+    EXPECTED_DIRS="$EXPECTED_DIRS api"
+fi
 MISSING_DIRS=0
 for dir in $EXPECTED_DIRS; do
     if [ -d "$GEN_SRC/$dir" ]; then
@@ -443,10 +603,97 @@ for dir in $EXPECTED_DIRS; do
     fi
 done
 
-# Check learning dir only if include_learning was set
+# The learning modules ship in every project regardless of include_learning
+# (that toggle only gates optional RAG dependency guidance + docs).
 if [ -d "$GEN_SRC/learning" ]; then
     FILE_COUNT=$(find "$GEN_SRC/learning" -name "*.py" | wc -l | tr -d ' ')
     pass "learning/ ($FILE_COUNT files)"
+else
+    fail "learning/ missing (learning modules ship in every project)"
+fi
+
+# =========================================================================
+# Step 11: Toggle Wiring (per-profile inclusion/exclusion assertions)
+# =========================================================================
+# Each fixed toggle must be provably real: the on state ships the files
+# (full/defaults profiles), the off state excludes them and scrubs the
+# references (gateway-off/minimal profiles).
+section "Step 11: Toggle Wiring"
+
+if [ -f "$GEN_ROOT/.copier-answers.yml" ]; then
+    pass ".copier-answers.yml present (copier update supported)"
+else
+    fail ".copier-answers.yml missing -- copier update will not work"
+fi
+
+if [ "$INCLUDE_API_GATEWAY" = "true" ]; then
+    [ -d "$GEN_SRC/api" ] \
+        && pass "gateway on: src/$PROJECT_SLUG/api/ present" \
+        || fail "gateway on: src/$PROJECT_SLUG/api/ missing"
+    grep -q '^serve:' "$GEN_ROOT/Makefile" \
+        && pass "gateway on: Makefile has serve target" \
+        || fail "gateway on: Makefile serve target missing"
+    if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
+        grep -q 'localhost:8000/health' "$GEN_ROOT/Dockerfile" \
+            && pass "gateway on: Dockerfile HEALTHCHECK hits /health" \
+            || fail "gateway on: Dockerfile HEALTHCHECK missing"
+    fi
+else
+    [ ! -d "$GEN_SRC/api" ] \
+        && pass "gateway off: src/$PROJECT_SLUG/api/ excluded" \
+        || fail "gateway off: src/$PROJECT_SLUG/api/ still generated"
+    ! grep -q '^serve:' "$GEN_ROOT/Makefile" \
+        && pass "gateway off: Makefile has no serve target" \
+        || fail "gateway off: Makefile still has serve target"
+    grep -q '^httpx' "$GEN_ROOT/requirements.txt" \
+        && pass "gateway off: httpx still a base dependency (remote agents)" \
+        || fail "gateway off: httpx missing from requirements.txt"
+    if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
+        ! grep -q 'localhost:8000/health' "$GEN_ROOT/Dockerfile" \
+            && pass "gateway off: Dockerfile has no HTTP HEALTHCHECK" \
+            || fail "gateway off: Dockerfile still HEALTHCHECKs /health"
+    fi
+fi
+
+if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
+    DEPLOY_OK=1
+    for f in Dockerfile docker-compose.yml .dockerignore; do
+        [ -e "$GEN_ROOT/$f" ] || { DEPLOY_OK=0; fail "deployment on: $f missing"; }
+    done
+    [ -d "$GEN_ROOT/deploy" ] || { DEPLOY_OK=0; fail "deployment on: deploy/ missing"; }
+    [ "$DEPLOY_OK" = "1" ] && pass "deployment on: Dockerfile, docker-compose.yml, .dockerignore, deploy/ present"
+    grep -q '^docker-build:' "$GEN_ROOT/Makefile" \
+        && pass "deployment on: Makefile has docker targets" \
+        || fail "deployment on: Makefile docker targets missing"
+else
+    DEPLOY_GONE=1
+    for f in Dockerfile docker-compose.yml docker-compose.load.yml .dockerignore; do
+        [ ! -e "$GEN_ROOT/$f" ] || { DEPLOY_GONE=0; fail "deployment off: $f still generated"; }
+    done
+    [ ! -d "$GEN_ROOT/deploy" ] || { DEPLOY_GONE=0; fail "deployment off: deploy/ still generated"; }
+    [ "$DEPLOY_GONE" = "1" ] && pass "deployment off: Dockerfile, docker-compose*, .dockerignore, deploy/ excluded"
+    ! grep -q '^docker-build:' "$GEN_ROOT/Makefile" \
+        && pass "deployment off: Makefile has no docker targets" \
+        || fail "deployment off: Makefile still has docker targets"
+    ! grep -q '^k8s-deploy:' "$GEN_ROOT/Makefile" \
+        && pass "deployment off: Makefile has no k8s targets" \
+        || fail "deployment off: Makefile still has k8s targets"
+fi
+
+if [ "$INCLUDE_EVALS" = "true" ]; then
+    [ -d "$GEN_ROOT/evals" ] \
+        && pass "evals on: evals/ present" \
+        || fail "evals on: evals/ missing"
+    grep -q '"evals"' "$GEN_ROOT/scripts/setup_check.py" \
+        && pass "evals on: setup_check checks evals/" \
+        || fail "evals on: setup_check does not check evals/"
+else
+    [ ! -d "$GEN_ROOT/evals" ] \
+        && pass "evals off: evals/ excluded" \
+        || fail "evals off: evals/ still generated"
+    ! grep -q 'evals' "$GEN_ROOT/scripts/setup_check.py" \
+        && pass "evals off: setup_check has no evals reference" \
+        || fail "evals off: setup_check still references evals/"
 fi
 
 # =========================================================================
@@ -455,7 +702,7 @@ fi
 echo ""
 echo "==========================================="
 echo "  RESULTS: $PASS_COUNT passed, $FAIL_COUNT failed, $WARN_COUNT warnings"
-echo "  Config:  $PROJECT_TYPE / $LLM_PROVIDER / $PERSISTENCE"
+echo "  Config:  $PROJECT_TYPE / $LLM_PROVIDER / $PERSISTENCE / profile=$PROFILE"
 echo "==========================================="
 
 if [ "$FAIL_COUNT" -gt 0 ]; then

@@ -1,9 +1,10 @@
 # Updating Generated Projects
 
-Generated projects record the template version and every answer in
-`.copier-answers.yml` (rendered from the answers-file template at
-`template/{{project_slug}}/`). That file is what makes `copier update`
-work — commit it with the project.
+The copier destination directory is the generated project root: the git
+repo, `.copier-answers.yml` (the recorded template version and answers),
+and the project files all live together. That layout plus the answers
+file is what makes `copier update` work — keep `.copier-answers.yml`
+committed.
 
 ## For project owners
 

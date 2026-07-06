@@ -21,15 +21,11 @@ Run Copier from the directory where you keep projects:
 copier copy gh:KangaKode/roundtable roundtable-demo --trust
 ```
 
-Copier asks for project metadata such as name, slug, project type, LLM provider, and persistence. The scaffold intentionally creates a generated application directory inside the destination, using the `project_slug` value.
-
-For example, if you choose `Roundtable Demo` as the project name, the generated app is usually here:
+Copier asks for project metadata such as name, slug, project type, LLM provider, and persistence. The destination directory you pass to `copier copy` becomes the project root (source lives in `src/<project_slug>/`), and Copier records your answers in `.copier-answers.yml` there so [`copier update`](UPDATING.md) works later.
 
 ```bash
-cd roundtable-demo/roundtable_demo
+cd roundtable-demo
 ```
-
-If you accept the default slug, use the `cd <project_slug>` line printed by Copier at the end of generation.
 
 ## 3. Create an Environment
 
@@ -111,7 +107,7 @@ Open `http://localhost:8000/docs` for the generated OpenAPI documentation.
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | `copier: command not found` | Copier is not installed in the active environment | `python3 -m pip install copier` |
-| `cd my-project` does not contain source files | The app is inside the generated `project_slug` directory | Use the `cd <project_slug>` line printed after generation |
+| `cd my-project` shows no Python modules at the top level | The application package lives in `src/<project_slug>/` (src layout) | Run `pip install -e .` so imports resolve, or look under `src/` |
 | `make test` cannot find dependencies | Requirements were not installed in the active virtual environment | Activate `venv`, then run `python -m pip install -r requirements.txt` |
 | API calls fail because no key is configured | `.env` is missing provider credentials | Copy `.env.example` to `.env` and add the selected provider key |
 | Architecture tests fail after edits | A lower layer imports from a higher layer | See [ARCHITECTURE.md](ARCHITECTURE.md) for dependency direction rules |
