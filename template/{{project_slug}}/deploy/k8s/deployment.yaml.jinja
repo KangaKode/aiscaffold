@@ -45,6 +45,7 @@ spec:
             limits:
               cpu: "1000m"
               memory: "1Gi"
+{% if include_api_gateway %}
           livenessProbe:
             httpGet:
               path: /health
@@ -64,6 +65,10 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+{% else %}
+          # No API gateway in this project: define probes for your own
+          # long-running command when you override the image CMD.
+{% endif %}
           securityContext:
             runAsNonRoot: true
             readOnlyRootFilesystem: true
