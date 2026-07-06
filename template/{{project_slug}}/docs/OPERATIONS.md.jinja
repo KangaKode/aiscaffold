@@ -53,7 +53,7 @@ Work top-down; each step is cheaper than the one below it.
 |--------|--------|-----------|
 | `deliberations_total` | `outcome` (completed / refused / failed) | Rising `failed` ratio; a spike in `refused` means the premise gate is turning work away |
 | `deliberation_duration_seconds` | -- | p95 creep (histogram buckets reach 300s) |
-| `phase_duration_seconds` | `phase` | Which phase is eating the time budget (populated by per-phase audit events) |
+| `phase_duration_seconds` | `phase` | **Extension point -- empty out of the box.** No shipped code emits per-phase audit events; the histogram populates only when your orchestration extensions call `DeliberationAuditor.event(...)` with `phase` and `duration_seconds` set (see the docstring in `orchestration/deliberation_audit.py`) |
 | `llm_calls_total` | `provider`, `model` | Unexpected provider/model mix after config changes |
 | `llm_tokens_total` | `direction` (input / output) | Input-token growth = prompt bloat |
 | `llm_cost_dollars_total` | -- | Spend rate (all tenants combined) |
@@ -137,6 +137,12 @@ The override (`docker-compose.load.yml`) sets `LLM_PROVIDER=mock`,
 raises `RATE_LIMIT_PER_MINUTE`, and sets `ACTIVITY_TRACKING_ENABLED=false`
 (deliberate: keeps synthetic traffic out of the activity table, and --
 consciously -- disables extraction detection for the run's duration).
+
+The round-table scenario deliberates with **your deployment's registered
+agents**. Against a bare stack it reports an explicit "register your
+agents" failure. The harness's own probe agent (registration + SSRF
+validation check) is unregistered immediately after setup, so it never
+joins a deliberation or persists past the run.
 
 ### Threshold gating (recipe)
 

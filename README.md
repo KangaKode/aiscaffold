@@ -58,7 +58,7 @@ cd my-project/<project_slug>   # use the exact path printed by Copier
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
-make test    # 693 tests pass from day 1
+make test    # 689 tests pass from day 1 (693 total; 4 opt-in skips)
 make demo    # the round table above, on your machine (no API keys)
 make serve   # start the API gateway
 ```
