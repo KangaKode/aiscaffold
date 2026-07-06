@@ -220,7 +220,9 @@ class LLMClient:
                 model=self._model,
             )
 
-        enforce_budget(self.budget_manager)  # raises when tenant is exhausted
+        # Budget checks read the spend ledger (blocking store I/O) -- run
+        # off the loop. BudgetExceededError still propagates to the caller.
+        await asyncio.to_thread(enforce_budget, self.budget_manager)
 
         if self._client is None:
             return LLMResponse(
@@ -239,7 +241,8 @@ class LLMClient:
                 )
                 response.latency_ms = (time.time() - start) * 1000
 
-                self._track_usage(response.usage)
+                # Spend recording writes to the store -- off the loop.
+                await asyncio.to_thread(self._track_usage, response.usage)
 
                 logger.debug(
                     f"[LLM] {self._provider}/{role}: "

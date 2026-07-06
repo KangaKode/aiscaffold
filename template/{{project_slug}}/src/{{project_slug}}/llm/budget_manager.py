@@ -7,9 +7,15 @@ EXHAUSTED (at or past the hard cap).
 
 Persistence is optional: pass a LearningStore-compatible object (see
 learning/store.py) and spend is written to the budget_spend table --
-and budget caps to the budget_configs table -- so both survive restarts
-and are shared across processes. Without a store, everything is tracked
-in-memory for the process lifetime.
+and budget caps to the budget_configs table -- so both survive
+restarts. Spend totals are always read fresh from the store; cap
+configs are cached per process and re-read from the store at most
+every BUDGET_CONFIG_TTL_SECONDS (default 60), so a cap changed in one
+process converges in the others within the TTL rather than instantly.
+Negative lookups (tenants with no configured cap) are cached under the
+same TTL, so unconfigured tenants do not hit the store on every LLM
+call. Without a store, everything is tracked in-memory for the
+process lifetime.
 
 Reset semantics: changing a tenant's cap does NOT reset accumulated
 spend. Spend is a monotonically growing ledger (budget_spend rows plus
@@ -35,12 +41,15 @@ Keep this file under 500 lines.
 
 import contextvars
 import logging
+import os
+import time
 import uuid
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_WARN_AT = 0.8
+DEFAULT_CONFIG_TTL_SECONDS = 60.0
 SPEND_TABLE = "budget_spend"
 CONFIG_TABLE = "budget_configs"
 
@@ -120,6 +129,13 @@ class BudgetManager:
         self._default_budget_usd = float(default_budget_usd)
         self._budgets: dict[str, dict] = {}
         self._memory_spend: dict[str, float] = {}
+        # Store-backed cap configs are re-read at most once per TTL;
+        # tenants present here but absent from _budgets are cached
+        # negative lookups (no cap configured).
+        self._config_read_at: dict[str, float] = {}
+        self._config_ttl = float(
+            os.getenv("BUDGET_CONFIG_TTL_SECONDS", str(DEFAULT_CONFIG_TTL_SECONDS))
+        )
 
     def set_budget(
         self, tenant_id: str, max_budget_usd: float, warn_at: float = DEFAULT_WARN_AT
@@ -140,6 +156,7 @@ class BudgetManager:
             "max_budget_usd": max_budget_usd,
             "warn_at": float(warn_at),
         }
+        self._config_read_at[tenant_id] = time.monotonic()
         self._persist_config(tenant_id)
         logger.info(
             f"[Budget] Set budget for '{tenant_id}': "
@@ -158,15 +175,25 @@ class BudgetManager:
                 "warn_at": config["warn_at"],
                 "updated_at": datetime.now().isoformat(),
             }
-            if not self._store.update(CONFIG_TABLE, tenant_id, changes):
+            if self._store.update(CONFIG_TABLE, tenant_id, changes):
+                return
+            try:
                 self._store.insert(
                     CONFIG_TABLE,
                     {"id": tenant_id, "tenant_id": tenant_id, **changes},
                 )
+            except Exception:
+                # Two processes can race the first insert for a tenant;
+                # the loser hits the PK conflict. Converge by updating
+                # the row the winner just created.
+                if not self._store.update(CONFIG_TABLE, tenant_id, changes):
+                    raise
         except Exception as e:
             logger.warning(
                 f"[Budget] Config persist failed ({type(e).__name__}); "
-                f"cap for '{tenant_id}' is in-memory only until re-set"
+                f"cap for '{tenant_id}' applies in this process but was "
+                f"NOT persisted -- other processes and restarts will not "
+                f"see it until a later set_budget succeeds"
             )
 
     def _load_config(self, tenant_id: str) -> dict | None:
@@ -191,14 +218,22 @@ class BudgetManager:
     def get_budget(self, tenant_id: str) -> dict:
         """Effective budget config for a tenant (falls back to the default).
 
-        On first use per process the persisted cap (budget_configs) is
-        loaded and cached, so caps set before a restart still apply.
+        With a store, the persisted cap (budget_configs) is loaded and
+        cached, then re-read at most once per BUDGET_CONFIG_TTL_SECONDS
+        so cap changes made by other processes converge within the TTL.
+        Negative lookups are cached under the same TTL. A re-read that
+        finds no row (or fails) keeps the current cached value, so a cap
+        whose persist failed still applies in this process.
         """
+        if self._store is not None:
+            now = time.monotonic()
+            read_at = self._config_read_at.get(tenant_id)
+            if read_at is None or now - read_at >= self._config_ttl:
+                loaded = self._load_config(tenant_id)
+                self._config_read_at[tenant_id] = now
+                if loaded is not None:
+                    self._budgets[tenant_id] = loaded
         configured = self._budgets.get(tenant_id)
-        if configured is None:
-            configured = self._load_config(tenant_id)
-            if configured is not None:
-                self._budgets[tenant_id] = configured
         if configured is not None:
             max_budget = configured["max_budget_usd"]
             warn_at = configured["warn_at"]
