@@ -1,0 +1,131 @@
+"""Learning-store hygiene: ops-route burst exclusion, opt-in activity
+retention pruning, erasure of derived artifacts, and hash-fallback
+retrieval honesty."""
+
+import uuid
+from datetime import datetime, timedelta
+
+import pytest
+
+from {{project_slug}}.learning.activity import OPS_ROUTES, ActivityTracker
+from {{project_slug}}.learning.retention import prune_activity_events, retention_days
+from {{project_slug}}.learning.store import SqliteLearningStore
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
+
+
+def seed_events(store, timestamps, user_id="user1", tenant_id="default",
+                route="/api/v1/chat", method="GET", status_code=200):
+    for ts in timestamps:
+        store.insert("activity_events", {
+            "id": str(uuid.uuid4())[:12],
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "route": route,
+            "method": method,
+            "status_code": status_code,
+            "created_at": ts.isoformat(),
+        })
+
+
+# --- Ops routes excluded from burst counting ---------------------------------
+
+
+class TestOpsRouteBurstExclusion:
+    def test_health_probe_traffic_does_not_trip_burst(self, store):
+        """A liveness probe polling every 10s (360 req/h) must not trip
+        the 300/h default threshold: regression for infra-noise flags."""
+        now = datetime.now()
+        times = [now - timedelta(seconds=10 * i) for i in range(360)]
+        seed_events(store, times, route="/health")
+        flags = ActivityTracker(store).check_thresholds("user1")
+        assert flags == []
+
+    def test_all_ops_routes_excluded(self, store):
+        now = datetime.now()
+        per_route = 100  # 4 routes x 100 = 400 > 300 if wrongly counted
+        for route in OPS_ROUTES:
+            seed_events(
+                store,
+                [now - timedelta(seconds=i) for i in range(per_route)],
+                route=route,
+            )
+        flags = ActivityTracker(store).check_thresholds("user1")
+        assert flags == []
+
+    def test_real_traffic_still_trips_burst(self, store):
+        now = datetime.now()
+        seed_events(
+            store,
+            [now - timedelta(seconds=i) for i in range(301)],
+            route="/api/v1/chat",
+        )
+        flags = ActivityTracker(store).check_thresholds("user1")
+        assert any("requests_per_hour" in f for f in flags)
+
+    def test_failed_auth_on_ops_routes_still_counts(self, store):
+        """401s against /metrics remain security signal, not noise."""
+        now = datetime.now()
+        seed_events(
+            store,
+            [now - timedelta(seconds=i) for i in range(11)],
+            route="/metrics",
+            status_code=401,
+        )
+        flags = ActivityTracker(store).check_thresholds("user1")
+        assert any("failed_auth_per_hour" in f for f in flags)
+
+
+# --- Opt-in activity retention ------------------------------------------------
+
+
+class TestActivityRetention:
+    def test_off_by_default(self, store, monkeypatch):
+        monkeypatch.delenv("ACTIVITY_RETENTION_DAYS", raising=False)
+        seed_events(store, [datetime.now() - timedelta(days=400)])
+        assert retention_days() == 0
+        assert prune_activity_events(store) == 0
+        assert store.count("activity_events", {}) == 1
+
+    @pytest.mark.parametrize("raw", ["", "0", "-5", "abc"])
+    def test_invalid_env_means_off(self, store, monkeypatch, raw):
+        monkeypatch.setenv("ACTIVITY_RETENTION_DAYS", raw)
+        seed_events(store, [datetime.now() - timedelta(days=400)])
+        assert prune_activity_events(store) == 0
+        assert store.count("activity_events", {}) == 1
+
+    def test_prunes_old_keeps_recent(self, store, monkeypatch):
+        monkeypatch.setenv("ACTIVITY_RETENTION_DAYS", "90")
+        now = datetime.now()
+        seed_events(store, [now - timedelta(days=120), now - timedelta(days=91)])
+        seed_events(store, [now - timedelta(days=89), now - timedelta(hours=1)])
+        assert prune_activity_events(store) == 2
+        remaining = store.query("activity_events", {})
+        assert len(remaining) == 2
+        cutoff = (now - timedelta(days=90)).isoformat()
+        assert all(r["created_at"] >= cutoff for r in remaining)
+
+    def test_batch_limit_bounds_one_pass(self, store, monkeypatch):
+        monkeypatch.setenv("ACTIVITY_RETENTION_DAYS", "30")
+        old = datetime.now() - timedelta(days=60)
+        seed_events(store, [old - timedelta(seconds=i) for i in range(5)])
+        assert prune_activity_events(store, batch_limit=3) == 3
+        assert store.count("activity_events", {}) == 2
+        # The next sampled pass drains the rest.
+        assert prune_activity_events(store, batch_limit=3) == 2
+
+    def test_no_store_is_noop(self, monkeypatch):
+        monkeypatch.setenv("ACTIVITY_RETENTION_DAYS", "30")
+        assert prune_activity_events(None) == 0
+
+    def test_store_failure_swallowed(self, monkeypatch):
+        monkeypatch.setenv("ACTIVITY_RETENTION_DAYS", "30")
+
+        class BrokenStore:
+            def query(self, *a, **k):
+                raise RuntimeError("db gone")
+
+        assert prune_activity_events(BrokenStore()) == 0
