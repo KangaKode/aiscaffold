@@ -12,7 +12,16 @@ Three related audit findings:
 3. Challenge/vote dispatch gates: Phases 2 and 3 pass the same
    identity/suspension/rate-limit/scope gates as Phase 1, so an agent
    suspended mid-run is excluded from later phases and consensus math
-   handles the shrinking voter set.
+   handles the shrinking voter set. Any vote-phase gate-out flags the
+   result degraded -- a shrunken denominator is never silent.
+4. Error responses never launder content downstream: the enforcement
+   rewrite treats an errored call as no-rewrite (rejected stays
+   rejected), and synthesis never surfaces the error string as the
+   recommended direction.
+5. Failure classification trusts the is_error contract when present;
+   the legacy prefix check applies only to duck-typed clients without
+   the attribute, so a live reply quoting a bracketed error string is
+   not misclassified.
 """
 
 import json
@@ -256,6 +265,116 @@ class TestCoreAgentsFailClosed:
 
 
 # =============================================================================
+# 2b. Failure classification (is_error contract vs legacy prefixes)
+# =============================================================================
+
+
+class TestFailureClassification:
+    def test_is_error_attribute_is_trusted_exclusively(self):
+        """A live (is_error=False) reply that merely QUOTES a bracketed
+        error string must not be misclassified as a transport failure.
+        Pre-fix, the prefix check ran on every response body, so content
+        beginning with '[Budget exhausted:' was treated as a failed call
+        even with is_error=False and valid JSON later in the reply."""
+        from {{project_slug}}.llm.response_guard import llm_call_failed, parse_agent_json
+
+        response = LLMResponse(
+            content=(
+                '[Budget exhausted: quoting the tenant log line under review]\n'
+                '{"risk_level": "SAFE", "reasoning": "quoted error is data"}'
+            ),
+            provider="test",
+        )
+        assert response.is_error is False
+        assert llm_call_failed(response) is False
+        data = parse_agent_json(response)
+        assert data == {
+            "risk_level": "SAFE", "reasoning": "quoted error is data",
+        }
+
+    def test_legacy_client_without_attribute_still_fails_closed(self):
+        """Duck-typed clients that predate the contract (no is_error
+        attribute at all) still get the prefix check as defense-in-depth."""
+        from {{project_slug}}.llm.response_guard import llm_call_failed
+
+        class LegacyResponse:
+            content = "[LLM call failed: APITimeoutError]"
+
+        assert llm_call_failed(LegacyResponse()) is True
+
+    def test_error_flag_true_fails_regardless_of_content(self):
+        from {{project_slug}}.llm.response_guard import llm_call_failed
+
+        response = LLMResponse(
+            content='{"approve": true}', provider="test",
+            is_error=True, error_type="call_failed",
+        )
+        assert llm_call_failed(response) is True
+
+
+# =============================================================================
+# 2c. Error responses never launder content downstream
+# =============================================================================
+
+
+class TestEnforcementRewriteFailClosed:
+    SPECULATIVE_TEXT = (
+        "I think this probably indicates a breach and I believe "
+        "the attacker likely used stolen credentials. It appears "
+        "that the system was compromised. This suggests lateral movement."
+    )
+
+    @pytest.mark.asyncio
+    async def test_budget_exhausted_rewrite_stays_rejected(self):
+        """THE laundering finding: pre-fix, _rewrite returned the
+        bracketed budget-error string as the 'corrected' text; it passed
+        every validator with zero violations, the pipeline returned
+        outcome='accepted', and enforce_evidence kept the ORIGINAL
+        violating analysis. Exhausting a tenant's budget silently
+        disabled evidence enforcement. This test fails on that code."""
+        from {{project_slug}}.enforcement import EvidenceEnforcementPipeline
+
+        pipeline = EvidenceEnforcementPipeline(
+            llm_client=_budget_exhausted_client()
+        )
+        result = await pipeline.validate("unsafe_agent", self.SPECULATIVE_TEXT)
+        assert result.outcome == "rejected"
+        assert not result.corrected_content
+
+    @pytest.mark.asyncio
+    async def test_transport_error_rewrite_stays_rejected(self):
+        from {{project_slug}}.enforcement import EvidenceEnforcementPipeline
+
+        pipeline = EvidenceEnforcementPipeline(llm_client=StubLLM(
+            _error_response("[LLM call failed: APITimeoutError]", "call_failed")
+        ))
+        result = await pipeline.validate("unsafe_agent", self.SPECULATIVE_TEXT)
+        assert result.outcome == "rejected"
+
+
+class TestSynthesisFailClosed:
+    @pytest.mark.asyncio
+    async def test_error_string_never_becomes_recommendation(self):
+        """Pre-fix, an errored synthesis call put the raw error string
+        into recommended_direction (content[:500]), which flows into
+        check-in suggested_action and the API response."""
+        from {{project_slug}}.orchestration.round_table import RoundTableResult
+        from {{project_slug}}.orchestration.round_table_helpers import phase_synthesis
+
+        partial = RoundTableResult(task_id="synth_fail", analyses=[
+            AgentAnalysis(agent_name="a", domain="testing",
+                          observations=[{"finding": "x", "evidence": "y"}]),
+        ])
+        synthesis = await phase_synthesis(
+            partial, _budget_exhausted_client(), "system prompt"
+        )
+        assert "Budget exhausted" not in synthesis.recommended_direction
+        assert synthesis.recommended_direction == (
+            "Synthesis failed -- review individual analyses"
+        )
+
+
+# =============================================================================
 # 3. Challenge/vote dispatch gates
 # =============================================================================
 
@@ -365,6 +484,44 @@ class TestChallengeVoteGating:
         assert len(result.votes) == 2
         assert result.approval_rate == 1.0
         assert result.consensus_reached is True
+
+    @pytest.mark.asyncio
+    async def test_vote_phase_gate_out_marks_result_degraded(self, tmp_path):
+        """Pre-fix, vote-phase gate-outs were only logged: degraded was
+        computed from Phase 1 alone, so a dissenter silently gated out
+        at the vote (e.g. its rate window burned by cheap tasks) shrank
+        the consensus denominator with no trace in the result. Now any
+        vote-phase gate-out sets degraded=True and reports the count."""
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        agents = [
+            TrackingAgent("steady_a"),
+            TrackingAgent("steady_b"),
+            SelfSuspendingAgent("turncoat", registry),
+        ]
+        for agent in agents:
+            registry.register_local(agent)
+
+        rt = RoundTable(agents=agents, config=_config(tmp_path),
+                        registry=registry)
+        result = await rt.run(_task())
+
+        assert result.vote_gated_count == 1
+        assert result.degraded is True
+
+    @pytest.mark.asyncio
+    async def test_no_gate_outs_means_not_degraded(self, tmp_path):
+        """Clean runs stay clean: no gate-outs, no degraded flag."""
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        agents = [TrackingAgent("steady_a"), TrackingAgent("steady_b")]
+        for agent in agents:
+            registry.register_local(agent)
+
+        rt = RoundTable(agents=agents, config=_config(tmp_path),
+                        registry=registry)
+        result = await rt.run(_task())
+
+        assert result.vote_gated_count == 0
+        assert result.degraded is False
 
     @pytest.mark.asyncio
     async def test_scope_filter_applies_to_challenge_and_vote(self, tmp_path):
