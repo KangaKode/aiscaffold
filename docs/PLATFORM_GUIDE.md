@@ -522,7 +522,7 @@ Define retention policies for each data store and document them for your legal/c
 | Agent integrity (identity tokens, rate limits, scopes, suspension, quorum) | **Built** | Set `AGENT_IDENTITY_SIGNING_KEY` in production; rotate/revoke/suspend via API |
 | Learning persistence (SQLite default, Postgres opt-in) | **Built** | `LearningStore` protocol -- bring your own backend via 5 methods |
 | Learning integrity (corrections four-eyes, override screening, activity thresholds) | **Built** | Findings surface at `GET /api/v1/activity/anomalies`; humans resolve |
-| Collusion / correction-drift / behavioral-baseline detectors | **Shipped, you wire** | Tested libraries the default runtime does not invoke; wire into post-deliberation or periodic hooks (see Learning integrity above) |
+| Collusion / correction-drift / behavioral-baseline / sequence detectors | **Shipped, you wire** | Tested libraries the default runtime does not invoke; wire into post-deliberation, periodic, or activity hooks (see Learning integrity above) |
 | Agentic governance (graduated autonomy, per-tenant budgets, audit trail, content policy, PII redaction) | **Built** | Tune levels via `AUTONOMY_POLICIES`; budgets/audit at `/api/v1/budgets` and `/api/v1/audit/deliberations` |
 | SIEM export, tamper-proof audit storage | **You add** | Poll `audit_events` by `created_at`; ship to append-only storage |
 | JWT/OIDC auth | **You add** | Replace `verify_api_key` (~20 lines) |
