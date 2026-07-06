@@ -15,9 +15,14 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+{% if include_api_gateway -%}
 # tests/load/ holds the Locust harness, not pytest tests. Locust is an
 # optional extra ([load]) that default CI does not install, so keep the
 # directory out of collection entirely.
+{% else -%}
+# tests/load/ (the Locust harness) only ships with the API gateway; the
+# ignore entry is a harmless no-op when the directory is absent.
+{% endif -%}
 collect_ignore = ["load"]
 
 from {{ project_slug }}.llm.client import LLMResponse, TokenUsage, CacheablePrompt

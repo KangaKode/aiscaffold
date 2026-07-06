@@ -32,17 +32,21 @@ RUN pip install --no-cache-dir --no-deps -e .
 # Switch to non-root user
 USER appuser
 
+{% if include_api_gateway -%}
 # Expose API port
 EXPOSE 8000
 
-# Health check (used by Docker and orchestrators)
+# Health check (used by Docker and orchestrators). Only meaningful when the
+# API gateway is included -- a gateway-off image runs no HTTP server.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
-{% if include_api_gateway -%}
-# Start the API gateway
-CMD ["python", "-m", "uvicorn", "{{ project_slug }}.api.gateway:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start the API gateway (python -m reads API_HOST/API_PORT/LOG_LEVEL)
+ENV API_HOST=0.0.0.0
+CMD ["python", "-m", "{{ project_slug }}"]
 {% else -%}
-# Default entrypoint -- override in docker-compose or K8s
+# No API gateway in this project: no port, no HTTP health check.
+# Default entrypoint prints usage -- override in docker-compose or K8s
+# with your own long-running command.
 CMD ["python", "-m", "{{ project_slug }}"]
 {% endif -%}

@@ -49,8 +49,13 @@ make serve-prod
 ```bash
 # Docker
 make docker-build
+{% if include_api_gateway -%}
 make docker-run        # http://localhost:8000
-
+{% else -%}
+# The default image CMD only prints usage and exits (no API gateway in
+# this project) -- override the compose `command:` with your own
+# long-running process before `make docker-run`.
+{% endif %}
 # Kubernetes manifests
 # Starter manifests use {{ project_slug }}:latest.
 # Set a registry image tag, secrets, persistence for /app/data and .aiscaffold/,
@@ -112,6 +117,17 @@ make serve       # Start API gateway
 {% if include_deployment -%}
 make docker-run  # Run with Docker
 {% endif -%}
+```
+
+## Updating from the template
+
+This project was generated with [Copier](https://copier.readthedocs.io/) and records
+its template version and answers in `.copier-answers.yml` (keep that file committed).
+To pull in a newer template release:
+
+```bash
+pip install "copier>=9.6"   # older copier ignores the template's conditional file exclusions
+copier update --trust        # from a clean git working tree; review the diff, then run make test
 ```
 
 ## Architecture

@@ -1,0 +1,64 @@
+"""Regression tests for EMBEDDING_PROVIDER env selection and its
+one-release legacy fallback (ROUNDTABLE_EMBEDDING_PROVIDER)."""
+
+import warnings
+
+import pytest
+
+from {{ project_slug }}.learning.rag.embedding_service import EmbeddingService
+
+
+@pytest.fixture(autouse=True)
+def _clean_embedding_env(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("ROUNDTABLE_EMBEDDING_PROVIDER", raising=False)
+
+
+@pytest.fixture
+def provider_calls(monkeypatch):
+    """Record which provider initializers run (no real imports/network)."""
+    calls = []
+    monkeypatch.setattr(
+        EmbeddingService, "_try_openai", lambda self: calls.append("openai") or True
+    )
+    monkeypatch.setattr(
+        EmbeddingService, "_try_local", lambda self: calls.append("local") or True
+    )
+    return calls
+
+
+def test_default_is_fallback_without_any_env():
+    svc = EmbeddingService()
+    assert svc.provider == "fallback"
+
+
+def test_legacy_env_name_still_works_with_deprecation_warning(monkeypatch, provider_calls):
+    """One-release fallback: ROUNDTABLE_EMBEDDING_PROVIDER is honored but warns."""
+    monkeypatch.setenv("ROUNDTABLE_EMBEDDING_PROVIDER", "openai")
+
+    with pytest.warns(DeprecationWarning, match="EMBEDDING_PROVIDER"):
+        EmbeddingService()
+
+    assert provider_calls == ["openai"]
+
+
+def test_new_env_name_wins_over_legacy_without_warning(monkeypatch, provider_calls):
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("ROUNDTABLE_EMBEDDING_PROVIDER", "local")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        EmbeddingService()
+
+    assert provider_calls == ["openai"]
+
+
+def test_explicit_argument_beats_both_env_names(monkeypatch, provider_calls):
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("ROUNDTABLE_EMBEDDING_PROVIDER", "openai")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        EmbeddingService(preferred_provider="local")
+
+    assert provider_calls == ["local"]

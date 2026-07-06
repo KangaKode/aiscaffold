@@ -29,7 +29,7 @@ Development work follows a gated AI-assisted workflow: architecture and data-flo
 Generated projects use a layered layout with a safety-first multi-agent runtime:
 
 ```text
-<project_slug>/
+<destination-dir>/        # the copier destination is the project root
   src/<project_slug>/
     agents/           # Local agents, remote-agent adapter, core safety agents
     api/              # FastAPI gateway, routes, models, middleware

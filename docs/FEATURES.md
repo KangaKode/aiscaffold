@@ -449,13 +449,12 @@ Cursor IDE agent definitions that assist during development (not runtime agents)
 |--------|---------|-------------|
 | `project_type` | `web-app` | `web-app`, `cli-tool`, `multi-agent`, `api-service` |
 | `llm_provider` | `anthropic` | `anthropic`, `openai`, `google`, `multi` |
-| `persistence` | `sqlite` | `sqlite`, `postgres`, `none` |
-| `include_evals` | `true` | Eval infrastructure |
-| `include_state_management` | `true` | Task tracker + progress notes |
-| `include_llm_client` | `true` | LLM client with prompt caching |
-| `include_api_gateway` | `true` | FastAPI gateway + external agent support |
-| `include_deployment` | `true` | Dockerfile, docker-compose, K8s manifests |
-| `include_learning` | `false` | Optional RAG dependencies + learning docs (the learning modules themselves ship in every project) |
+| `persistence` | `sqlite` | App-database scaffolding for your own code (driver dep, compose db service, `DATABASE_URL`/`DATABASE_PATH` plumbing). No shipped runtime module reads these; the learning store is configured by `learning_backend` |
+| `learning_backend` | `sqlite` | Storage backend for the built-in learning store (`sqlite` or `postgres`) |
+| `include_evals` | `true` | Eval infrastructure (`evals/` tree excluded when false) |
+| `include_api_gateway` | `true` | FastAPI gateway + external agent support (`src/<slug>/api/` tree excluded when false) |
+| `include_deployment` | `true` | Dockerfile, docker-compose, K8s manifests (all excluded when false, including the Makefile docker/k8s targets) |
+| `include_learning` | `false` | Optional RAG dependency guidance + learning docs (the learning modules themselves ship in every project) |
 
 ---
 
@@ -484,17 +483,18 @@ make clean         # Remove caches
 
 ## Validation Pipeline
 
-The scaffold itself is validated by an 18-check pipeline:
+The scaffold itself is validated by a multi-profile pipeline:
 
 ```
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
-make validate  (~8s)  -- Generate test project + full suite:
+make validate         -- Generate test projects for all 4 profiles
+                         (full / gateway-off / minimal / defaults) + full suite:
                          unrendered-template guard, ruff lint, bandit security,
-                         import validation, red team,
-                         AI checks, agent review, pytest (700 tests collected,
-                         696 passing, 85% coverage), injection-defense golden set,
-                         file structure verification
-make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
+                         import validation, red team, AI checks, agent review,
+                         pytest (745 tests collected, 741 passing, 86% coverage),
+                         injection-defense golden set, file structure and
+                         toggle-wiring verification
+make validate-matrix  -- Adds 2 more configurations (multi-agent/api-service)
 ```
 
 ---
@@ -525,7 +525,7 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 700 tests across 28 files: 696 pass, 3 skip without the
+  tests/              # 745 tests across 31 files: 741 pass, 3 skip without the
                       # [metrics] extra, 1 opt-in Postgres skip (+ tests/load/ Locust harness)
   evals/              # Eval infrastructure
 ```

@@ -7,9 +7,11 @@ dependencies = [
 {% if include_api_gateway -%}
     "fastapi>=0.115",
     "uvicorn>=0.32",
-    "httpx>=0.27",
     "pydantic>=2.0",
 {% endif -%}
+    # httpx is unconditional: the agent registry's remote-agent adapter
+    # (agents/remote.py) speaks HTTP regardless of the API gateway toggle.
+    "httpx>=0.27",
 {% if llm_provider == 'anthropic' -%}
     "anthropic>=0.40",
 {% elif llm_provider == 'openai' -%}
@@ -20,9 +22,7 @@ dependencies = [
     "anthropic>=0.40",
     "openai>=1.50",
 {% endif -%}
-{% if project_type == 'web-app' -%}
-    "nicegui>=2.0",
-{% elif project_type == 'cli-tool' -%}
+{% if project_type == 'cli-tool' -%}
     "typer>=0.12",
     "rich>=13.0",
 {% endif -%}
@@ -40,8 +40,10 @@ postgres = ["psycopg[binary]>=3.1"]
 mcp = ["mcp>=1.0"]
 # Prometheus exposition at GET /metrics/prometheus (observability/metrics.py)
 metrics = ["prometheus_client>=0.20"]
+{% if include_api_gateway -%}
 # Locust load harness (tests/load/locustfile.py) -- never a base dependency
 load = ["locust>=2.20"]
+{% endif -%}
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]

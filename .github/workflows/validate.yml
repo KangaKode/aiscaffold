@@ -3,8 +3,14 @@
 # Blocks merge on any failure.
 #
 # Three stages:
-#   1. Quick checks (templates only, ~10s)
-#   2. Matrix validation (3 template configs, ~2min)
+#   1. Quick checks (templates only)
+#   2. Matrix validation: the web-app cell runs every generation profile
+#      (full / gateway-off / minimal / defaults); the other cells vary
+#      project_type/llm/persistence and run the full profile only.
+#      Accepted trade-off: gateway-off/minimal DO honor the passed config,
+#      so combos like gateway-off+postgres are deliberately not exercised
+#      -- the toggle exclusions in copier.yml key only on the include_*
+#      answers, and one cell per profile keeps CI cheap.
 #   3. Summary
 
 name: Validate Scaffold
@@ -33,22 +39,32 @@ jobs:
         run: python3 scripts/quick_checks.py
 
   validate-matrix:
-    name: Validate (${{ matrix.project_type }})
+    name: Validate (${{ matrix.project_type }}, ${{ matrix.profile }})
     runs-on: ubuntu-latest
     needs: quick-checks
     strategy:
       fail-fast: false
       matrix:
         include:
+          # All generation profiles once, on the default config. Only the
+          # defaults profile pins its own config; gateway-off/minimal
+          # would honor other configs (e.g. gateway-off+postgres), but
+          # that cross product is skipped as a deliberate cost trade-off:
+          # the conditional _exclude/gating logic keys only on include_*
+          # answers, not on project_type/llm/persistence.
           - project_type: web-app
             llm_provider: anthropic
             persistence: sqlite
+            profile: all
+          # Config variety: full profile with different type/provider/db.
           - project_type: multi-agent
             llm_provider: openai
             persistence: postgres
+            profile: full
           - project_type: api-service
             llm_provider: anthropic
             persistence: sqlite
+            profile: full
 
     steps:
       - uses: actions/checkout@v7
@@ -66,7 +82,8 @@ jobs:
           bash scripts/validate_generated.sh \
             "${{ matrix.project_type }}" \
             "${{ matrix.llm_provider }}" \
-            "${{ matrix.persistence }}"
+            "${{ matrix.persistence }}" \
+            "${{ matrix.profile }}"
 
   summary:
     name: All Checks Passed

@@ -87,6 +87,16 @@ def _get_cors_origins() -> list[str]:
     return DEFAULT_CORS_ORIGINS
 
 
+def _configure_log_level() -> None:
+    """Apply LOG_LEVEL from the environment to the root logger.
+
+    Uses logging.basicConfig, so it is a no-op if the host application
+    (or a test harness) already configured logging.
+    """
+    level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), None)
+    logging.basicConfig(level=level if isinstance(level, int) else logging.INFO)
+
+
 def create_app(
     registry: AgentRegistry | None = None,
     round_table_config: RoundTableConfig | None = None,
@@ -100,6 +110,8 @@ def create_app(
     """
     global _start_time
     _start_time = time.time()
+
+    _configure_log_level()
 
     check_production_auth()
 

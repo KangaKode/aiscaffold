@@ -56,7 +56,7 @@ def main():
 
     # Required directories
     root = Path(__file__).parent.parent
-    for d in ["src", "tests", "docs", "evals", "scripts", ".cursor/agents"]:
+    for d in ["src", "tests", "docs", {% if include_evals %}"evals", {% endif %}"scripts", ".cursor/agents"]:
         check(f"Directory: {d}/", (root / d).is_dir(), f"mkdir -p {d}")
 
     # Required files

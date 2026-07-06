@@ -1,7 +1,7 @@
 # Operations Guide
 
 Running {{ project_name }} in production: failure postures, recovery,
-monitoring, backups, and load testing. Every statement here matches the
+monitoring{% if include_api_gateway %}, backups, and load testing{% else %} and backups{% endif %}. Every statement here matches the
 shipped code -- where a posture matters, the implementing module is named
 so you can verify it.
 
@@ -16,12 +16,19 @@ incident, not during it.
 |-----------|--------------------|---------|------------------------|
 | Sentinel (semantic injection screen) | No LLM / LLM call fails | **Fails CLOSED** | Sentinel dissents with a blocking observation instead of silently passing (`agents/core/sentinel.py`) |
 | Premise / refusal gate (Phase 0.5) | LLM error, parse failure, or no LLM | **Fails OPEN** | A failed check counts as "proceed" for that agent; with no LLM the gate is skipped. The fail-closed backstop for hostile input is the Sentinel, not this gate (`orchestration/premise.py`) |
+{% if include_api_gateway -%}
 | Corrections API | No learning store / manager not wired | **503** | Every `/api/v1/corrections` endpoint returns 503 so callers can tell "learning not enabled" apart from "no corrections" (`api/routes/corrections.py`) |
 | Learning system init | Store init raises at startup | **Degrades to no-op** | The gateway logs a warning and continues serving; learning features are absent, core deliberation is unaffected (`api/gateway.py`) |
+{% endif -%}
 | Budget tracking | No store (or store write fails) | **In-memory fallback** | Spend accumulates in process memory and caps live in process memory too; both **reset on restart** -- a restart silently refills every tenant's budget until a store is attached. With a store, spend (`budget_spend`) and caps (`budget_configs`) both survive restarts; changing a cap never resets recorded spend. Cap configs are cached per process and re-read at most every `BUDGET_CONFIG_TTL_SECONDS` (default 60s), so cross-replica cap changes converge within the TTL (`llm/budget_manager.py`) |
+{% if include_api_gateway -%}
 | Rate limiting | Always in-memory | **Per-process, resets on restart** | The sliding window lives in process memory; multiple replicas each enforce the limit independently (`api/middleware/rate_limit.py`) |
 | Extraction detection | `ACTIVITY_TRACKING_ENABLED=false` or store unavailable | **Inert** | Timing analysis, read-volume guard, and burst checks all key off activity events; without tracking they observe nothing. The gateway logs a one-time warning (`api/gateway.py`, `learning/extraction_guard.py`) |
 | Prometheus metrics | `[metrics]` extra not installed | **No-op** | Every record function is inert; `GET /metrics/prometheus` returns 501 with an install hint. Nothing else is affected (`observability/metrics.py`) |
+{% else -%}
+| Extraction detection | Activity events not recorded / store unavailable | **Inert** | Timing analysis, read-volume guard, and burst checks all key off activity events; without tracking they observe nothing (`learning/extraction_guard.py`) |
+| Prometheus metrics | `[metrics]` extra not installed | **No-op** | Every record function is inert. Nothing else is affected (`observability/metrics.py`) |
+{% endif -%}
 
 ## Recovery Hierarchy
 
@@ -32,8 +39,8 @@ Work top-down; each step is cheaper than the one below it.
    trade-off above: store-less budget spend resets too.
 2. **Check the learning store.** SQLite: does `data/learning.db` exist
    and is the disk writable? Postgres: is `LEARNING_POSTGRES_DSN`
-   reachable? A dead store shows up as 503s on corrections and one-time
-   init warnings in the gateway log.
+   reachable?{% if include_api_gateway %} A dead store shows up as 503s on corrections and
+   one-time init warnings in the gateway log.{% endif %}
 3. **Check provider keys.** `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
    `GOOGLE_API_KEY` missing or expired makes every LLM call fail; the
    Sentinel then fails closed and deliberations dissent. `make check`
@@ -47,7 +54,7 @@ Work top-down; each step is cheaper than the one below it.
 
 ## What to Monitor
 
-### Prometheus metrics (`GET /metrics/prometheus`, `[metrics]` extra)
+### Prometheus metrics ({% if include_api_gateway %}`GET /metrics/prometheus`, {% endif %}`[metrics]` extra)
 
 | Metric | Labels | Watch for |
 |--------|--------|-----------|
@@ -59,6 +66,7 @@ Work top-down; each step is cheaper than the one below it.
 | `llm_cost_dollars_total` | -- | Spend rate (all tenants combined) |
 | `corrections_lifecycle_total` | `action` (propose / approve / reject / retire / revalidate) | Approvals without proposals, mass retirements |
 
+{% if include_api_gateway -%}
 The endpoint is authenticated with the **same bearer API key as the
 rest of the API**. That is a deliberate simplicity trade-off: your
 scrape infrastructure holds the application key. If that is not
@@ -71,6 +79,12 @@ one arbitrary worker and sees only that worker's counts. Run one worker,
 or wire up prometheus_client multiprocess mode
 (`PROMETHEUS_MULTIPROC_DIR` + a shared `CollectorRegistry`) as a
 "you add" extension.
+{% else -%}
+This project has no API gateway, so there is no shipped scrape endpoint:
+the recorder functions in `observability/metrics.py` still count into
+the process-local `prometheus_client` registry, and exposing them over
+HTTP (and authenticating that surface) is a "you add" extension.
+{% endif -%}
 
 ### Per-tenant spend: the `budget_spend` table, NOT metric labels
 
@@ -78,17 +92,25 @@ Tenant is deliberately **not** a Prometheus label: tenant ids are
 unbounded, and every distinct label value becomes a permanent timeseries
 (cardinality explosion). Per-tenant questions go to the store instead:
 
+{% if include_api_gateway -%}
 - `GET /api/v1/budgets/{tenant_id}` -- current spend vs. budget
+{% endif -%}
 - the `budget_spend` table -- one row per LLM response, with model and
   timestamp, for ad-hoc SQL
 
 ### Integrity signals
 
+{% if include_api_gateway -%}
 - `GET /api/v1/activity/anomalies` -- open behavioral integrity flags
   (timing regularity, read-volume caps, approval-pair dominance)
 - `GET /api/v1/reports/governance?from_date=&to_date=` -- tenant-scoped
   counts: deliberation outcomes, corrections lifecycle, stale knowledge,
   integrity flags, budget spend
+{% else -%}
+Integrity flags and governance counts live in the learning store; there
+are no shipped HTTP endpoints for them in this project (no API gateway),
+so read them from the store's tables directly.
+{% endif -%}
 
 ---
 
@@ -119,14 +141,16 @@ pg_restore --clean --if-exists --dbname="$LEARNING_POSTGRES_DSN" learning.dump
 The docker-compose Postgres service (when `persistence=postgres`) stores
 data in the `pgdata` volume; back that up on the same schedule.
 
+{% if include_api_gateway -%}
 ---
 
 ## Load Testing
 
 The harness measures **your stack** -- routing, enforcement, persistence,
-serialization -- not an LLM provider: the load override forces the
+serialization -- not an LLM provider: the load configuration forces the
 deterministic mock client.
 
+{% if include_deployment -%}
 ```bash
 pip install '.[load]'
 make load-test        # = docker-compose -f docker-compose.yml -f docker-compose.load.yml up -d
@@ -137,6 +161,24 @@ The override (`docker-compose.load.yml`) sets `LLM_PROVIDER=mock`,
 raises `RATE_LIMIT_PER_MINUTE`, and sets `ACTIVITY_TRACKING_ENABLED=false`
 (deliberate: keeps synthetic traffic out of the activity table, and --
 consciously -- disables extraction detection for the run's duration).
+{% else -%}
+This project was generated without deployment infrastructure, so there
+is no compose stack to load-test against -- run the server directly with
+the load environment set inline:
+
+```bash
+pip install '.[load]'
+LLM_PROVIDER=mock RATE_LIMIT_PER_MINUTE=100000 ACTIVITY_TRACKING_ENABLED=false \
+  make serve-prod
+locust -f tests/load/locustfile.py --host http://localhost:8000
+```
+
+`LLM_PROVIDER=mock` keeps the run free and deterministic; the raised
+rate limit stops the per-IP limiter from throttling a single Locust
+host; `ACTIVITY_TRACKING_ENABLED=false` keeps synthetic traffic out of
+the activity table (deliberate -- it also disables extraction detection
+for the run's duration).
+{% endif -%}
 
 The round-table scenario deliberates with **your deployment's registered
 agents**. Against a bare stack it reports an explicit "register your
@@ -166,6 +208,7 @@ sys.exit(0 if p95 <= MAX_P95_MS and error_rate <= MAX_ERROR_RATE else 1)
 PY
 ```
 
+{% if include_deployment -%}
 ### CI (manual trigger, recipe)
 
 Load runs are on-demand, never per-commit. A minimal
@@ -189,3 +232,5 @@ jobs:
       # threshold check: paste the Python snippet from the recipe above
       - run: docker compose down
 ```
+{% endif -%}
+{% endif -%}

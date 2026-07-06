@@ -23,6 +23,7 @@ Keep this file under 250 lines.
 import logging
 import math
 import os
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -90,7 +91,17 @@ class VectorStore:
         if use_chroma is not None:
             return use_chroma, use_chroma
 
-        env_value = os.environ.get("ROUNDTABLE_USE_CHROMA")
+        env_value = os.environ.get("USE_CHROMA")
+        if env_value is None:
+            legacy_value = os.environ.get("ROUNDTABLE_USE_CHROMA")
+            if legacy_value is not None:
+                warnings.warn(
+                    "ROUNDTABLE_USE_CHROMA is deprecated and will be ignored in a "
+                    "future release; set USE_CHROMA instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                env_value = legacy_value
         if env_value is not None:
             enabled = env_value.strip().lower() in {"1", "true", "yes", "on"}
             return enabled, enabled
@@ -126,7 +137,7 @@ class VectorStore:
                 raise RuntimeError(
                     "[VectorStore] Existing or explicitly requested ChromaDB "
                     "storage is unavailable. Install chromadb or set "
-                    "ROUNDTABLE_USE_CHROMA=0 to use an ephemeral in-memory store."
+                    "USE_CHROMA=0 to use an ephemeral in-memory store."
                 ) from e
             self._fallback_store = []
             logger.info(

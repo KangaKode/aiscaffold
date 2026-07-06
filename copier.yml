@@ -1,19 +1,48 @@
-_min_copier_version: "9.0.0"
-_subdirectory: template
+# 9.6.0 is a hard floor: earlier copier versions do NOT render Jinja inside
+# _exclude patterns, which would silently turn every conditional exclusion
+# below (evals/api/deployment toggles) into a no-op.
+_min_copier_version: "9.6.0"
+
+# The template code lives in template/{{project_slug}} -- a literal folder
+# name, escaped below so copier does NOT render it as a path variable. The
+# copier destination directory therefore IS the generated project root
+# (git repo, .copier-answers.yml, Makefile all live together), which is
+# what makes `copier update` work. See docs/UPDATING.md.
+_subdirectory: "template/{% raw %}{{project_slug}}{% endraw %}"
 
 # Overriding _exclude replaces copier's defaults, so they are restated here.
-# The final entry conditionally excludes the evals tree when include_evals=false.
+# Patterns are matched against destination paths relative to the project
+# root. The conditional entries exclude feature trees when their toggle is
+# off:
+#   include_evals=false       -> no evals/ tree
+#   include_api_gateway=false -> no src/<slug>/api/ tree
+#   include_deployment=false  -> no Dockerfile, docker-compose*, .dockerignore, deploy/
 _exclude:
   - "copier.yml"
   - "copier.yaml"
   - "~*"
   - "*.py[co]"
   - "__pycache__"
+  - ".pytest_cache"
+  - ".ruff_cache"
   - ".git"
   - ".DS_Store"
   - ".svn"
-  - "{% if not include_evals %}*/evals{% endif %}"
-  - "{% if not include_evals %}*/evals/**{% endif %}"
+  - "{% if not include_evals %}/evals{% endif %}"
+  - "{% if not include_evals %}/evals/**{% endif %}"
+  - "{% if not include_api_gateway %}/src/*/api{% endif %}"
+  - "{% if not include_api_gateway %}/src/*/api/**{% endif %}"
+  # The k8s Service, the load harness, and its compose override presuppose
+  # an HTTP server -- all gateway-only:
+  - "{% if not include_api_gateway %}/deploy/k8s/service.yaml{% endif %}"
+  - "{% if not include_api_gateway %}/docker-compose.load.yml{% endif %}"
+  - "{% if not include_api_gateway %}/tests/load{% endif %}"
+  - "{% if not include_api_gateway %}/tests/load/**{% endif %}"
+  - "{% if not include_deployment %}/Dockerfile{% endif %}"
+  - "{% if not include_deployment %}/docker-compose*.yml{% endif %}"
+  - "{% if not include_deployment %}/.dockerignore{% endif %}"
+  - "{% if not include_deployment %}/deploy{% endif %}"
+  - "{% if not include_deployment %}/deploy/**{% endif %}"
 
 # =============================================================================
 # PROJECT IDENTITY
@@ -116,9 +145,14 @@ llm_provider:
     - "multi"
   default: "anthropic"
 
+# NOTE (honest scope): `persistence` scaffolds database wiring for YOUR
+# application code -- driver dependency, docker-compose db service,
+# DATABASE_URL/DATABASE_PATH env plumbing, and docs. No shipped runtime
+# module reads those variables. The platform's own storage (learning
+# store) is configured separately via `learning_backend` below.
 persistence:
   type: str
-  help: "Data persistence layer"
+  help: "App database scaffolding for your own code: driver dep + compose service + env plumbing (the built-in learning store is configured by learning_backend)"
   choices:
     - "sqlite"
     - "postgres"
@@ -136,7 +170,14 @@ learning_backend:
 python_version:
   type: str
   default: "3.13"
-  help: "Minimum Python version"
+  help: "Minimum Python version (3.12 or newer, e.g. 3.13)"
+  validator: >-
+    {% set parts = python_version.split('.') %}
+    {% if parts | length != 2 or not parts[0].isdigit() or not parts[1].isdigit() %}
+    python_version must be MAJOR.MINOR, for example 3.13.
+    {% elif parts[0] != '3' or parts[1] | int < 12 %}
+    python_version must be 3.12 or newer (the generated code uses 3.12+ syntax).
+    {% endif %}
 
 # =============================================================================
 # OPTIONS
@@ -146,16 +187,6 @@ include_evals:
   type: bool
   default: true
   help: "Include eval infrastructure?"
-
-include_state_management:
-  type: bool
-  default: true
-  help: "Include state management (task tracker, progress notes)?"
-
-include_llm_client:
-  type: bool
-  default: true
-  help: "Include LLM client boilerplate?"
 
 include_api_gateway:
   type: bool
@@ -170,19 +201,20 @@ include_deployment:
 include_learning:
   type: bool
   default: false
-  help: "Include learning system (feedback tracking, user profiles, RAG)?"
+  help: "Include optional RAG dependency guidance + learning docs? (The learning modules themselves ship in every project.)"
 
 # =============================================================================
 # POST-GENERATION
 # =============================================================================
 
+# Tasks run in the destination directory, which is the project root.
 _tasks:
   # Create architecture layer directories
-  - "cd {{ project_slug }} && python3 -c \"import os; [os.makedirs(l.strip(), exist_ok=True) or open(os.path.join(l.strip(), '__init__.py'), 'w').close() for l in '{{ layers }}'.split(',')]\""
+  - "python3 -c \"import os; [os.makedirs(l.strip(), exist_ok=True) or open(os.path.join(l.strip(), '__init__.py'), 'w').close() for l in '{{ layers }}'.split(',')]\""
   # Create evals directory if requested
-  - "{% if include_evals %}cd {{ project_slug }} && mkdir -p evals/capability evals/regression evals/graders evals/results && touch evals/__init__.py evals/graders/__init__.py{% else %}echo 'Evals skipped'{% endif %}"
-  # Init git
-  - "cd {{ project_slug }} && git init"
+  - "{% if include_evals %}mkdir -p evals/capability evals/regression evals/graders evals/results && touch evals/__init__.py evals/graders/__init__.py{% else %}echo 'Evals skipped'{% endif %}"
+  # Init git (idempotent; `copier update` runs inside the existing repo)
+  - "git init"
   # Summary
   - "echo ''"
   - "echo 'Project created!'"
@@ -199,7 +231,7 @@ _tasks:
   - "{% if include_learning %}echo '  Learning system (feedback, trust, preferences, RAG)'{% else %}echo ''{% endif %}"
   - "echo ''"
   - "echo 'Next steps:'"
-  - "echo '  cd {{ project_slug }}'"
+  - "echo '  cd {{ _folder_name }}'"
   - "echo '  python3 -m venv venv && source venv/bin/activate'"
   - "echo '  pip install -r requirements.txt'"
   - "echo '  pip install -e .       # Install the src-layout package'"

@@ -5,9 +5,12 @@ Default provider:
   1. Deterministic fallback -- hash-based, works without any dependencies
 
 Opt-in providers:
-  - Set `ROUNDTABLE_EMBEDDING_PROVIDER=local` for sentence-transformers
-  - Set `ROUNDTABLE_EMBEDDING_PROVIDER=openai` for text-embedding-3-small
-  - Set `ROUNDTABLE_EMBEDDING_PROVIDER=auto` to try OpenAI, then local, then fallback
+  - Set `EMBEDDING_PROVIDER=local` for sentence-transformers
+  - Set `EMBEDDING_PROVIDER=openai` for text-embedding-3-small
+  - Set `EMBEDDING_PROVIDER=auto` to try OpenAI, then local, then fallback
+
+(The legacy `ROUNDTABLE_EMBEDDING_PROVIDER` name is honored for one release
+with a DeprecationWarning.)
 
 Caching: embeddings are cached in-memory (LRU) to avoid recomputing.
 All providers produce normalized vectors suitable for cosine similarity.
@@ -18,6 +21,7 @@ Keep this file under 250 lines.
 import hashlib
 import logging
 import os
+import warnings
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
@@ -62,7 +66,19 @@ class EmbeddingService:
 
     def _init_provider(self, preferred: str | None) -> None:
         """Initialize the best available provider."""
-        preferred = preferred or os.environ.get("ROUNDTABLE_EMBEDDING_PROVIDER", "fallback")
+        if not preferred:
+            preferred = os.environ.get("EMBEDDING_PROVIDER")
+        if not preferred:
+            legacy = os.environ.get("ROUNDTABLE_EMBEDDING_PROVIDER")
+            if legacy is not None:
+                warnings.warn(
+                    "ROUNDTABLE_EMBEDDING_PROVIDER is deprecated and will be "
+                    "ignored in a future release; set EMBEDDING_PROVIDER instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                preferred = legacy
+        preferred = preferred or "fallback"
 
         if preferred in {"openai", "auto"}:
             if self._try_openai():

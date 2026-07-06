@@ -7,8 +7,13 @@ import pytest
 from {{ project_slug }}.learning.rag.vector_store import VectorStore
 
 
-def test_existing_persist_dir_enables_chroma_by_default(monkeypatch, tmp_path):
+@pytest.fixture(autouse=True)
+def _clean_chroma_env(monkeypatch):
+    monkeypatch.delenv("USE_CHROMA", raising=False)
     monkeypatch.delenv("ROUNDTABLE_USE_CHROMA", raising=False)
+
+
+def test_existing_persist_dir_enables_chroma_by_default(tmp_path):
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir()
 
@@ -21,9 +26,7 @@ def test_existing_persist_dir_enables_chroma_by_default(monkeypatch, tmp_path):
     assert chroma_required is True
 
 
-def test_missing_persist_dir_uses_in_memory_by_default(monkeypatch, tmp_path):
-    monkeypatch.delenv("ROUNDTABLE_USE_CHROMA", raising=False)
-
+def test_missing_persist_dir_uses_in_memory_by_default(tmp_path):
     use_chroma, chroma_required = VectorStore._resolve_chroma_mode(
         persist_dir=str(tmp_path / "missing"),
         use_chroma=None,
@@ -34,7 +37,7 @@ def test_missing_persist_dir_uses_in_memory_by_default(monkeypatch, tmp_path):
 
 
 def test_env_disable_overrides_existing_persist_dir(monkeypatch, tmp_path):
-    monkeypatch.setenv("ROUNDTABLE_USE_CHROMA", "0")
+    monkeypatch.setenv("USE_CHROMA", "0")
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir()
 
@@ -47,8 +50,42 @@ def test_env_disable_overrides_existing_persist_dir(monkeypatch, tmp_path):
     assert chroma_required is False
 
 
+def test_legacy_env_name_still_works_with_deprecation_warning(monkeypatch, tmp_path):
+    """One-release fallback: ROUNDTABLE_USE_CHROMA is honored but warns."""
+    monkeypatch.setenv("ROUNDTABLE_USE_CHROMA", "0")
+    persist_dir = tmp_path / "chroma"
+    persist_dir.mkdir()
+
+    with pytest.warns(DeprecationWarning, match="USE_CHROMA"):
+        use_chroma, chroma_required = VectorStore._resolve_chroma_mode(
+            persist_dir=str(persist_dir),
+            use_chroma=None,
+        )
+
+    assert use_chroma is False
+    assert chroma_required is False
+
+
+def test_new_env_name_wins_over_legacy_without_warning(monkeypatch, tmp_path):
+    monkeypatch.setenv("USE_CHROMA", "0")
+    monkeypatch.setenv("ROUNDTABLE_USE_CHROMA", "1")
+    persist_dir = tmp_path / "chroma"
+    persist_dir.mkdir()
+
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        use_chroma, chroma_required = VectorStore._resolve_chroma_mode(
+            persist_dir=str(persist_dir),
+            use_chroma=None,
+        )
+
+    assert use_chroma is False
+    assert chroma_required is False
+
+
 def test_existing_persist_dir_without_chromadb_fails_fast(monkeypatch, tmp_path):
-    monkeypatch.delenv("ROUNDTABLE_USE_CHROMA", raising=False)
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir()
 

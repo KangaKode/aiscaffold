@@ -14,10 +14,24 @@ services:
   # ===========================================================================
   app:
     build: .
+{% if include_api_gateway %}
     ports:
       - "8000:8000"
+{% else %}
+    # No API gateway in this project: no published port, and the default
+    # image CMD only prints usage and exits. Override `command:` below with
+    # your own long-running process (otherwise `restart: unless-stopped`
+    # restarts the usage message forever).
+    # command: ["python", "-m", "your_long_running_module"]
+{% endif %}
     env_file: .env
     environment:
+{% if include_api_gateway %}
+      # `environment:` outranks env_file: keep the container bound to all
+      # interfaces even if .env carries an API_HOST override (a loopback
+      # bind inside the container would kill the published port).
+      - API_HOST=0.0.0.0
+{% endif %}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 {% if persistence == 'postgres' %}
       - DATABASE_URL=postgresql://{{ project_slug }}:${DB_PASSWORD}@db:5432/{{ project_slug }}

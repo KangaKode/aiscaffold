@@ -1,0 +1,42 @@
+"""Package entrypoint: python -m {{ project_slug }}
+
+{% if include_api_gateway -%}
+Serves the API gateway. Reads:
+  API_HOST   -- bind address (default 127.0.0.1; set 0.0.0.0 in containers)
+  API_PORT   -- port (default 8000)
+  LOG_LEVEL  -- root logging level (default INFO)
+{% else -%}
+This project was generated without the API gateway (include_api_gateway=false),
+so there is no HTTP server to start. This entrypoint prints usage instead.
+{% endif -%}
+"""
+
+import logging
+import os
+
+
+def _log_level() -> int:
+    level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), None)
+    return level if isinstance(level, int) else logging.INFO
+
+
+{% if include_api_gateway -%}
+def main() -> None:
+    import uvicorn
+
+    logging.basicConfig(level=_log_level())
+    host = os.environ.get("API_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(os.environ.get("API_PORT", "8000").strip() or "8000")
+    uvicorn.run("{{ project_slug }}.api.gateway:app", host=host, port=port)
+{% else -%}
+def main() -> None:
+    logging.basicConfig(level=_log_level())
+    print("{{ project_name }} was generated without the API gateway.")
+    print("There is no HTTP server to start. Try instead:")
+    print("  make demo    # round-table demo, no API keys needed")
+    print("  make test    # run the test suite")
+{% endif -%}
+
+
+if __name__ == "__main__":
+    main()
