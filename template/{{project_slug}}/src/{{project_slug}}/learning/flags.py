@@ -12,9 +12,16 @@ same-or-lower repeats are suppressed. A human resolving the flags
 (POST /activity/anomalies/{id}/resolve) re-arms detection for that
 subject.
 
+record_flag_hit is the insert-or-update variant for high-frequency
+detectors: instead of silently suppressing repeats behind the cooldown,
+it updates the unresolved flag in place (bounded hit count + last_seen +
+latest finding detail) and escalates severity to "error" after a
+configurable number of repeats -- so a sustained campaign cannot hide
+behind one stale warning armed by a decoy probe.
+
 Leaf module: imports stdlib only; the store is passed in.
 
-Keep this file under 100 lines.
+Keep this file under 200 lines.
 """
 
 import json
@@ -97,3 +104,73 @@ def insert_flag_once(
     except Exception as exc:
         logger.error(f"[Flags] Failed to persist {flag_type} flag: {exc}")
         return False
+
+
+def record_flag_hit(
+    store,
+    flag_type: str,
+    subject_id: str,
+    tenant_id: str,
+    detail: dict,
+    severity: str = "warning",
+    escalate_after: int = 10,
+) -> bool:
+    """
+    Insert-or-update: first hit inserts an integrity flag; while an
+    unresolved flag of the same type+subject+tenant exists, later hits
+    UPDATE it in place instead of being silently suppressed -- the
+    detail is replaced (bounded: the caller's latest detail plus a hit
+    counter and last_seen timestamp), and once the counter reaches
+    ``escalate_after`` the severity is raised to "error" so a sustained
+    campaign surfaces even though the first flag is still unresolved.
+    Read-then-write is not atomic: concurrent evaluators can miss each
+    other's counter bumps (acceptable single-node; multi-worker
+    undercounts occasionally, never loses the flag). Best-effort like
+    insert_flag_once: storage errors are logged, never raised.
+    Returns True when a new row was inserted.
+    """
+    try:
+        rows = store.query(
+            "integrity_flags",
+            {
+                "flag_type": flag_type,
+                "subject_id": subject_id,
+                "tenant_id": tenant_id,
+                "resolved": 0,
+            },
+        )
+    except Exception as exc:
+        # Fail toward "already flagged" so a broken store cannot cause
+        # unbounded duplicate inserts (same posture as the cooldown).
+        logger.warning(f"[Flags] Hit-record query failed (treating as flagged): {exc}")
+        return False
+
+    now = datetime.now().isoformat()
+    if not rows:
+        return insert_flag_once(
+            store, flag_type, subject_id, tenant_id,
+            {**detail, "hits": 1, "last_seen": now}, severity,
+        )
+
+    row = max(rows, key=lambda r: r.get("created_at") or "")
+    try:
+        previous = json.loads(row.get("detail_json") or "{}")
+        hits = int(previous.get("hits", 1)) + 1
+    except Exception:
+        hits = 2
+    changes: dict = {
+        "detail_json": json.dumps(
+            {**detail, "hits": hits, "last_seen": now}, default=str
+        )
+    }
+    if hits >= max(escalate_after, 2) and _rank(row.get("severity") or "warning") < _rank("error"):
+        changes["severity"] = "error"
+        logger.warning(
+            "[Flags] Escalating %s/%s to error after %d unresolved hits",
+            flag_type, subject_id, hits,
+        )
+    try:
+        store.update("integrity_flags", row["id"], changes)
+    except Exception as exc:
+        logger.error(f"[Flags] Failed to update {flag_type} flag hit count: {exc}")
+    return False
