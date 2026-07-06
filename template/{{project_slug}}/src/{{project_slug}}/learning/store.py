@@ -9,9 +9,8 @@ Defines a minimal storage protocol plus two reference backends:
 The protocol is intentionally tiny (ensure_schema / insert / query /
 update / update_if / count / delete) so enterprise users can implement
 it against anything (MySQL, DynamoDB, an internal storage service)
-without touching callers. Callers feature-detect update_if (and the
-optional sum_amount aggregate the reference backends ship) so older
-custom stores keep working.
+without touching callers. update_if and sum_amount are optional,
+feature-detected extensions (see the LearningStore docstring).
 
 Table names and columns are defined ONCE in tables.py (TABLE_COLUMNS).
 Every SQL identifier is validated against that allowlist before
@@ -52,10 +51,17 @@ class LearningStore(Protocol):
     """
     Minimal storage interface for the extended learning tables.
 
-    Implement these six methods against any datastore to bring your own
-    backend (the scaffold ships SQLite and Postgres reference
-    implementations). Rows are plain dicts keyed by column name; JSON
-    columns (*_json) are stored as serialized strings by callers.
+    Required core (bring your own backend by implementing these against
+    any datastore): ensure_schema, insert, query, update, count, delete.
+    The scaffold ships SQLite and Postgres reference implementations.
+    Rows are plain dicts keyed by column name; JSON columns (*_json)
+    are stored as serialized strings by callers.
+
+    update_if and sum_amount are OPTIONAL extensions: runtime callers
+    feature-detect them (getattr) and fall back to core methods, so
+    custom backends without them keep working -- but update_if is
+    declared on this Protocol, so static type checkers flag backends
+    that omit it; implement it (one conditional UPDATE) to satisfy both.
     """
 
     def ensure_schema(self) -> None:
@@ -82,10 +88,8 @@ class LearningStore(Protocol):
     ) -> bool:
         """Conditionally update the row with the given id: apply changes
         only if every expected column still holds its expected value, as
-        one atomic statement (UPDATE ... WHERE id = ? AND col = ?...).
-        Returns True only when the row matched and was updated. Callers
-        feature-detect this method (getattr) so pre-existing custom
-        backends keep working with the older read-then-write path."""
+        one atomic UPDATE. True only when the row matched and changed.
+        Optional extension -- callers feature-detect it (getattr)."""
         ...
 
     def count(self, table: str, filters: dict) -> int:
@@ -183,6 +187,11 @@ def _update_if_sql(
         raise ValueError("update_if() requires at least one change")
     if not expected:
         raise ValueError("update_if() requires at least one expected column")
+    if any(v is None for v in expected.values()):
+        raise ValueError(
+            "update_if() expected values cannot be None: SQL 'col = ?' "
+            "never matches NULL, so the update would silently never apply"
+        )
     sets = ", ".join(f"{c} = {ph}" for c in changes)
     conditions = " AND ".join(f"{c} = {ph}" for c in expected)
     # Identifiers allowlist-validated; values parameterized.

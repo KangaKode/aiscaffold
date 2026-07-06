@@ -27,6 +27,7 @@ Keep this file under 250 lines.
 
 import json
 import logging
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -154,7 +155,12 @@ class AgentTrustManager:
                 )
                 conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    # A failed ROLLBACK must not mask the original error;
+                    # the connection is closed by the context manager anyway.
+                    logger.warning("[AgentTrust] ROLLBACK failed after error")
                 raise
 
             logger.debug(
