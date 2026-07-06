@@ -15,11 +15,15 @@ Security:
   - Prompt injection patterns in agent output are detected and logged
   - Response size is capped to prevent memory exhaustion
   - String fields are truncated to safe limits
-  - DNS is re-validated just before every request (anti-rebinding): a
-    hostname that passed SSRF validation at registration but now
-    resolves to a private/loopback address is refused. Resolution runs
-    off the event loop; a small resolve-then-connect TOCTOU remains
-    (see security/validators.py, revalidate_url_at_connect).
+  - DNS is re-validated before every request attempt (anti-rebinding),
+    including each retry: a hostname that passed SSRF validation at
+    registration but now resolves to a private/loopback address is
+    refused, and a resolver failure at re-check time fails closed.
+    Resolution runs off the event loop; a resolve-then-connect TOCTOU
+    remains within each attempt (see security/validators.py,
+    revalidate_url_at_connect). Directly constructed agents that point
+    at private hostnames on purpose (docker-compose service names,
+    corp-internal DNS) opt out with allow_private_endpoint=True.
 
 Reference: src/api/models/requests.py for the contract.
 """
@@ -72,13 +76,19 @@ class RemoteAgent:
         api_key: str = "",
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         mode: str = "sync",
+        allow_private_endpoint: bool = False,
     ):
+        """allow_private_endpoint skips the connect-time DNS re-check for
+        endpoints that intentionally resolve to private addresses
+        (docker-compose service names, corp-internal hostnames). Only set
+        it for endpoints you control; it removes the rebinding defense."""
         self._name = name
         self._domain = domain
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
         self._mode = mode
+        self._allow_private_endpoint = allow_private_endpoint
         self._interaction_count = 0
 
     @property
@@ -128,7 +138,10 @@ class RemoteAgent:
         """Re-resolve the base URL against the SSRF blocklist just before
         connecting (DNS rebinding defense). Runs in a thread so the
         blocking getaddrinfo never stalls the event loop. Raises
-        ConnectionError on a rebound hostname."""
+        ConnectionError on a rebound hostname. Skipped entirely when the
+        agent was constructed with allow_private_endpoint=True."""
+        if self._allow_private_endpoint:
+            return
         try:
             await asyncio.to_thread(
                 revalidate_url_at_connect, self._base_url, "base_url"
@@ -143,8 +156,11 @@ class RemoteAgent:
         url = f"{self._base_url}/{endpoint.lstrip('/')}"
         last_error: Exception | None = None
 
-        await self._recheck_dns(endpoint)
         for attempt in range(MAX_RETRIES + 1):
+            # Re-check DNS before EVERY attempt: with retries and long
+            # timeouts the last attempt can run minutes after the first,
+            # so a single up-front check would leave a wide rebind window.
+            await self._recheck_dns(endpoint)
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     response = await client.post(

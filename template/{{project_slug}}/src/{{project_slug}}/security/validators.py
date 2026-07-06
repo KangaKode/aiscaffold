@@ -182,12 +182,20 @@ def revalidate_url_at_connect(url: str, field_name: str = "url") -> None:
     when the URL was admitted (validate_url at registration blocks them;
     directly constructed dev clients may point at localhost on purpose).
 
+    Unlike registration-time validation, this path fails CLOSED on a
+    resolver error: if the hostname cannot be re-resolved, the request
+    is refused (the connect would fail anyway if DNS were truly down,
+    and passing an unverifiable hostname would defeat the re-check).
+
     Residual TOCTOU (honest limitation): this check and the subsequent
     connect are still two separate resolutions, so a rebind in the gap
-    between them wins. It narrows the window from
-    registration-to-request down to milliseconds; eliminating it needs
-    IP pinning at the transport layer.
+    between them wins. Callers should re-check before every connect
+    attempt (agents/remote.py does), which narrows the exposure to the
+    re-check-to-connect gap of each attempt; eliminating it entirely
+    needs IP pinning at the transport layer.
     """
+    import socket
+
     parsed = urlparse(url.strip())
     hostname = parsed.hostname
     if not hostname:
@@ -199,11 +207,33 @@ def revalidate_url_at_connect(url: str, field_name: str = "url") -> None:
         pass
     if hostname.lower() == "localhost":
         return  # cannot rebind; admission policy already ruled
-    if _is_private_ip(hostname):
-        raise ValidationError(
-            f"{field_name} now resolves to a private/internal address "
-            "(possible DNS rebinding); refusing to connect"
+    try:
+        results = socket.getaddrinfo(
+            hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
         )
+    except socket.gaierror as e:
+        logger.warning(
+            f"[Validators] Connect-time re-resolution of {hostname} failed "
+            f"({e}); failing closed"
+        )
+        raise ValidationError(
+            f"{field_name} could not be re-resolved at connect time; "
+            "refusing to connect (fail closed)"
+        ) from e
+    for _family, _socktype, _proto, _canonname, sockaddr in results:
+        try:
+            addr = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            logger.warning(
+                f"[Validators] DNS rebinding blocked at connect time: "
+                f"{hostname} resolved to {sockaddr[0]}"
+            )
+            raise ValidationError(
+                f"{field_name} now resolves to a private/internal address "
+                "(possible DNS rebinding); refusing to connect"
+            )
 
 
 def validate_list_size(
