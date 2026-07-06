@@ -20,6 +20,7 @@ from ...orchestration.round_table import (
     RoundTableTask,
     SynthesisResult,
 )
+from ._fail_closed import llm_call_failed, parse_agent_json
 
 logger = logging.getLogger(__name__)
 
@@ -90,15 +91,22 @@ class EvidenceAgent:
         )
         response = await self._llm.call(prompt=prompt, role="evidence_analysis")
 
-        try:
-            data = json.loads(response.content)
+        if llm_call_failed(response):
+            # LLM failure: no evaluation happened -- flag it, never
+            # surface the error string as an evidence finding.
             return AgentAnalysis(
                 agent_name=self.name,
                 domain=self.domain,
-                observations=data.get("observations", []),
-                recommendations=data.get("recommendations", []),
+                observations=[{
+                    "finding": "Evidence not evaluated (LLM call failed)",
+                    "evidence": response.content[:200],
+                    "severity": "warning",
+                    "confidence": 0.5,
+                }],
             )
-        except json.JSONDecodeError:
+
+        data = parse_agent_json(response)
+        if data is None:
             return AgentAnalysis(
                 agent_name=self.name,
                 domain=self.domain,
@@ -109,6 +117,12 @@ class EvidenceAgent:
                     "confidence": 0.5,
                 }],
             )
+        return AgentAnalysis(
+            agent_name=self.name,
+            domain=self.domain,
+            observations=data.get("observations", []),
+            recommendations=data.get("recommendations", []),
+        )
 
     async def challenge(
         self, task: RoundTableTask, other_analyses: list[AgentAnalysis]
@@ -140,15 +154,14 @@ class EvidenceAgent:
         )
         response = await self._llm.call(prompt=prompt, role="evidence_challenge")
 
-        try:
-            data = json.loads(response.content)
-            return AgentChallenge(
-                agent_name=self.name,
-                challenges=data.get("challenges", []),
-                concessions=data.get("concessions", []),
-            )
-        except json.JSONDecodeError:
+        data = parse_agent_json(response)
+        if data is None:
             return AgentChallenge(agent_name=self.name)
+        return AgentChallenge(
+            agent_name=self.name,
+            challenges=data.get("challenges", []),
+            concessions=data.get("concessions", []),
+        )
 
     async def vote(
         self, task: RoundTableTask, synthesis: SynthesisResult
@@ -172,14 +185,18 @@ class EvidenceAgent:
         )
         response = await self._llm.call(prompt=prompt, role="evidence_vote")
 
-        try:
-            data = json.loads(response.content)
-            return AgentVote(
-                agent_name=self.name,
-                approve=data.get("approve", False),
-                conditions=data.get("conditions", []),
-                dissent_reason=data.get("dissent_reason"),
+        data = parse_agent_json(response)
+        if data is None:
+            reason = (
+                "Cannot verify evidence quality (LLM call failed)"
+                if llm_call_failed(response)
+                else "Could not verify evidence quality"
             )
-        except json.JSONDecodeError:
             return AgentVote(agent_name=self.name, approve=False,
-                             dissent_reason="Could not verify evidence quality")
+                             dissent_reason=reason)
+        return AgentVote(
+            agent_name=self.name,
+            approve=data.get("approve", False),
+            conditions=data.get("conditions", []),
+            dissent_reason=data.get("dissent_reason"),
+        )
