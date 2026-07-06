@@ -1,4 +1,7 @@
-_min_copier_version: "9.0.0"
+# 9.6.0 is a hard floor: earlier copier versions do NOT render Jinja inside
+# _exclude patterns, which would silently turn every conditional exclusion
+# below (evals/api/deployment toggles) into a no-op.
+_min_copier_version: "9.6.0"
 
 # The template code lives in template/{{project_slug}} -- a literal folder
 # name, escaped below so copier does NOT render it as a path variable. The
@@ -30,9 +33,7 @@ _exclude:
   - "{% if not include_api_gateway %}/src/*/api{% endif %}"
   - "{% if not include_api_gateway %}/src/*/api/**{% endif %}"
   - "{% if not include_deployment %}/Dockerfile{% endif %}"
-  - "{% if not include_deployment %}/Dockerfile.jinja{% endif %}"
   - "{% if not include_deployment %}/docker-compose*.yml{% endif %}"
-  - "{% if not include_deployment %}/docker-compose*.yml.jinja{% endif %}"
   - "{% if not include_deployment %}/.dockerignore{% endif %}"
   - "{% if not include_deployment %}/deploy{% endif %}"
   - "{% if not include_deployment %}/deploy/**{% endif %}"

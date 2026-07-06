@@ -121,8 +121,8 @@ its template version and answers in `.copier-answers.yml` (keep that file commit
 To pull in a newer template release:
 
 ```bash
-pip install copier
-copier update --trust   # from a clean git working tree; review the diff, then run make test
+pip install "copier>=9.6"   # older copier ignores the template's conditional file exclusions
+copier update --trust        # from a clean git working tree; review the diff, then run make test
 ```
 
 ## Architecture

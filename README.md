@@ -48,7 +48,9 @@ The full harness (`tests/test_adversarial_defense.py`) runs six hostile agents t
 ## Quick Start
 
 ```bash
-pip install copier
+# copier >= 9.6 required (older versions silently ignore the template's
+# conditional file exclusions, so feature toggles would not remove files)
+pip install "copier>=9.6"
 copier copy gh:KangaKode/roundtable my-project --trust
 
 # --trust permits the template's post-generation tasks (git init, file cleanup);
