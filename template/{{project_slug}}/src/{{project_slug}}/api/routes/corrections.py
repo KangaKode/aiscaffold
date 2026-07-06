@@ -103,11 +103,13 @@ class CorrectionResponse(BaseModel):
 
 
 class ErasureResponse(BaseModel):
-    """Result of a GDPR erasure."""
+    """Result of a GDPR erasure (including derived error-schema cleanup)."""
 
     correction_id: str
     erased: bool
     erasures_today: int
+    derived_schemas_deleted: int = 0
+    derived_schemas_rebuilt: int = 0
 
 
 def _get_manager(request: Request) -> CorrectionsManager:

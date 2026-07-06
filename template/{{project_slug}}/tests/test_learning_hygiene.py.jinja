@@ -2,12 +2,15 @@
 retention pruning, erasure of derived artifacts, and hash-fallback
 retrieval honesty."""
 
+import json
 import uuid
 from datetime import datetime, timedelta
 
 import pytest
 
 from {{project_slug}}.learning.activity import OPS_ROUTES, ActivityTracker
+from {{project_slug}}.learning.erasure import erase_correction
+from {{project_slug}}.learning.error_schemata import extract_error_schemas
 from {{project_slug}}.learning.retention import prune_activity_events, retention_days
 from {{project_slug}}.learning.store import SqliteLearningStore
 
@@ -129,3 +132,111 @@ class TestActivityRetention:
                 raise RuntimeError("db gone")
 
         assert prune_activity_events(BrokenStore()) == 0
+
+
+# --- Erasure cleans derived error schemas -------------------------------------
+
+
+def seed_correction(store, cid, reason, corrected_claim, created_by,
+                    agent_id="agent_a", evidence_level="VERIFIED",
+                    tenant_id="default"):
+    now = datetime.now().isoformat()
+    store.insert("corrections", {
+        "id": cid,
+        "tenant_id": tenant_id,
+        "agent_id": agent_id,
+        "session_id": "",
+        "original_claim": "",
+        "corrected_claim": corrected_claim,
+        "reason": reason,
+        "evidence_level": evidence_level,
+        "status": "approved",
+        "created_by": created_by,
+        "approved_by": "approver",
+        "created_at": now,
+        "updated_at": now,
+        "last_validated_at": "",
+        "last_validated_by": "",
+    })
+
+
+class TestErasureDerivedArtifacts:
+    def seed_cluster(self, store, n=4):
+        """n approved corrections from 2 creators -> one error schema."""
+        for i in range(n):
+            seed_correction(
+                store,
+                cid=f"corr_{i}",
+                reason=f"distinctive reason text number {i}",
+                corrected_claim=f"distinctive mitigation step {i}",
+                created_by=f"user_{i % 2}",
+            )
+        schemas = extract_error_schemas(store)
+        assert len(schemas) == 1
+        return schemas[0]
+
+    def test_erasure_deletes_citing_schema_and_rebuilds(self, store):
+        self.seed_cluster(store, n=4)
+        result = erase_correction(store, "corr_0")
+
+        assert result["derived_schemas_deleted"] == 1
+        # 3 corrections from 2 creators still qualify -> rebuilt.
+        assert result["derived_schemas_rebuilt"] == 1
+        rebuilt = store.query("error_schemas", {"tenant_id": "default"})
+        assert len(rebuilt) == 1
+        # The erased correction's text must not survive generalization.
+        row_text = json.dumps(rebuilt[0])
+        assert "number 0" not in row_text
+        assert "step 0" not in row_text
+        assert "corr_0" not in row_text
+
+    def test_erasure_removes_schema_when_cluster_no_longer_qualifies(self, store):
+        """3-correction cluster drops to 2 (< MIN_CLUSTER_SIZE): the old
+        schema must be gone, not left active with the erased text."""
+        for i in range(3):
+            seed_correction(
+                store,
+                cid=f"corr_{i}",
+                reason=f"distinctive reason text number {i}",
+                corrected_claim=f"distinctive mitigation step {i}",
+                created_by=f"user_{i % 2}",
+            )
+        assert len(extract_error_schemas(store)) == 1
+        result = erase_correction(store, "corr_1")
+        assert result["derived_schemas_deleted"] == 1
+        assert result["derived_schemas_rebuilt"] == 0
+        assert store.query("error_schemas", {"tenant_id": "default"}) == []
+
+    def test_erasure_leaves_unrelated_schemas_alone(self, store):
+        self.seed_cluster(store, n=4)
+        # A second cluster for a different agent.
+        for i in range(3):
+            seed_correction(
+                store,
+                cid=f"other_{i}",
+                reason=f"other agent reason {i}",
+                corrected_claim=f"other agent step {i}",
+                created_by=f"user_{i % 2}",
+                agent_id="agent_b",
+            )
+        extract_error_schemas(store)
+        erase_correction(store, "other_0")
+        remaining = store.query("error_schemas", {"tenant_id": "default"})
+        agent_a = [s for s in remaining if s["agent_id"] == "agent_a"]
+        assert len(agent_a) == 1  # untouched
+
+    def test_derived_cleanup_failure_does_not_fail_erasure(self, store, monkeypatch):
+        self.seed_cluster(store, n=4)
+        original_query = store.query
+
+        def flaky_query(table, *a, **k):
+            if table == "error_schemas":
+                raise RuntimeError("schema table unavailable")
+            return original_query(table, *a, **k)
+
+        monkeypatch.setattr(store, "query", flaky_query)
+        result = erase_correction(store, "corr_0")
+        assert result["erased"] is True
+        assert result["derived_schemas_deleted"] == 0
+        # The source correction is gone regardless.
+        assert original_query("corrections", {"id": "corr_0"}) == []
