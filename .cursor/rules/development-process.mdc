@@ -5,11 +5,11 @@ alwaysApply: true
 
 # Development Process (Gated PRs)
 
-Every feature or fix follows the workflow in `docs/DEVELOPMENT_PROCESS.md`. The short version:
+Every feature or fix follows the workflow in `docs/DEVELOPMENT_PROCESS.md` — this rule is the PR-mechanics summary of that document, not a replacement. Its design gates still apply: non-trivial changes produce the required design artifacts (architecture map, data flow, wireframes or workflow states) before implementation, and tests are planned before production logic.
 
-1. **Plan sign-off before code.** Non-trivial changes get a written plan reviewed by the relevant domain experts (security architect, SRE, template-DX) via subagents. Implementation starts only after every reviewer returns APPROVED; CHANGES-REQUIRED verdicts are folded into the plan and re-reviewed.
+1. **Plan sign-off before code.** Non-trivial changes get a written plan (with the design artifacts above) reviewed by the relevant domain experts (security architect, SRE, template-DX) via subagents. Implementation starts only after every reviewer returns APPROVED; CHANGES-REQUIRED verdicts are folded into the plan and re-reviewed. Small test-only changes and tiny bug fixes may skip the full ceremony when the maintainer explicitly accepts the risk (same escape hatch as `docs/DEVELOPMENT_PROCESS.md`).
 2. **One focused PR per change, on a branch.** Never commit directly to `main`.
-3. **Validation before review.** `bash scripts/validate_generated.sh` must pass fully (all checks, zero warnings) before requesting any review. Test/check counts quoted in docs are measured from actual runs, never estimated.
+3. **Validation before review.** `bash scripts/validate_generated.sh` must pass fully before requesting any review. Note the script exits 0 even with warnings — read its output and treat warnings as review items, not noise. Test/check counts quoted in docs are measured from actual runs, never estimated.
 4. **Post-implementation review of the actual diff.** Bugbot plus the matching domain expert review the branch. Findings are fixed with regression tests (a test that fails on the pre-fix code), then re-reviewed. Nothing is pushed or merged without an explicit final APPROVED.
 5. **Strongest model only.** Implementation and review subagents run on the strongest available model. If a subagent silently falls back to a weaker model (e.g., on API limits), discard its output and redo it — or retro-audit anything already merged.
 
@@ -19,5 +19,5 @@ Every feature or fix follows the workflow in `docs/DEVELOPMENT_PROCESS.md`. The 
 - **Honest docs:** every capability claim cites code and tests; limitations go in GOVERNANCE Non-Claims. Never overclaim.
 - **Schema changes** go through the `MIGRATIONS` mechanism in `learning/tables.py` with the frozen v1 baseline (see the BASELINE FREEZE RULE in that file). Never add columns only to the live `TABLE_COLUMNS` baseline.
 - **Line-cap headers are honest:** respect each module's stated cap; if a file must grow, update the header in the same PR rather than ignoring it.
-- **No internal codenames:** never reference private inspiration/upstream project names in code, comments, docs, commits, or PR text.
+- **No internal codenames:** never reference private inspiration/upstream project names in code, comments, docs, commits, or PR text. The enforcement hook is `IP_PROTECTION_PATTERNS` in `scripts/quick_checks.py`; extend it in a local (uncommitted) config when adopting new private sources — adding the names themselves to the repo would defeat the purpose.
 - **Template files that contain jinja placeholders (`{{ ... }}`) must have a `.jinja` suffix** or copier ships them unrendered.
