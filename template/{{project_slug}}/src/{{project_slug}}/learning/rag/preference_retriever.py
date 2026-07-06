@@ -51,10 +51,19 @@ class PreferenceRetriever:
         self._embedder = embedding_service or EmbeddingService()
 
     def index_preference(self, pref: UserPreference) -> None:
-        """Index a single preference into the vector store."""
+        """Index a single preference into the vector store.
+
+        Embeddings are attached only when the provider is semantic: hash
+        fallback vectors are meaningless for similarity, so with the
+        fallback provider the store's keyword matching does the ranking
+        (see embedding_service.py, is_semantic)."""
         doc_text = f"{pref.preference_type}: {pref.key} = {pref.value}"
 
-        embedding_result = self._embedder.embed(doc_text)
+        embedding = (
+            self._embedder.embed(doc_text).embedding
+            if self._embedder.is_semantic
+            else None
+        )
 
         self._store.add(
             doc_id=pref.id,
@@ -67,7 +76,7 @@ class PreferenceRetriever:
                 "priority": pref.priority,
                 "active": pref.active,
             },
-            embedding=embedding_result.embedding,
+            embedding=embedding,
         )
 
     def index_from_db(self) -> int:
@@ -131,7 +140,14 @@ class PreferenceRetriever:
         Returns:
             SearchResults with scored matches.
         """
-        embedding_result = self._embedder.embed(query)
+        # Hash-fallback vectors would defeat the store's keyword matching
+        # (measured: irrelevant docs can outrank keyword hits), so only a
+        # semantic provider contributes a query embedding.
+        query_embedding = (
+            self._embedder.embed(query).embedding
+            if self._embedder.is_semantic
+            else None
+        )
 
         where = None
         if preference_type:
@@ -141,7 +157,7 @@ class PreferenceRetriever:
             query=query,
             limit=limit,
             where=where,
-            query_embedding=embedding_result.embedding,
+            query_embedding=query_embedding,
         )
 
         if min_priority > 0:

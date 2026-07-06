@@ -95,7 +95,14 @@ class TranscriptIndexer:
         approval = getattr(result, "approval_rate", 0.0)
         duration = getattr(result, "duration_seconds", 0.0)
 
-        embedding_result = self._embedder.embed(doc_text)
+        # Semantic providers only: hash-fallback vectors are meaningless
+        # for similarity, so with the fallback provider no embedding is
+        # stored and the store's keyword matching ranks results instead.
+        embedding = (
+            self._embedder.embed(doc_text).embedding
+            if self._embedder.is_semantic
+            else None
+        )
 
         metadata = {
             "task_id": task_id,
@@ -113,7 +120,7 @@ class TranscriptIndexer:
             doc_id=self._doc_id(task_id, owner_key),
             content=doc_text,
             metadata=metadata,
-            embedding=embedding_result.embedding,
+            embedding=embedding,
         )
         logger.debug(f"[TranscriptIndexer] Indexed transcript for task {task_id}")
 
@@ -132,14 +139,20 @@ class TranscriptIndexer:
             consensus_only: If True, only return results where consensus was reached.
             owner_key: Optional tenant/user key to restrict results.
         """
-        embedding_result = self._embedder.embed(query)
+        # Keyword matching when the provider is the hash fallback (see
+        # embedding_service.py, is_semantic).
+        query_embedding = (
+            self._embedder.embed(query).embedding
+            if self._embedder.is_semantic
+            else None
+        )
 
         where = {"owner_key": owner_key} if owner_key else None
         results = self._store.search(
             query=query,
             limit=limit,
             where=where,
-            query_embedding=embedding_result.embedding,
+            query_embedding=query_embedding,
         )
 
         if consensus_only:

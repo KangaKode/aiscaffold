@@ -12,6 +12,14 @@ Opt-in providers:
 (The legacy `ROUNDTABLE_EMBEDDING_PROVIDER` name is honored for one release
 with a DeprecationWarning.)
 
+HONEST LIMITATION: the hash fallback is deterministic but NOT semantic --
+two texts about the same topic get unrelated vectors, so cosine
+similarity over fallback vectors is meaningless noise (measured: it can
+rank an irrelevant document above a keyword-matching one). Retrieval
+callers must check `is_semantic` and skip embedding-based ranking when
+it is False (PreferenceRetriever and TranscriptIndexer do -- they fall
+back to keyword matching, which is honest about what it can do).
+
 Caching: embeddings are cached in-memory (LRU) to avoid recomputing.
 All providers produce normalized vectors suitable for cosine similarity.
 
@@ -214,6 +222,16 @@ class EmbeddingService:
     @property
     def provider(self) -> str:
         return self._provider
+
+    @property
+    def is_semantic(self) -> bool:
+        """True when vectors carry meaning (cosine similarity is valid).
+
+        The hash fallback is deterministic filler for pipelines that
+        require a vector -- similarity over it is noise, so retrieval
+        paths should prefer keyword matching when this is False.
+        """
+        return self._provider != "fallback"
 
     @property
     def dimensions(self) -> int:
