@@ -237,6 +237,13 @@ GEN_ROOT="$GENERATED_DIR"
 # {{3}}) are NOT flagged -- only known copier variable names and jinja
 # keywords count.
 section "Step 1.5: Unrendered Template Check"
+# Known limits of this checker:
+#   - Scans .py files only; other rendered file types are not checked.
+#   - A doubled-brace f-string whose literal text contains a copier variable
+#     name (e.g. f"{{ project_slug }}") would false-positive. Acceptable:
+#     rename that template to .jinja or rework the string.
+#   - New copier variables are covered automatically -- names are parsed
+#     from copier.yml at run time, not hardcoded here.
 UNRENDERED=$(python3 - "$REPO_ROOT/copier.yml" "$GENERATED_DIR" <<'PY'
 import re
 import sys
@@ -264,7 +271,12 @@ for path in sorted(generated_root.rglob("*.py")):
             print(f"{path.relative_to(generated_root)}:{line_no}: {line.strip()[:100]}")
 PY
 )
-if [ -z "$UNRENDERED" ]; then
+UNRENDERED_STATUS=$?
+if [ "$UNRENDERED_STATUS" -ne 0 ]; then
+    # A crashed checker is a checker error, not a clean scan -- never pass.
+    fail "Unrendered-template checker errored (exit $UNRENDERED_STATUS) -- fix the checker before trusting this step"
+    [ -n "$UNRENDERED" ] && echo "$UNRENDERED" | sed 's/^/    /'
+elif [ -z "$UNRENDERED" ]; then
     pass "No unrendered jinja placeholders in generated .py files"
 else
     fail "Unrendered jinja placeholders found (missing .jinja suffix on template?):"

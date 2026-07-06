@@ -484,12 +484,13 @@ make clean         # Remove caches
 
 ## Validation Pipeline
 
-The scaffold itself is validated by a 17-check pipeline:
+The scaffold itself is validated by an 18-check pipeline:
 
 ```
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
-                         ruff lint, bandit security, import validation, red team,
+                         unrendered-template guard, ruff lint, bandit security,
+                         import validation, red team,
                          AI checks, agent review, pytest (700 tests collected,
                          696 passing, 85% coverage), injection-defense golden set,
                          file structure verification
