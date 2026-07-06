@@ -1,0 +1,47 @@
+{
+  "benign": {
+    "false_negative": 0,
+    "false_positive": 5,
+    "total": 29
+  },
+  "direct": {
+    "false_negative": 0,
+    "false_positive": 0,
+    "total": 3
+  },
+  "encoded": {
+    "false_negative": 0,
+    "false_positive": 0,
+    "total": 2
+  },
+  "exfiltration": {
+    "false_negative": 0,
+    "false_positive": 0,
+    "total": 3
+  },
+  "fence_break": {
+    "false_negative": 0,
+    "false_positive": 0,
+    "total": 5
+  },
+  "poisoning": {
+    "false_negative": 0,
+    "false_positive": 0,
+    "total": 2
+  },
+  "rot13": {
+    "false_negative": 0,
+    "false_positive": 0,
+    "total": 2
+  },
+  "token_split": {
+    "false_negative": 0,
+    "false_positive": 0,
+    "total": 2
+  },
+  "unicode": {
+    "false_negative": 0,
+    "false_positive": 0,
+    "total": 2
+  }
+}

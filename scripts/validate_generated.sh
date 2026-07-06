@@ -347,9 +347,29 @@ else
 fi
 
 # =========================================================================
-# Step 9: File Structure Check
+# Step 9: Injection-Defense Golden Set (deterministic, no LLM)
 # =========================================================================
-section "Step 8: File Structure"
+section "Step 9: Injection-Defense Golden Set"
+GOLDEN_SET="$GEN_ROOT/evals/tasks/test_injection_defense_golden.py"
+if [ -f "$GOLDEN_SET" ]; then
+    cd "$GEN_ROOT"
+    GOLDEN_OUT=$(python3 evals/tasks/test_injection_defense_golden.py 2>/dev/null)
+    GOLDEN_EXIT=$?
+    echo "$GOLDEN_OUT" | sed 's/^/    /'
+    if [ "$GOLDEN_EXIT" -eq 0 ]; then
+        pass "Golden set: no regressions vs baseline"
+    else
+        fail "Golden set: regression or schema error (exit $GOLDEN_EXIT)"
+    fi
+    cd "$REPO_ROOT"
+else
+    warn "Golden set not present (include_evals=false?) -- skipped"
+fi
+
+# =========================================================================
+# Step 10: File Structure Check
+# =========================================================================
+section "Step 10: File Structure"
 EXPECTED_DIRS="agents api harness llm orchestration security"
 MISSING_DIRS=0
 for dir in $EXPECTED_DIRS; do

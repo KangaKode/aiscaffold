@@ -336,6 +336,7 @@ erDiagram
 
 - SSRF protection on agent registration (blocks private IPs, non-http schemes, cloud metadata endpoints)
 - 3-layer prompt injection defense: static pattern detection (`prompt_guard`), homoglyph normalization / invisible-character stripping / encoding-attack detection (`injection_defense`), and semantic screening by the Sentinel agent
+- Injection-defense golden set (when `include_evals`): `evals/tasks/test_injection_defense_golden.py` grades a ~50-case labeled dataset through Layers 1 and 2 (imported, not reimplemented) against a frozen per-category FP/FN baseline and fails on regression -- a deterministic regression smoke set, explicitly not a security benchmark and not Layer-3 (Sentinel) coverage. Malicious cases reference the shared adversarial corpus; benign look-alikes measure false positives
 - Input size limits on user-facing content endpoints (chat, tasks, sessions, feedback)
 - Rate limiting per client IP with stale-IP eviction and 10K IP hard cap
 - HMAC-SHA256 webhook signature verification for async agents
@@ -393,6 +394,7 @@ flowchart LR
 - Agent visibility controls: `public` (all tenants), `team` / `private` (same tenant; per-user private filtering is a documented extension in the platform guide)
 - Session isolation: session keys are scoped by tenant + user + session id
 - Legacy learning tables carry `project_id` (maps to tenant isolation); the extended learning tables are keyed by `tenant_id` directly
+- Postgres deployments can add row-level security on the tenant-keyed learning tables for defense-in-depth: [PLATFORM_GUIDE.md](PLATFORM_GUIDE.md) ships copy-paste RLS policies, an honest note that the shipped autocommit store makes `SET LOCAL` a no-op on the app path (so the store needs per-request transaction scoping to enforce it), and a policy-coverage CI recipe
 - Single-tenant deployments use defaults transparently
 
 ### Deployment Infrastructure
@@ -482,14 +484,15 @@ make clean         # Remove caches
 
 ## Validation Pipeline
 
-The scaffold itself is validated by a 16-check pipeline:
+The scaffold itself is validated by a 17-check pipeline:
 
 ```
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
                          ruff lint, bandit security, import validation, red team,
                          AI checks, agent review, pytest (700 tests collected,
-                         696 passing, 85% coverage), file structure verification
+                         696 passing, 85% coverage), injection-defense golden set,
+                         file structure verification
 make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
 ```
 

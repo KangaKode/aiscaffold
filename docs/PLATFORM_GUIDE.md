@@ -444,7 +444,7 @@ The extended learning tables (corrections, activity events, agent dispatch stats
 
 Because every caller goes through the protocol, enterprise deployments extend without touching callers:
 
-- **Row-level security**: every table carries `tenant_id`, so Postgres RLS policies keyed on it give hard tenant isolation.
+- **Row-level security**: every table carries `tenant_id`, so Postgres RLS policies keyed on it give hard tenant isolation. See the [Postgres RLS appendix](#appendix-postgres-row-level-security-rls-for-the-learning-tables) for copy-paste policies, the honest limits on the shipped autocommit store, and a policy-coverage CI check.
 - **pgvector**: co-locate the vector store with the learning tables in the same Postgres instance.
 - **Alembic migrations**: the built-in forward-only `MIGRATIONS` list is fine for a handful of schema changes; swap in Alembic when schema churn justifies it.
 - **Bring your own store**: implement the five methods against anything (MySQL, DynamoDB, an internal storage service).
@@ -529,3 +529,212 @@ Define retention policies for each data store and document them for your legal/c
 | Per-tenant data scoping | **Partially built** | Request caches/search are scoped; map learning DB `project_id` to `auth.tenant_id` |
 | Per-tenant LLM clients | **You add** | Optional, for credential isolation |
 | Agent marketplace UI | **You add** | `list_for_tenant()` provides the data |
+
+---
+
+## Appendix: Postgres Row-Level Security (RLS) for the Learning Tables
+
+This appendix is optional and only relevant when you run the learning store on
+Postgres (`learning_backend=postgres` at generation time, or `LEARNING_BACKEND=postgres`
+plus `LEARNING_POSTGRES_DSN` at runtime; both need the `[postgres]` extra:
+`pip install '.[postgres]'`). It gives you copy-paste RLS policies for every
+learning table that carries `tenant_id`, plus an honest account of what those
+policies do and do not enforce for the shipped store.
+
+### Read this first: RLS is a no-op on the shipped store's app path
+
+The shipped `PostgresLearningStore` (`learning/store.py`) opens **one shared
+`psycopg` connection with `autocommit=True`** and reuses it for every insert,
+query, update, and delete. RLS policies below key on a per-session GUC
+(`app.tenant_id`) that you would set with `SET LOCAL` inside a transaction --
+but `SET LOCAL` only lasts for the current transaction, and under autocommit
+there is no surrounding transaction to scope it to. **On the shipped store,
+`SET LOCAL app.tenant_id = ...` is therefore a no-op**, and the policies below
+would either block every row (GUC never set) or, if you set it with a plain
+`SET` on the shared connection, leak the value across concurrent tenants. Do
+not rely on RLS for app-path tenant isolation until you make the store changes
+in the last subsection.
+
+So why ship the policies at all? Because RLS is real **defense-in-depth for the
+paths that do not go through the app connection**:
+
+- **Direct SQL access** (a `psql` session, a migration tool, an admin script)
+  that connects as a non-superuser role gets tenant-scoped automatically.
+- **BI / analytics tools** (Metabase, Superset, a read replica for dashboards)
+  that connect with a per-tenant role cannot read across tenants even if a
+  query forgets a `WHERE tenant_id = ...`.
+- **Bring-your-own backend**: if you replace the store with one that uses a
+  connection or transaction per request (the recommended shape), the same
+  policies become live enforcement for the app path too.
+
+RLS is the backstop that survives an application bug that forgets a tenant
+filter. The application-level scoping (`tenant_id` on every row, equality
+filters in the store) is the primary control; RLS is the seatbelt.
+
+### The tables that carry `tenant_id`
+
+All eight extended learning tables (single source of truth: `learning/tables.py`)
+carry a `tenant_id` column and are candidates for RLS:
+
+| Table | Purpose |
+|-------|---------|
+| `corrections` | Reviewed knowledge that grounds resolution tiers |
+| `activity_events` | Per-request activity log (extraction/timing signals) |
+| `agent_dispatch_stats` | Per-agent dispatch metrics |
+| `integrity_flags` | Behavioral/integrity findings for human review |
+| `audit_events` | Metadata-only deliberation audit trail |
+| `budget_spend` | Per-tenant LLM cost ledger |
+| `reflections` | Deterministic post-deliberation lessons |
+| `error_schemas` | Generalized corrections (compacted knowledge) |
+
+(The `schema_version` bookkeeping table has no `tenant_id` and is intentionally
+excluded. There is no `checkins` table in the learning store -- check-ins live in
+`learning/checkin_manager.py`, not in `tables.py`.)
+
+### Copy-paste policies
+
+Run this once, connected as the table owner, after the store has created the
+schema. Each table gets RLS enabled *and forced* (so even the table owner is
+subject to policy, unless they `BYPASSRLS`), plus one policy scoping every row
+to the session's `app.tenant_id`. `current_setting('app.tenant_id', true)`
+returns `NULL` when the GUC is unset (the `true` = `missing_ok`), so an
+unscoped connection sees no rows rather than erroring.
+
+```sql
+-- Run as the table owner. Assumes the app connects as a NON-superuser,
+-- NON-BYPASSRLS role (create one: CREATE ROLE app_rw LOGIN PASSWORD '...';).
+DO $$
+DECLARE
+    t text;
+    tenant_tables text[] := ARRAY[
+        'corrections', 'activity_events', 'agent_dispatch_stats',
+        'integrity_flags', 'audit_events', 'budget_spend',
+        'reflections', 'error_schemas'
+    ];
+BEGIN
+    FOREACH t IN ARRAY tenant_tables LOOP
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+        EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+        EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+        EXECUTE format(
+            'CREATE POLICY tenant_isolation ON %I '
+            'USING (tenant_id = current_setting(''app.tenant_id'', true)) '
+            'WITH CHECK (tenant_id = current_setting(''app.tenant_id'', true))',
+            t
+        );
+    END LOOP;
+END $$;
+```
+
+The `USING` clause filters reads (and the rows an `UPDATE`/`DELETE` can touch);
+the `WITH CHECK` clause rejects `INSERT`/`UPDATE` rows whose `tenant_id` does not
+match the session GUC, so a compromised app path cannot write cross-tenant rows
+either. Grant the app role the usual `SELECT, INSERT, UPDATE, DELETE` on these
+tables; RLS narrows what those grants can reach.
+
+If you prefer explicit per-table statements over the loop, the pattern for one
+table is:
+
+```sql
+ALTER TABLE corrections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE corrections FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON corrections
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+```
+
+### What you must change in the store for app-path enforcement
+
+To make these policies enforce on the application path, the store must set
+`app.tenant_id` in the **same transaction** as each operation, which means
+abandoning the single shared autocommit connection in favor of per-operation
+transaction scoping. This is a *you-add* extension, not shipped behavior. The
+smallest honest change is a store wrapper that, for every call, opens a
+transaction, sets the GUC, runs the operation, and commits. Note that
+`SET LOCAL` cannot take bind parameters in psycopg3; the parameterizable
+equivalent is `SELECT set_config('app.tenant_id', %s, true)` -- the trailing
+`true` makes it transaction-local, exactly like `SET LOCAL`:
+
+```python
+# YOU ADD -- an extension, not shipped. Requires a per-operation (or
+# per-request) transaction so the transaction-local GUC is scoped
+# correctly. Pass the tenant explicitly rather than reading it from
+# a global.
+import psycopg
+from psycopg.rows import dict_row
+
+
+class RlsScopedPostgresStore:
+    """Sketch: sets app.tenant_id inside each transaction so RLS enforces.
+
+    Trade-off vs the shipped store: a transaction (and, ideally, a pooled
+    connection) per operation instead of one shared autocommit connection.
+    Use a real pool (psycopg_pool) in production.
+    """
+
+    def __init__(self, dsn: str):
+        self._dsn = dsn
+
+    def query(self, tenant_id: str, table: str, filters: dict) -> list[dict]:
+        # Build SQL via the SAME allowlist-validated helpers the shipped
+        # store uses (_select_sql); never interpolate identifiers by hand.
+        from myproject.learning.store import _select_sql  # your project slug
+
+        sql, values = _select_sql(table, filters, "", 0, "%s")
+        with psycopg.connect(self._dsn, row_factory=dict_row) as conn:
+            with conn.transaction():  # set_config(..., true) is scoped to this
+                conn.execute(
+                    "SELECT set_config('app.tenant_id', %s, true)", (tenant_id,)
+                )
+                return [dict(r) for r in conn.execute(sql, values).fetchall()]
+```
+
+Wire `auth.tenant_id` (from the verified JWT -- never from the request body)
+through to the `tenant_id` argument on every call. The same pattern applies to
+`insert`/`update`/`count`/`delete`. Once every app operation runs inside a
+GUC-scoped transaction, the RLS policies above become live enforcement instead
+of a dormant backstop.
+
+### Optional: a pre-commit / CI check that policies exist
+
+If your team adopts RLS, this short script fails when any table with a
+`tenant_id` column is missing an RLS policy -- a cheap guard against adding a
+new tenant table and forgetting to protect it. It is a **recipe, not a shipped
+file**: drop it into your own `scripts/` and wire it into pre-commit or CI.
+
+```python
+#!/usr/bin/env python3
+"""Fail if any tenant_id table lacks an RLS policy. Recipe -- you add this."""
+import os
+import sys
+
+import psycopg  # from the [postgres] extra
+
+dsn = os.environ["LEARNING_POSTGRES_DSN"]
+with psycopg.connect(dsn) as conn:
+    # Tables in the public schema that carry a tenant_id column.
+    tenant_tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT table_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND column_name = 'tenant_id'"
+        ).fetchall()
+    }
+    # Tables that have at least one RLS policy.
+    protected = {
+        r[0]
+        for r in conn.execute(
+            "SELECT tablename FROM pg_policies WHERE schemaname = 'public'"
+        ).fetchall()
+    }
+
+unprotected = sorted(tenant_tables - protected)
+if unprotected:
+    print("RLS MISSING on tenant tables: " + ", ".join(unprotected))
+    sys.exit(1)
+print(f"RLS present on all {len(tenant_tables)} tenant tables.")
+```
+
+This checks that a policy *exists*; it does not verify the policy is correct.
+Pair it with an integration test that connects as a per-tenant role and asserts
+cross-tenant reads return nothing.

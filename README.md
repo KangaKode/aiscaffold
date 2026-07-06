@@ -127,7 +127,7 @@ The complete feature reference, API listing, architecture diagrams, and configur
 
 ## Design Principles
 
-- **Validation gates:** every generated project ships with quick checks, red-team scans, architecture tests, CI, and a 16-check validation pipeline before merge.
+- **Validation gates:** every generated project ships with quick checks, red-team scans, architecture tests, CI, and a 17-check validation pipeline before merge.
 - **Evidence discipline:** claim strength is explicit and enforced, not assumed.
 - **Adversarial safety by default:** six safety agents challenge every round table; injection defense and approval gates are first-class, not add-ons.
 - **Fail closed:** when a control cannot run (no LLM, invalid metadata, failed identity check), the system flags or blocks -- it never silently passes.
