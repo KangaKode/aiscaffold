@@ -137,8 +137,8 @@ The learning module persists its extended tables (corrections, activity events, 
 - `learning/store.py` -- `LearningStore` protocol, SQLite/Postgres backends, allowlist-validated SQL, forward-only migrations
 - `learning/corrections.py` -- Correction lifecycle (proposed -> approved -> retired) with four-eyes approval and budgeted prompt rendering
 - `learning/override_detector.py` -- Screens proposed corrections for injection, safety-agent targeting, and evidence-level inflation
-- `learning/collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection
-- `learning/activity.py` -- User activity thresholds and per-agent behavioral baselines
+- `learning/collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection (tested detector library; the default runtime does not invoke it -- see the generated GOVERNANCE.md Non-Claims)
+- `learning/activity.py` -- User activity thresholds (wired into the sampled activity middleware) and per-agent behavioral baselines (a library the default dispatch does not invoke)
 - `learning/content_policy.py` -- Heuristic classifier for knowledge writes (approved/flagged/rejected); blocks standing-rule manipulation and persists integrity flags
 
 Findings are persisted as integrity flags and reviewed by humans through the anomalies API -- nothing is auto-rejected or auto-suspended.

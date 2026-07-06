@@ -335,7 +335,7 @@ erDiagram
 ### Security (Baked In Everywhere)
 
 - SSRF protection on agent registration (blocks private IPs, non-http schemes, cloud metadata endpoints)
-- 3-layer prompt injection defense: static pattern detection (`prompt_guard`), homoglyph normalization / invisible-character stripping / encoding-attack detection (`injection_defense`), and semantic screening by the Sentinel agent
+- 3-layer prompt injection defense: static pattern detection (`prompt_guard`), homoglyph normalization / invisible-character stripping / encoding-attack detection (`injection_defense`), and semantic screening by the Sentinel agent -- applied per surface, with coverage that varies by surface (the honest per-surface breakdown lives in [SECURITY_MODEL.md](SECURITY_MODEL.md) and the generated GOVERNANCE.md Non-Claims)
 - Injection-defense golden set (when `include_evals`): `evals/tasks/test_injection_defense_golden.py` grades a ~50-case labeled dataset through Layers 1 and 2 (imported, not reimplemented) against a frozen per-category FP/FN baseline and fails on regression -- a deterministic regression smoke set, explicitly not a security benchmark and not Layer-3 (Sentinel) coverage. Malicious cases reference the shared adversarial corpus; benign look-alikes measure false positives
 - Input size limits on user-facing content endpoints (chat, tasks, sessions, feedback)
 - Rate limiting per client IP with stale-IP eviction and 10K IP hard cap
@@ -525,7 +525,7 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 704 tests across 28 files: 700 pass, 3 skip without the
+  tests/              # 700 tests across 28 files: 696 pass, 3 skip without the
                       # [metrics] extra, 1 opt-in Postgres skip (+ tests/load/ Locust harness)
   evals/              # Eval infrastructure
 ```

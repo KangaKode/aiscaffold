@@ -1,19 +1,20 @@
 # Eval Scaling Guide
 
-**Purpose:** How to scale from 20 generic evals to 50+ domain-specific evals
+**Purpose:** How to scale from the 26 included generic evals to 50+ domain-specific evals
 
 ---
 
-## Starting Point: 20 Generic Evals (included)
+## Starting Point: 26 Generic Evals (included)
 
-Your project ships with 20 eval tasks in `evals/tasks/`:
+Your project ships with 26 eval tasks in `evals/tasks/`:
 
 | Category | Count | Tests |
 |----------|-------|-------|
-| Security | 5 | Prompt injection, hallucination, boundaries, degradation, empty input |
-| Quality | 5 | Output format, instructions, evidence, confidence, context |
-| Reliability | 5 | Consistency, refusal, timeout, large input, concurrency |
-| System | 5 | Cost, efficiency, multi-turn, errors, round table |
+| Security | 9 | Injection pattern detection, clean-content false positives, speculation/opinion/numeric-confidence rejection, evidence-based acceptance, SSRF (private IPs, dangerous schemes), input length limits |
+| Quality | 5 | Evidence tag rules (VERIFIED, CORROBORATED), valid-tag acceptance, analysis required fields, actionable synthesis |
+| Reliability | 3 | Single-agent failure survival, all-agents-failing result, deterministic output stability |
+| System | 6 | Mock LLM fixture, token usage accumulation, prompt cache separation, core-agent protocol + name uniqueness, human-review submission |
+| Injection-defense golden set | 3 | Dataset schema validity, corpus import resolution, no regression vs the frozen Layer 1-2 baseline |
 
 These test your **infrastructure** -- they work regardless of your project's domain.
 

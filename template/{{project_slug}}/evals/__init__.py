@@ -1,5 +1,5 @@
 """
-Evaluation infrastructure -- 20 generic eval tasks + graders.
+Evaluation infrastructure -- 26 generic eval tasks + graders.
 
 Run evals: pytest evals/ -v
 Run regression only: pytest evals/regression/ -v

@@ -456,10 +456,10 @@ The learning layer reshapes agent behavior, so it gets its own integrity control
 - **Corrections lifecycle**: corrections only influence prompts after human approval, with a four-eyes rule (approver must differ from proposer; `require_four_eyes=False` for single-operator setups) and a check-in opened per proposal.
 - **Context budget**: approved corrections render into prompts under a character budget (`CORRECTION_CONTEXT_BUDGET`, default 4000) with sanitized fields.
 - **Override screening**: each proposed correction is screened for prompt injection, safety-agent targeting ("ignore the skeptic"), and evidence-level inflation before it reaches a reviewer.
-- **Collusion detection**: pairwise vote-lockstep and reciprocal never-challenge analysis flags agent pairs that stop checking each other.
-- **Correction drift**: a rising share of "softening" language in recent approved corrections flags a possible slow-poisoning campaign.
+- **Collusion detection** (shipped, you wire): pairwise vote-lockstep and reciprocal never-challenge analysis flags agent pairs that stop checking each other. The detector is implemented and tested, but the default runtime does not record votes into it -- call `CollusionDetector.record_votes` from your post-deliberation hook to activate it.
+- **Correction drift** (shipped, you wire): a rising share of "softening" language in recent approved corrections flags a possible slow-poisoning campaign. `analyze_correction_drift` is a tested library function the default runtime does not schedule -- run it from a periodic job or post-approval hook.
 - **User activity anomalies**: per-user request bursts, repeated auth failures, and agent-registration sprees trip configurable thresholds (`ACTIVITY_TRACKING_ENABLED` to opt out).
-- **Agent behavioral baselines**: each agent's refusal rate, confidence, latency, and scope discipline are compared against its own history -- an agent with valid credentials that stops behaving like itself still gets flagged.
+- **Agent behavioral baselines** (shipped, you wire): each agent's refusal rate, confidence, latency, and scope discipline are compared against its own history -- an agent with valid credentials that stops behaving like itself still gets flagged. Dispatch accepts an optional `baseline_tracker`; the default runtime does not pass one, so deviation checks run only once you wire a tracker in.
 
 ---
 
@@ -521,7 +521,8 @@ Define retention policies for each data store and document them for your legal/c
 | Tenant-aware round-table dispatch | **Built** | `submit_task` selects only tenant-visible agents; cross-tenant `agent_ids` read as not found |
 | Agent integrity (identity tokens, rate limits, scopes, suspension, quorum) | **Built** | Set `AGENT_IDENTITY_SIGNING_KEY` in production; rotate/revoke/suspend via API |
 | Learning persistence (SQLite default, Postgres opt-in) | **Built** | `LearningStore` protocol -- bring your own backend via 5 methods |
-| Learning integrity (corrections four-eyes, override screening, collusion/drift, activity baselines) | **Built** | Findings surface at `GET /api/v1/activity/anomalies`; humans resolve |
+| Learning integrity (corrections four-eyes, override screening, activity thresholds) | **Built** | Findings surface at `GET /api/v1/activity/anomalies`; humans resolve |
+| Collusion / correction-drift / behavioral-baseline / sequence detectors | **Shipped, you wire** | Tested libraries the default runtime does not invoke; wire into post-deliberation, periodic, or activity hooks (see Learning integrity above) |
 | Agentic governance (graduated autonomy, per-tenant budgets, audit trail, content policy, PII redaction) | **Built** | Tune levels via `AUTONOMY_POLICIES`; budgets/audit at `/api/v1/budgets` and `/api/v1/audit/deliberations` |
 | SIEM export, tamper-proof audit storage | **You add** | Poll `audit_events` by `created_at`; ship to append-only storage |
 | JWT/OIDC auth | **You add** | Replace `verify_api_key` (~20 lines) |
