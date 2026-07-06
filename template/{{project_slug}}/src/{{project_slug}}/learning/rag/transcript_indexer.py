@@ -10,7 +10,8 @@ Usage:
     indexer.index_result(round_table_result, task_content="Analyze API design")
     results = indexer.search("authentication best practices", limit=5)
 
-Keep this file under 200 lines.
+Keep this file under 250 lines. (Raised from 200: the Chroma-aware
+embedding gate (_use_embeddings) pushed it just past the budget.)
 """
 
 import hashlib
@@ -40,6 +41,13 @@ class TranscriptIndexer:
     ):
         self._store = vector_store or VectorStore(project_id="round_table_transcripts")
         self._embedder = embedding_service or EmbeddingService()
+
+    @property
+    def _use_embeddings(self) -> bool:
+        """Attach embeddings unless they are non-semantic hash filler AND
+        the store can rank by keywords instead (Chroma cannot -- see
+        PreferenceRetriever._use_embeddings for the full rationale)."""
+        return self._embedder.is_semantic or not self._store.supports_keyword_search
 
     def index_result(
         self,
@@ -95,12 +103,12 @@ class TranscriptIndexer:
         approval = getattr(result, "approval_rate", 0.0)
         duration = getattr(result, "duration_seconds", 0.0)
 
-        # Semantic providers only: hash-fallback vectors are meaningless
-        # for similarity, so with the fallback provider no embedding is
-        # stored and the store's keyword matching ranks results instead.
+        # With the in-memory store, meaningless hash-fallback vectors are
+        # skipped so keyword matching ranks results; Chroma always gets an
+        # embedding (see _use_embeddings).
         embedding = (
             self._embedder.embed(doc_text).embedding
-            if self._embedder.is_semantic
+            if self._use_embeddings
             else None
         )
 
@@ -139,11 +147,12 @@ class TranscriptIndexer:
             consensus_only: If True, only return results where consensus was reached.
             owner_key: Optional tenant/user key to restrict results.
         """
-        # Keyword matching when the provider is the hash fallback (see
-        # embedding_service.py, is_semantic).
+        # Keyword matching when the provider is the hash fallback and the
+        # store supports it; Chroma queries always carry an embedding
+        # (see _use_embeddings).
         query_embedding = (
             self._embedder.embed(query).embedding
-            if self._embedder.is_semantic
+            if self._use_embeddings
             else None
         )
 

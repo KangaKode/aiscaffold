@@ -16,9 +16,13 @@ HONEST LIMITATION: the hash fallback is deterministic but NOT semantic --
 two texts about the same topic get unrelated vectors, so cosine
 similarity over fallback vectors is meaningless noise (measured: it can
 rank an irrelevant document above a keyword-matching one). Retrieval
-callers must check `is_semantic` and skip embedding-based ranking when
-it is False (PreferenceRetriever and TranscriptIndexer do -- they fall
-back to keyword matching, which is honest about what it can do).
+callers check `is_semantic` and skip embedding-based ranking when it is
+False AND the vector store can rank by keywords instead: with the
+default in-memory VectorStore, PreferenceRetriever and TranscriptIndexer
+fall back to keyword matching. The Chroma backend has no keyword path,
+so there the hash vectors are still stored and queried (dimension-
+consistent with existing indexes, ranking stays hash noise) -- Chroma
+deployments should set a real provider.
 
 Caching: embeddings are cached in-memory (LRU) to avoid recomputing.
 All providers produce normalized vectors suitable for cosine similarity.
@@ -229,7 +233,8 @@ class EmbeddingService:
 
         The hash fallback is deterministic filler for pipelines that
         require a vector -- similarity over it is noise, so retrieval
-        paths should prefer keyword matching when this is False.
+        paths prefer keyword matching when this is False and the store
+        supports it (VectorStore.supports_keyword_search).
         """
         return self._provider != "fallback"
 

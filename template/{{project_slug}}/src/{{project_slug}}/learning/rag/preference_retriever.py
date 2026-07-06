@@ -50,18 +50,28 @@ class PreferenceRetriever:
         self._store = vector_store or VectorStore(project_id=f"prefs_{project_id}")
         self._embedder = embedding_service or EmbeddingService()
 
+    @property
+    def _use_embeddings(self) -> bool:
+        """Attach embeddings unless they are non-semantic hash filler AND
+        the store can rank by keywords instead. The Chroma backend
+        always gets embeddings: it has no keyword path, and omitting
+        them would make Chroma compute default-model vectors that
+        mismatch the dimensions of previously stored hash vectors."""
+        return self._embedder.is_semantic or not self._store.supports_keyword_search
+
     def index_preference(self, pref: UserPreference) -> None:
         """Index a single preference into the vector store.
 
-        Embeddings are attached only when the provider is semantic: hash
-        fallback vectors are meaningless for similarity, so with the
-        fallback provider the store's keyword matching does the ranking
-        (see embedding_service.py, is_semantic)."""
+        With a non-semantic (hash fallback) provider AND the in-memory
+        store, no embedding is attached so keyword matching does the
+        ranking. Chroma has no keyword path and needs dimension-
+        consistent vectors, so there the hash embedding is still stored
+        (see _use_embeddings)."""
         doc_text = f"{pref.preference_type}: {pref.key} = {pref.value}"
 
         embedding = (
             self._embedder.embed(doc_text).embedding
-            if self._embedder.is_semantic
+            if self._use_embeddings
             else None
         )
 
@@ -140,12 +150,13 @@ class PreferenceRetriever:
         Returns:
             SearchResults with scored matches.
         """
-        # Hash-fallback vectors would defeat the store's keyword matching
-        # (measured: irrelevant docs can outrank keyword hits), so only a
-        # semantic provider contributes a query embedding.
+        # Hash-fallback vectors would defeat the in-memory store's keyword
+        # matching (measured: irrelevant docs can outrank keyword hits), so
+        # a query embedding is attached only when it is semantic -- or when
+        # the backend is Chroma, which cannot rank without one.
         query_embedding = (
             self._embedder.embed(query).embedding
-            if self._embedder.is_semantic
+            if self._use_embeddings
             else None
         )
 

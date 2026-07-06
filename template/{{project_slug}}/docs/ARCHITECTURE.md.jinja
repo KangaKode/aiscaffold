@@ -227,7 +227,7 @@ Prompt injection is defended in 3 layers: static pattern matching in `prompt_gua
 - `reflector.py` -- Deterministic process-level lessons after each round table (agent effectiveness, evidence patterns, challenge impact, dissent value); capped, structured-fields-only, read via `GET /api/v1/reflections`
 - `error_schemata.py` -- Generalizes clusters of approved corrections (>= 3, >= 2 distinct proposers) into reusable error schemas injected into single-shot context
 - `contradiction.py` -- Pure-Python TF-IDF + negation heuristic flagging approved corrections that likely disagree; findings go to integrity flags
-- `rag/` -- Vector store adapter, embeddings, semantic preference search. Search is truly semantic only with a real embedding provider (`EMBEDDING_PROVIDER=local|openai|auto`); the default hash fallback is deterministic filler whose vectors carry no meaning, so retrieval then uses keyword matching instead of pretending cosine similarity works
+- `rag/` -- Vector store adapter, embeddings, semantic preference search. Search is truly semantic only with a real embedding provider (`EMBEDDING_PROVIDER=local|openai|auto`); the default hash fallback is deterministic filler whose vectors carry no meaning, so with the in-memory store retrieval then uses keyword matching instead of pretending cosine similarity works (Chroma has no keyword path -- hash vectors are stored as-is there, and ranking stays noise until a real provider is set)
 - `rag/transcript_indexer.py` -- Indexes round table results for search over past deliberations (semantic with a real provider, keyword with the default fallback)
 {% endif -%}
 

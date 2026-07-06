@@ -147,6 +147,19 @@ class VectorStore:
                 "For production with Postgres, add a pgvector-backed adapter."
             )
 
+    @property
+    def supports_keyword_search(self) -> bool:
+        """True when search() can rank by keyword overlap (in-memory store).
+
+        Chroma has no keyword path -- every stored document and every
+        query needs an embedding (omitting one makes Chroma compute its
+        own default-model embedding, which breaks dimension consistency
+        with previously stored vectors). Retrievers use this to decide
+        whether skipping non-semantic hash embeddings is safe: only the
+        in-memory store can fall back to keyword ranking.
+        """
+        return self._collection is None
+
     def add(
         self,
         doc_id: str,
