@@ -110,6 +110,6 @@ The scaffold validates its own security posture on every change:
 
 - **Adversarial harness**: six deterministic hostile agents (no LLM, zero cost) attack a full round table with injection payloads in every field; CI asserts containment end-to-end.
 - **Red-team scans, Bandit, and AI security checks** run in the 16-check validation pipeline against every generated configuration.
-- **636 generated tests** (85% coverage) include dedicated suites for injection defense, agent identity, tamper evidence, governance, the corrections lifecycle, and extraction defense (timing regularity, knowledge-read volume, approval-pair escalation).
+- **643 generated tests** (85% coverage) include dedicated suites for injection defense, agent identity, tamper evidence, governance, the corrections lifecycle, and extraction defense (timing regularity, knowledge-read volume, approval-pair escalation).
 
 The process has caught real issues before release -- for example, a tenant-isolation bug where remote agents reverted to public visibility on restart ([fix](https://github.com/KangaKode/roundtable/commit/9168334ac050e22022ab2787b7b3ff3ce06796cc)).

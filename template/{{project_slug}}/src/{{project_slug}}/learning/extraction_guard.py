@@ -5,7 +5,13 @@ Approved corrections and error schemas are the platform's accumulated
 institutional knowledge; an insider who can read them can also bulk-copy
 them. This module counts recent reads of knowledge endpoints (GET
 /corrections and friends) in activity_events over a rolling window and
-maps the counts to a mode:
+maps the counts to a mode. Counting queries the store once per exact
+knowledge route (equality filters on route+method), so noise traffic to
+other endpoints cannot push knowledge reads out of the fetched rows.
+Residual limitation: only the exact listing routes are counted --
+per-resource GETs (e.g. /corrections/{id}) have distinct paths and are
+NOT counted; the sequence detector (harness/sequence_detector.py) is
+the complementary control for item-by-item extraction patterns.
 
   normal   -- both counts within thresholds; nothing happens.
   elevated -- per-user count exceeds EXTRACTION_USER_THRESHOLD or the
@@ -54,9 +60,10 @@ MODE_NORMAL = "normal"
 MODE_ELEVATED = "elevated"
 MODE_CAPPED = "capped"
 
-# Knowledge-read endpoints counted by the guard (GET only). Extension
-# point: add routes that serve accumulated knowledge in your deployment.
-KNOWLEDGE_READ_PREFIXES = (
+# Knowledge-read endpoints counted by the guard (GET only, EXACT paths
+# as recorded by the activity middleware). Extension point: add routes
+# that serve accumulated knowledge in your deployment.
+KNOWLEDGE_READ_ROUTES = (
     "/api/v1/corrections",
     "/api/v1/reflections",
 )
@@ -64,8 +71,9 @@ KNOWLEDGE_READ_PREFIXES = (
 # Capped kicks in at this multiple of a threshold.
 CAP_MULTIPLIER = 2
 
-# Max rows fetched when computing the rolling window (equality-filter
-# store; window filtered in Python -- same tradeoff as learning/activity.py).
+# Max rows fetched PER KNOWLEDGE ROUTE when computing the rolling window
+# (equality-filter store; the time window is filtered in Python -- same
+# tradeoff as learning/activity.py).
 WINDOW_FETCH_CAP = 2000
 
 DEFAULT_USER_THRESHOLD = 60
@@ -129,17 +137,40 @@ def _mode_from_counts(
     return MODE_NORMAL
 
 
+def _fetch_knowledge_reads(store, tenant_id: str) -> list[dict]:
+    """One equality query per exact knowledge route, so unrelated noise
+    traffic cannot evict knowledge reads from the fetched rows."""
+    rows: list[dict] = []
+    for route in KNOWLEDGE_READ_ROUTES:
+        rows.extend(
+            store.query(
+                "activity_events",
+                {"tenant_id": tenant_id, "route": route, "method": "GET"},
+                order_by="created_at DESC",
+                limit=WINDOW_FETCH_CAP,
+            )
+        )
+    return rows
+
+
 def evaluate_extraction_mode(
-    store, user_id: str = "", tenant_id: str = "default"
+    store,
+    user_id: str = "",
+    tenant_id: str = "default",
+    include_current: bool = False,
 ) -> dict:
     """
     Compute the current extraction mode for a caller.
 
-    Counts GETs of knowledge endpoints in activity_events over the last
-    EXTRACTION_WINDOW_MINUTES, per user AND tenant-wide. An empty/missing
-    user_id falls back to tenant-scope counting only. Elevated/capped
-    modes persist a cooldown-deduped integrity flag; the caller decides
-    whether anything else happens (detection-only by default).
+    Counts GETs of the exact knowledge routes in activity_events over
+    the last EXTRACTION_WINDOW_MINUTES, per user AND tenant-wide. An
+    empty/missing user_id falls back to tenant-scope counting only.
+    include_current=True counts the caller's in-flight request too (the
+    activity middleware records it only after the response, so without
+    this the request that first crosses a threshold would be evaluated
+    one short). Elevated/capped modes persist a cooldown-deduped
+    integrity flag; the caller decides whether anything else happens
+    (detection-only by default).
 
     Returns {"mode": ..., "user_count": ..., "tenant_count": ...}.
     Never raises: any failure degrades to normal.
@@ -158,30 +189,23 @@ def evaluate_extraction_mode(
     window_minutes = _env_int("EXTRACTION_WINDOW_MINUTES", DEFAULT_WINDOW_MINUTES)
 
     try:
-        rows = store.query(
-            "activity_events",
-            {"tenant_id": tenant_id},
-            order_by="created_at DESC",
-            limit=WINDOW_FETCH_CAP,
-        )
+        rows = _fetch_knowledge_reads(store, tenant_id)
     except Exception as exc:
         logger.warning(f"[ExtractionGuard] activity query failed (ignored): {exc}")
         return result
 
     cutoff = (datetime.now() - timedelta(minutes=window_minutes)).isoformat()
-    knowledge_reads = [
-        r
-        for r in rows
-        if r.get("created_at", "") >= cutoff
-        and r.get("method", "").upper() == "GET"
-        and any(r.get("route", "").startswith(p) for p in KNOWLEDGE_READ_PREFIXES)
-    ]
+    knowledge_reads = [r for r in rows if r.get("created_at", "") >= cutoff]
     tenant_count = len(knowledge_reads)
     user_count = (
         sum(1 for r in knowledge_reads if r.get("user_id", "") == user_id)
         if user_id
         else 0
     )
+    if include_current:
+        tenant_count += 1
+        if user_id:
+            user_count += 1
 
     mode = _mode_from_counts(user_count, tenant_count, user_threshold, tenant_threshold)
     result.update({"mode": mode, "user_count": user_count, "tenant_count": tenant_count})

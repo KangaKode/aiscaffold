@@ -470,7 +470,7 @@ The scaffold itself is validated by a 16-check pipeline:
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
                          ruff lint, bandit security, import validation, red team,
-                         AI checks, agent review, pytest (636 tests, 85% coverage),
+                         AI checks, agent review, pytest (643 tests, 85% coverage),
                          file structure verification
 make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
 ```
@@ -502,6 +502,6 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 636 tests across 26 test files
+  tests/              # 643 tests across 26 test files
   evals/              # Eval infrastructure
 ```

@@ -208,6 +208,10 @@ async def list_corrections(
             getattr(request.app.state, "learning_store", None),
             user_id=auth.user_id,
             tenant_id=auth.tenant_id,
+            # The middleware records this request only after the response,
+            # so count the in-flight read here -- otherwise the request
+            # that first crosses the cap would still get a full listing.
+            include_current=True,
         )
         guard_mode = guard["mode"]
     except Exception as e:

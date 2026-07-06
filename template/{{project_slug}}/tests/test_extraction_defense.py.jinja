@@ -8,10 +8,12 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from {{project_slug}}.learning.activity import FLAG_TYPE_USER_ANOMALY, ActivityTracker
 from {{project_slug}}.learning.approval_patterns import (
     FLAG_TYPE_PAIR,
     check_pair_dominance,
 )
+from {{project_slug}}.learning.flags import insert_flag_once
 from {{project_slug}}.learning.extraction_guard import (
     FLAG_TYPE_EXTRACTION,
     MODE_CAPPED,
@@ -121,6 +123,54 @@ class TestTimingFlagCooldown:
         assert len(flags_of_type(store, FLAG_TYPE_TIMING)) == 2
 
 
+class TestTimingWindow:
+    def test_old_irregular_history_does_not_dilute_recent_regular(self, store):
+        # Irregular traffic 3 hours ago (outside TIMING_WINDOW_MINUTES=60)
+        # must not rescue a machine-regular cadence inside the window.
+        old_base = datetime.now() - timedelta(hours=3)
+        offset, irregular = 0.0, []
+        for step in [1, 9, 2, 15, 3, 27, 4, 11] * 4:
+            offset += step
+            irregular.append(old_base + timedelta(seconds=offset))
+        seed_events(store, irregular)
+        seed_events(store, regular_times(25))
+
+        finding = check_timing_regularity(store, "user1")
+        assert finding is not None
+        assert finding["intervals"] == 24  # only the in-window events
+
+
+class TestSeverityEscalation:
+    def test_capped_after_elevated_inserts_error_flag(self, store, guard_env):
+        seed_reads(store, 6)  # elevated -> warning flag
+        assert evaluate_extraction_mode(store, user_id="user1")["mode"] == MODE_ELEVATED
+        seed_reads(store, 5)  # now 11 -> capped -> escalation must surface
+        assert evaluate_extraction_mode(store, user_id="user1")["mode"] == MODE_CAPPED
+
+        flags = flags_of_type(store, FLAG_TYPE_EXTRACTION)
+        assert sorted(f["severity"] for f in flags) == ["error", "warning"]
+
+    def test_lower_severity_skipped_when_error_unresolved(self, store):
+        assert insert_flag_once(store, "extraction_volume_anomaly", "user1",
+                                "default", {"mode": "capped"}, severity="error")
+        assert not insert_flag_once(store, "extraction_volume_anomaly", "user1",
+                                    "default", {"mode": "elevated"},
+                                    severity="warning")
+        assert len(flags_of_type(store, FLAG_TYPE_EXTRACTION)) == 1
+
+
+class TestActivityThresholdCooldown:
+    def test_sustained_burst_inserts_exactly_one_flag(self, store):
+        tracker = ActivityTracker(store)
+        for _ in range(6):
+            tracker.record("/api/v1/chat", "POST", 200, user_id="user1")
+
+        limits = {"requests_per_hour": 5}
+        assert tracker.check_thresholds("user1", thresholds=limits)
+        assert tracker.check_thresholds("user1", thresholds=limits)
+        assert len(flags_of_type(store, FLAG_TYPE_USER_ANOMALY)) == 1
+
+
 # --- Extraction guard ---------------------------------------------------------
 
 
@@ -193,6 +243,27 @@ class TestExtractionGuardModes:
         flags = flags_of_type(store, FLAG_TYPE_EXTRACTION)
         assert len(flags) == 1
         assert flags[0]["severity"] == "error"
+
+    def test_include_current_counts_the_inflight_request(self, store, guard_env):
+        seed_reads(store, 10)  # exactly at the 2x cap boundary
+        at_rest = evaluate_extraction_mode(store, user_id="user1")
+        assert at_rest["mode"] == MODE_ELEVATED  # 10 is not > 10
+        in_flight = evaluate_extraction_mode(store, user_id="user1",
+                                             include_current=True)
+        assert in_flight["mode"] == MODE_CAPPED  # 11 > 10
+        assert in_flight["user_count"] == 11
+        assert in_flight["tenant_count"] == 11
+
+    def test_noise_traffic_cannot_evict_knowledge_reads(self, store, guard_env):
+        seed_reads(store, 6)
+        # Newer cheap noise to another route (more rows than the fetch
+        # cap) must not push the knowledge reads out of the fetched rows
+        # (the guard queries each exact knowledge route separately).
+        seed_reads(store, 2100, route="/api/v1/chat", method="POST",
+                   minutes_ago=0)
+        result = evaluate_extraction_mode(store, user_id="user1")
+        assert result["mode"] == MODE_ELEVATED
+        assert result["user_count"] == 6
 
 
 class TestExtractionGuardDegradation:
@@ -335,6 +406,16 @@ class TestExtractionEnforcementHTTP:
         monkeypatch.setenv("EXTRACTION_GUARD_ENFORCE", "true")
         r = await client.get("/api/v1/corrections")
         assert r.status_code == 200
+
+    async def test_request_crossing_cap_boundary_gets_429(self, api, monkeypatch):
+        client, app = api
+        monkeypatch.setenv("EXTRACTION_GUARD_ENFORCE", "true")
+        # Exactly at the 2x cap: the in-flight request itself must be
+        # counted, so THIS request crosses the cap and is refused.
+        seed_reads(app.state.learning_store, 10, user_id="anon")
+        r = await client.get("/api/v1/corrections")
+        assert r.status_code == 429
+        assert "Retry-After" in r.headers
 
 
 class TestMiddlewareSampledChecks:

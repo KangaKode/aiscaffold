@@ -9,6 +9,9 @@ CV means the requests arrive on a highly regular, machine-like cadence
 never acted on automatically.
 
 Guards, in order:
+  - only events inside the rolling window (TIMING_WINDOW_MINUTES,
+    default 60) are considered, so old traffic and dormancy gaps cannot
+    dilute the CV of a recent machine-regular cadence;
   - health/docs/metrics routes are excluded from the interval series
     (monitors legitimately poll on a timer);
   - fewer than TIMING_MIN_SAMPLES intervals (default 20) -> no verdict;
@@ -25,7 +28,7 @@ Findings persist as integrity_flags (flag_type="timing_regularity_anomaly")
 with a persistence-level cooldown (see learning/flags.py).
 
 Env tunables: TIMING_MIN_SAMPLES (default 20),
-TIMING_CV_THRESHOLD (default 0.1).
+TIMING_CV_THRESHOLD (default 0.1), TIMING_WINDOW_MINUTES (default 60).
 
 Leaf module: imports stdlib + learning.flags only; the store is passed in.
 
@@ -34,7 +37,7 @@ Keep this file under 200 lines.
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from statistics import pstdev
 
 from .flags import insert_flag_once
@@ -57,6 +60,7 @@ EPSILON_SECONDS = 1e-6
 
 DEFAULT_MIN_SAMPLES = 20
 DEFAULT_CV_THRESHOLD = 0.1
+DEFAULT_WINDOW_MINUTES = 60
 
 
 def _env_int(name: str, default: int) -> int:
@@ -87,19 +91,23 @@ def compute_interval_cv(intervals: list[float]) -> float | None:
     return pstdev(intervals) / mean
 
 
-def _interval_series(rows: list[dict]) -> list[float]:
-    """Sorted inter-request intervals (seconds) from activity_events rows,
-    excluding operational routes. Unparseable timestamps are skipped;
-    zero-length intervals (concurrent requests) are kept as 0.0."""
+def _interval_series(rows: list[dict], window_minutes: int) -> list[float]:
+    """Sorted inter-request intervals (seconds) from activity_events rows
+    inside the rolling window, excluding operational routes. Unparseable
+    timestamps are skipped; zero-length intervals (concurrent requests)
+    are kept as 0.0."""
+    cutoff = datetime.now() - timedelta(minutes=window_minutes)
     timestamps: list[datetime] = []
     for row in rows:
         route = row.get("route", "")
         if any(route.startswith(p) for p in EXCLUDED_ROUTE_PREFIXES):
             continue
         try:
-            timestamps.append(datetime.fromisoformat(row.get("created_at", "")))
+            ts = datetime.fromisoformat(row.get("created_at", ""))
         except (ValueError, TypeError):
             continue
+        if ts >= cutoff:
+            timestamps.append(ts)
     timestamps.sort()
     return [
         (later - earlier).total_seconds()
@@ -118,9 +126,10 @@ def check_timing_regularity(
     Check one user's recent request cadence for machine-like regularity.
 
     Fetches the most recent WINDOW_FETCH_CAP activity_events for the
-    user, builds the inter-request interval series (excluded routes
-    dropped), and computes the CV. A CV BELOW cv_threshold with at least
-    min_samples intervals is flagged.
+    user, builds the inter-request interval series over the rolling
+    TIMING_WINDOW_MINUTES window (excluded routes and older events
+    dropped), and computes the CV. A CV BELOW cv_threshold with at
+    least min_samples intervals is flagged.
 
     Returns the finding dict (also persisted as an integrity flag with
     cooldown dedupe) or None. Fire-and-forget safe: query errors are
@@ -130,6 +139,7 @@ def check_timing_regularity(
         min_samples = _env_int("TIMING_MIN_SAMPLES", DEFAULT_MIN_SAMPLES)
     if cv_threshold is None:
         cv_threshold = _env_float("TIMING_CV_THRESHOLD", DEFAULT_CV_THRESHOLD)
+    window_minutes = _env_int("TIMING_WINDOW_MINUTES", DEFAULT_WINDOW_MINUTES)
 
     try:
         rows = store.query(
@@ -142,7 +152,7 @@ def check_timing_regularity(
         logger.warning(f"[Timing] activity query failed (ignored): {exc}")
         return None
 
-    intervals = _interval_series(rows)
+    intervals = _interval_series(rows, window_minutes)
     if len(intervals) < min_samples:
         return None
 
@@ -155,6 +165,7 @@ def check_timing_regularity(
         "cv": round(cv, 6),
         "threshold": cv_threshold,
         "intervals": len(intervals),
+        "window_minutes": window_minutes,
         "mean_interval_seconds": round(sum(intervals) / len(intervals), 3),
     }
     logger.warning(
