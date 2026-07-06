@@ -3,8 +3,8 @@
 #
 # Three layers of enforcement:
 #   1. make quick     -- Fast checks on templates (~5s)
-#   2. make validate  -- Full validation via generated test project (~30s)
-#   3. CI (GitHub Actions) -- Matrix validation across configs (~2min)
+#   2. make validate  -- All generation profiles for the default config
+#   3. CI (GitHub Actions) -- Adds two more configs (full profile each)
 #
 # Run 'make help' to see all targets.
 
@@ -34,23 +34,23 @@ quick: ## Fast checks on templates: banned patterns, file sizes, secrets, Jinja 
 # FULL VALIDATION (~30 seconds, generates test project)
 # =============================================================================
 
-validate: ## Full validation: generate test project, lint, test, security scan, AI checks
-	@echo "=== Full Validation ==="
-	@bash scripts/validate_generated.sh "web-app" "anthropic" "sqlite"
+validate: ## Full validation: all generation profiles (full/gateway-off/minimal/defaults) for the default config
+	@echo "=== Full Validation (all generation profiles) ==="
+	@bash scripts/validate_generated.sh "web-app" "anthropic" "sqlite" "all"
 	@echo ""
 	@echo "\033[32m✓ Full validation passed\033[0m"
 
-validate-matrix: ## Matrix validation: test 3 template configurations (~2 min)
-	@echo "=== Matrix Validation (3 configurations) ==="
+validate-matrix: ## Matrix validation: all profiles for the default config + full profile for 2 more configs
+	@echo "=== Matrix Validation ==="
 	@echo ""
-	@echo "--- Config 1/3: web-app + anthropic + sqlite ---"
-	@bash scripts/validate_generated.sh "web-app" "anthropic" "sqlite"
+	@echo "--- Config 1/3: web-app + anthropic + sqlite (all profiles) ---"
+	@bash scripts/validate_generated.sh "web-app" "anthropic" "sqlite" "all"
 	@echo ""
-	@echo "--- Config 2/3: multi-agent + openai + postgres ---"
-	@bash scripts/validate_generated.sh "multi-agent" "openai" "postgres"
+	@echo "--- Config 2/3: multi-agent + openai + postgres (full profile) ---"
+	@bash scripts/validate_generated.sh "multi-agent" "openai" "postgres" "full"
 	@echo ""
-	@echo "--- Config 3/3: api-service + anthropic + sqlite ---"
-	@bash scripts/validate_generated.sh "api-service" "anthropic" "sqlite"
+	@echo "--- Config 3/3: api-service + anthropic + sqlite (full profile) ---"
+	@bash scripts/validate_generated.sh "api-service" "anthropic" "sqlite" "full"
 	@echo ""
 	@echo "\033[32m✓ All 3 configurations passed\033[0m"
 

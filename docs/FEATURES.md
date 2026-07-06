@@ -483,17 +483,18 @@ make clean         # Remove caches
 
 ## Validation Pipeline
 
-The scaffold itself is validated by an 18-check pipeline:
+The scaffold itself is validated by a multi-profile pipeline:
 
 ```
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
-make validate  (~8s)  -- Generate test project + full suite:
+make validate         -- Generate test projects for all 4 profiles
+                         (full / gateway-off / minimal / defaults) + full suite:
                          unrendered-template guard, ruff lint, bandit security,
-                         import validation, red team,
-                         AI checks, agent review, pytest (700 tests collected,
-                         696 passing, 85% coverage), injection-defense golden set,
-                         file structure verification
-make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
+                         import validation, red team, AI checks, agent review,
+                         pytest (710 tests collected, 706 passing, 86% coverage),
+                         injection-defense golden set, file structure and
+                         toggle-wiring verification
+make validate-matrix  -- Adds 2 more configurations (multi-agent/api-service)
 ```
 
 ---
@@ -524,7 +525,7 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 700 tests across 28 files: 696 pass, 3 skip without the
+  tests/              # 710 tests across 29 files: 706 pass, 3 skip without the
                       # [metrics] extra, 1 opt-in Postgres skip (+ tests/load/ Locust harness)
   evals/              # Eval infrastructure
 ```
