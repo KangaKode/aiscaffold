@@ -13,7 +13,6 @@ from {{ project_slug }}.orchestration.round_table import (
     RoundTable,
     RoundTableConfig,
     RoundTableTask,
-    SynthesisResult,
 )
 
 
@@ -79,6 +78,7 @@ class TestGracefulDegradation:
                 enable_challenge_phase=False,
                 include_core_agents=False,
                 enforce_evidence=False,
+                write_artifacts=False,
             ),
         )
         task = RoundTableTask(id="reliability_test", content="Test graceful degradation")
@@ -97,6 +97,7 @@ class TestGracefulDegradation:
                 enable_challenge_phase=False,
                 include_core_agents=False,
                 enforce_evidence=False,
+                write_artifacts=False,
             ),
         )
         task = RoundTableTask(id="all_fail_test", content="Test total failure")
@@ -116,6 +117,7 @@ class TestOutputConsistency:
             enable_challenge_phase=False,
             include_core_agents=False,
             enforce_evidence=False,
+            write_artifacts=False,
         )
         task = RoundTableTask(id="consistency_test", content="Test consistency")
 

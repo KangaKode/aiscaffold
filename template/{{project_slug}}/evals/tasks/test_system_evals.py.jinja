@@ -1,5 +1,6 @@
 """
-System Evals (3 tasks) -- cost tracking, protocol compliance, human grader example.
+System Evals (4 tasks) -- mock LLM fixture, cost tracking, protocol compliance,
+human grader example.
 
 Mix of CODE-BASED graders and a HUMAN grader example.
 """
@@ -9,6 +10,29 @@ import pytest
 
 from {{ project_slug }}.llm.client import TokenUsage, CacheablePrompt
 from evals.graders.code_grader import CodeGrader
+
+
+class TestMockLLMFixture:
+    """Eval: The shared mock_llm fixture (conftest.py) behaves like LLMClient.
+
+    Also the usage example for mock_llm: any eval needing an LLM client
+    without API calls can take this fixture and call it exactly like the
+    real client.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mock_llm_returns_well_formed_response(self, mock_llm):
+        response = await mock_llm.call(
+            "Analyze this sample input", role="quality_analysis"
+        )
+        assert response.content
+        assert response.model == "mock-llm"
+        assert response.provider == "mock"
+        assert response.usage.input_tokens > 0
+        assert response.usage.output_tokens > 0
+        assert response.usage.total_tokens == (
+            response.usage.input_tokens + response.usage.output_tokens
+        )
 
 
 class TestCostTracking:

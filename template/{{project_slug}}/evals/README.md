@@ -88,8 +88,12 @@ The `learning/graduation.py` module implements this pattern.
 
 ## Running Evals
 
+`pytest evals/` collects and runs the full eval suite in a generated
+project -- no API keys or network needed (LLM-dependent evals are skipped
+unless `EVAL_USE_REAL_LLM=1`).
+
 ```bash
-make eval              # Run all evals (mock LLM by default)
+make eval              # Run all evals (pytest evals/ -- mock LLM by default)
 make eval-regression   # Regression evals only (must pass)
 EVAL_USE_REAL_LLM=1 make eval  # Run with real LLM (needs API key)
 ```
@@ -127,27 +131,22 @@ affected cases quote a detection pattern or a model control token verbatim
 why. The baseline guards that this set does not grow; shrinking it (smarter
 matching) is an improvement worth a deliberate rebaseline.
 
+Two equivalent ways to run it:
+
 ```bash
-# Run the golden set (nonzero exit on any per-category regression vs baseline).
-# This is the primary entry point -- it prints the per-category table, runs the
+# Standalone (what CI calls): prints the per-category FP/FN table, runs the
 # dataset-schema preflight first, and exits nonzero on a schema error or a
 # regression vs the committed baseline:
 python evals/tasks/test_injection_defense_golden.py
+
+# Via pytest: the module's test functions (test_dataset_schema_valid,
+# test_corpus_imports_resolve, test_no_regression_vs_baseline) are collected
+# with the rest of the suite:
+pytest evals/
 ```
 
-The module also defines `pytest` functions (`test_dataset_schema_valid`,
-`test_corpus_imports_resolve`, `test_no_regression_vs_baseline`) for suites that
-collect the eval tasks. The standalone command above is the reliable path and is
-what CI should call.
-
-> **Known issue (pre-existing):** the other eval task files in `tasks/`
-> (`test_security_evals.py`, `test_quality_evals.py`, `test_reliability_evals.py`,
-> `test_system_evals.py`) and `conftest.py` currently ship with literal
-> unrendered `{{ project_slug }}` placeholders in their imports, so
-> `pytest evals/` fails at collection. The golden-set grader uses the working
-> pattern -- a `.py.jinja` template rendered at generation time -- which is how
-> those files should be fixed in a future change. Until then, run the golden
-> set standalone as shown above.
+Use the standalone command when you want the per-category table; use
+`pytest evals/` when you want the golden set alongside every other eval.
 
 ### Updating the baseline (intentional)
 
