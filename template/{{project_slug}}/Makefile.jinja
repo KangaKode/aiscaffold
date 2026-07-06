@@ -1,7 +1,7 @@
 # {{ project_name }} Development Commands
 # Run 'make help' to see all available targets.
 
-.PHONY: help test test-p0 test-p1 test-arch test-all lint format red-team doctor clean load-test
+.PHONY: help test test-p0 test-p1 test-arch test-all lint format red-team doctor clean{% if include_api_gateway and include_deployment %} load-test{% endif %}
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -90,7 +90,6 @@ scan: ## Full project scan (architecture + red team + linters + file sizes) -- u
 	python -m pytest tests/test_architecture.py -v --tb=short || true
 	@echo ""
 	@echo "=== Red Team Security Scan ==="
-{% set layer_list = layers.split(',') | map('trim') | list -%}
 	python scripts/red_team_check.py $$(find src/{{ project_slug }} -name "*.py" -not -path "*/__pycache__/*" 2>/dev/null) || true
 	@echo ""
 	@echo "=== Lint ==="
@@ -180,8 +179,9 @@ k8s-deploy: ## Apply Kubernetes manifests
 
 k8s-status: ## Check deployment status
 	kubectl get pods -l app={{ project_slug }}
-	@echo ""
+{% if include_api_gateway %}	@echo ""
 	kubectl get svc {{ project_slug }}
+{% endif %}
 
 k8s-logs: ## Follow pod logs
 	kubectl logs -f -l app={{ project_slug }}

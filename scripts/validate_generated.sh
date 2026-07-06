@@ -639,83 +639,77 @@ else
     fail ".copier-answers.yml missing -- copier update will not work"
 fi
 
+# The Makefile must PARSE in every profile: a jinja tag that eats a
+# recipe tab produces "missing separator", which kills every make target
+# (make test, make demo, ...), not just the broken one.
+if command -v make &>/dev/null; then
+    if (cd "$GEN_ROOT" && make -n help >/dev/null 2>&1); then
+        pass "Makefile parses (make -n help)"
+    else
+        fail "Makefile does not parse -- every make target is broken:"
+        (cd "$GEN_ROOT" && make -n help 2>&1 | head -3 | sed 's/^/    /')
+    fi
+else
+    warn "make not installed -- skipping Makefile parse check"
+fi
+
+# Compact assertion helpers: message, pattern (grep -E), file (relative
+# to the generated project root).
+has()    { grep -qE "$2" "$GEN_ROOT/$3" && pass "$1" || fail "$1"; }
+lacks()  { ! grep -qE "$2" "$GEN_ROOT/$3" 2>/dev/null && pass "$1" || fail "$1"; }
+exists() { [ -e "$GEN_ROOT/$2" ] && pass "$1" || fail "$1"; }
+absent() { [ ! -e "$GEN_ROOT/$2" ] && pass "$1" || fail "$1"; }
+
 if [ "$INCLUDE_API_GATEWAY" = "true" ]; then
-    [ -d "$GEN_SRC/api" ] \
-        && pass "gateway on: src/$PROJECT_SLUG/api/ present" \
-        || fail "gateway on: src/$PROJECT_SLUG/api/ missing"
-    grep -q '^serve:' "$GEN_ROOT/Makefile" \
-        && pass "gateway on: Makefile has serve target" \
-        || fail "gateway on: Makefile serve target missing"
+    exists "gateway on: src/$PROJECT_SLUG/api/ present" "src/$PROJECT_SLUG/api"
+    has "gateway on: Makefile has serve target" '^serve:' Makefile
     # .env.example must NOT ship an active API_HOST: compose env_file
     # values override image ENV, so an uncommented API_HOST=127.0.0.1
     # would bind uvicorn to the container's loopback and kill the
     # published port while the localhost HEALTHCHECK stays green.
-    ! grep -q '^API_HOST=' "$GEN_ROOT/.env.example" \
-        && pass "gateway on: .env.example API_HOST is commented out" \
-        || fail "gateway on: .env.example has ACTIVE API_HOST (breaks container bind)"
-    grep -q '^load = ' "$GEN_ROOT/pyproject.toml" \
-        && pass "gateway on: pyproject has [load] extra" \
-        || fail "gateway on: pyproject [load] extra missing"
-    [ -f "$GEN_ROOT/tests/load/locustfile.py" ] \
-        && pass "gateway on: tests/load/ harness present" \
-        || fail "gateway on: tests/load/ harness missing"
+    lacks "gateway on: .env.example API_HOST is commented out" '^API_HOST=' .env.example
+    has "gateway on: pyproject has [load] extra" '^load = ' pyproject.toml
+    exists "gateway on: tests/load/ harness present" tests/load/locustfile.py
     if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
-        grep -q 'localhost:8000/health' "$GEN_ROOT/Dockerfile" \
-            && pass "gateway on: Dockerfile HEALTHCHECK hits /health" \
-            || fail "gateway on: Dockerfile HEALTHCHECK missing"
+        has "gateway on + deploy on: OPERATIONS.md has the compose load recipe" 'make load-test' docs/OPERATIONS.md
+        has "gateway on + deploy on: Makefile has load-test target" '^load-test:' Makefile
+        has "gateway on: Dockerfile HEALTHCHECK hits /health" 'localhost:8000/health' Dockerfile
         # Belt-and-braces for the same env_file-override bug: compose's
         # environment: block (which outranks env_file) pins the bind.
-        grep -q 'API_HOST=0.0.0.0' "$GEN_ROOT/docker-compose.yml" \
-            && pass "gateway on: compose pins API_HOST=0.0.0.0 in environment:" \
-            || fail "gateway on: compose does not pin API_HOST=0.0.0.0"
-        grep -q '"8000:8000"' "$GEN_ROOT/docker-compose.yml" \
-            && pass "gateway on: compose publishes port 8000" \
-            || fail "gateway on: compose port mapping missing"
-        [ -f "$GEN_ROOT/deploy/k8s/service.yaml" ] \
-            && pass "gateway on: k8s Service present" \
-            || fail "gateway on: k8s Service missing"
-        [ -f "$GEN_ROOT/docker-compose.load.yml" ] \
-            && pass "gateway on: load-test compose override present" \
-            || fail "gateway on: docker-compose.load.yml missing"
+        has "gateway on: compose pins API_HOST=0.0.0.0 in environment:" 'API_HOST=0.0.0.0' docker-compose.yml
+        has "gateway on: compose publishes port 8000" '"8000:8000"' docker-compose.yml
+        exists "gateway on: k8s Service present" deploy/k8s/service.yaml
+        exists "gateway on: load-test compose override present" docker-compose.load.yml
+    else
+        # gateway on + deployment off: the load-test recipe must not point
+        # at compose artifacts that were excluded -- OPERATIONS.md carries
+        # the serve-based variant instead.
+        lacks "gateway on + deploy off: Makefile has no load-test references" 'load-test' Makefile
+        lacks "gateway on + deploy off: OPERATIONS.md has no compose-load reference" 'docker-compose\.load\.yml' docs/OPERATIONS.md
+        has "gateway on + deploy off: OPERATIONS.md has the serve-based load recipe" 'make serve-prod' docs/OPERATIONS.md
+        lacks "gateway on + deploy off: .env.example has no compose-load reference" 'docker-compose\.load\.yml' .env.example
     fi
 else
-    [ ! -d "$GEN_SRC/api" ] \
-        && pass "gateway off: src/$PROJECT_SLUG/api/ excluded" \
-        || fail "gateway off: src/$PROJECT_SLUG/api/ still generated"
-    ! grep -q '^serve:' "$GEN_ROOT/Makefile" \
-        && pass "gateway off: Makefile has no serve target" \
-        || fail "gateway off: Makefile still has serve target"
-    grep -q '^httpx' "$GEN_ROOT/requirements.txt" \
-        && pass "gateway off: httpx still a base dependency (remote agents)" \
-        || fail "gateway off: httpx missing from requirements.txt"
+    absent "gateway off: src/$PROJECT_SLUG/api/ excluded" "src/$PROJECT_SLUG/api"
+    lacks "gateway off: Makefile has no serve target" '^serve:' Makefile
+    has "gateway off: httpx still a base dependency (remote agents)" '^httpx' requirements.txt
     # The load harness presupposes an HTTP server.
-    ! grep -q '^load = ' "$GEN_ROOT/pyproject.toml" \
-        && pass "gateway off: pyproject has no [load] extra" \
-        || fail "gateway off: pyproject still ships the [load] extra"
-    [ ! -d "$GEN_ROOT/tests/load" ] \
-        && pass "gateway off: tests/load/ excluded" \
-        || fail "gateway off: tests/load/ still generated"
+    lacks "gateway off: pyproject has no [load] extra" '^load = ' pyproject.toml
+    absent "gateway off: tests/load/ excluded" tests/load
+    # Docs must not advertise HTTP-server workflows that do not exist.
+    lacks "gateway off: OPERATIONS.md has no serve-prod reference" 'serve-prod' docs/OPERATIONS.md
+    lacks "gateway off: OPERATIONS.md cites no api/ modules" 'api/gateway\.py|api/routes/|api/middleware/' docs/OPERATIONS.md
+    lacks "gateway off: README advertises no HTTP endpoint" 'localhost:8000' README.md
     if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
         # gateway-off + deployment-on: the image CMD prints usage and
         # exits, so nothing may publish port 8000 or restart-loop it.
-        ! grep -q 'localhost:8000/health' "$GEN_ROOT/Dockerfile" \
-            && pass "gateway off: Dockerfile has no HTTP HEALTHCHECK" \
-            || fail "gateway off: Dockerfile still HEALTHCHECKs /health"
-        ! grep -q '"8000:8000"' "$GEN_ROOT/docker-compose.yml" \
-            && pass "gateway off: compose publishes no port" \
-            || fail "gateway off: compose still publishes port 8000"
-        grep -q 'command:' "$GEN_ROOT/docker-compose.yml" \
-            && pass "gateway off: compose documents the command: override" \
-            || fail "gateway off: compose lacks the command: override note"
-        [ ! -f "$GEN_ROOT/deploy/k8s/service.yaml" ] \
-            && pass "gateway off: k8s Service excluded" \
-            || fail "gateway off: k8s Service still generated"
-        ! grep -q 'containerPort' "$GEN_ROOT/deploy/k8s/deployment.yaml" \
-            && pass "gateway off: k8s deployment exposes no containerPort" \
-            || fail "gateway off: k8s deployment still exposes containerPort"
-        [ ! -f "$GEN_ROOT/docker-compose.load.yml" ] \
-            && pass "gateway off: load-test compose override excluded" \
-            || fail "gateway off: docker-compose.load.yml still generated"
+        lacks "gateway off: Dockerfile has no HTTP HEALTHCHECK" 'localhost:8000/health' Dockerfile
+        lacks "gateway off: compose publishes no port" '"8000:8000"' docker-compose.yml
+        has "gateway off: compose documents the command: override" 'command:' docker-compose.yml
+        absent "gateway off: k8s Service excluded" deploy/k8s/service.yaml
+        lacks "gateway off: k8s deployment exposes no containerPort" 'containerPort' deploy/k8s/deployment.yaml
+        absent "gateway off: load-test compose override excluded" docker-compose.load.yml
+        lacks "gateway off: Makefile k8s-status queries no Service" 'kubectl get svc' Makefile
     fi
 fi
 
@@ -726,9 +720,7 @@ if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
     done
     [ -d "$GEN_ROOT/deploy" ] || { DEPLOY_OK=0; fail "deployment on: deploy/ missing"; }
     [ "$DEPLOY_OK" = "1" ] && pass "deployment on: Dockerfile, docker-compose.yml, .dockerignore, deploy/ present"
-    grep -q '^docker-build:' "$GEN_ROOT/Makefile" \
-        && pass "deployment on: Makefile has docker targets" \
-        || fail "deployment on: Makefile docker targets missing"
+    has "deployment on: Makefile has docker targets" '^docker-build:' Makefile
 else
     DEPLOY_GONE=1
     for f in Dockerfile docker-compose.yml docker-compose.load.yml .dockerignore; do
@@ -736,28 +728,16 @@ else
     done
     [ ! -d "$GEN_ROOT/deploy" ] || { DEPLOY_GONE=0; fail "deployment off: deploy/ still generated"; }
     [ "$DEPLOY_GONE" = "1" ] && pass "deployment off: Dockerfile, docker-compose*, .dockerignore, deploy/ excluded"
-    ! grep -q '^docker-build:' "$GEN_ROOT/Makefile" \
-        && pass "deployment off: Makefile has no docker targets" \
-        || fail "deployment off: Makefile still has docker targets"
-    ! grep -q '^k8s-deploy:' "$GEN_ROOT/Makefile" \
-        && pass "deployment off: Makefile has no k8s targets" \
-        || fail "deployment off: Makefile still has k8s targets"
+    lacks "deployment off: Makefile has no docker targets" '^docker-build:' Makefile
+    lacks "deployment off: Makefile has no k8s targets" '^k8s-deploy:' Makefile
 fi
 
 if [ "$INCLUDE_EVALS" = "true" ]; then
-    [ -d "$GEN_ROOT/evals" ] \
-        && pass "evals on: evals/ present" \
-        || fail "evals on: evals/ missing"
-    grep -q '"evals"' "$GEN_ROOT/scripts/setup_check.py" \
-        && pass "evals on: setup_check checks evals/" \
-        || fail "evals on: setup_check does not check evals/"
+    exists "evals on: evals/ present" evals
+    has "evals on: setup_check checks evals/" '"evals"' scripts/setup_check.py
 else
-    [ ! -d "$GEN_ROOT/evals" ] \
-        && pass "evals off: evals/ excluded" \
-        || fail "evals off: evals/ still generated"
-    ! grep -q 'evals' "$GEN_ROOT/scripts/setup_check.py" \
-        && pass "evals off: setup_check has no evals reference" \
-        || fail "evals off: setup_check still references evals/"
+    absent "evals off: evals/ excluded" evals
+    lacks "evals off: setup_check has no evals reference" 'evals' scripts/setup_check.py
 fi
 
 # =========================================================================
