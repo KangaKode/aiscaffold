@@ -15,10 +15,12 @@ Lifecycle: PENDING -> APPROVED / REJECTED / EXPIRED / SKIPPED
 
 Security:
   - Check-in prompts are sanitized before storage
-  - Expired check-ins are auto-cleaned
+  - Expired check-ins are auto-cleaned (status flip only -- rows and
+    their prompt text persist until erase_for_correction removes them)
 
-Keep this file under 300 lines. (Raised from 250: auto-trigger wiring
-for learned-knowledge check-ins pushed it past the original budget.)
+Keep this file under 350 lines. (Raised from 300: the GDPR erasure hook
+(erase_for_correction) landed here because correction check-ins embed
+the proposed text verbatim; split query helpers out if it grows again.)
 """
 
 import json
@@ -226,6 +228,46 @@ class CheckInManager:
             if expired > 0:
                 logger.debug(f"[CheckIn] Expired {expired} check-ins")
             return expired
+        finally:
+            conn.close()
+
+    def erase_for_correction(self, correction_id: str) -> int:
+        """Hard-delete every check-in created for a correction (any status).
+
+        Correction proposals create a check-in whose prompt embeds the
+        original/corrected claim text verbatim, so a GDPR erasure of the
+        correction (learning/erasure.py) must remove those rows too --
+        _expire_old only flips status and never deletes. Matching is on
+        the stored context citing the correction id: a LIKE prefilter
+        narrows candidates, then the JSON is parsed to confirm, so a
+        substring hit inside some other value can never delete an
+        unrelated row. Returns the number of rows deleted.
+        """
+        if not correction_id:
+            return 0
+        conn = get_connection(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id, context_json FROM checkins WHERE context_json LIKE ?",
+                (f"%{correction_id}%",),
+            ).fetchall()
+            doomed = []
+            for row in rows:
+                try:
+                    context = json.loads(row["context_json"] or "{}")
+                except (ValueError, TypeError):
+                    continue
+                if context.get("correction_id") == correction_id:
+                    doomed.append(row["id"])
+            for checkin_id in doomed:
+                conn.execute("DELETE FROM checkins WHERE id = ?", (checkin_id,))
+            conn.commit()
+            if doomed:
+                logger.info(
+                    f"[CheckIn] Erased {len(doomed)} check-in(s) for "
+                    f"correction {correction_id}"
+                )
+            return len(doomed)
         finally:
             conn.close()
 

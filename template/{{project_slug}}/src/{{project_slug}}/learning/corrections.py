@@ -365,6 +365,11 @@ class CorrectionsManager:
         """The underlying LearningStore (used by erasure and admin APIs)."""
         return self._store
 
+    @property
+    def checkin_manager(self):
+        """CheckInManager for approval check-ins (or None); erasure sweeps it."""
+        return self._checkin_manager
+
     def list(
         self,
         tenant_id: str = "default",

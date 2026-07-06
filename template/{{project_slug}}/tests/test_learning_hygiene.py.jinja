@@ -222,10 +222,33 @@ class TestErasureDerivedArtifacts:
                 agent_id="agent_b",
             )
         extract_error_schemas(store)
-        erase_correction(store, "other_0")
+        result = erase_correction(store, "other_0")
         remaining = store.query("error_schemas", {"tenant_id": "default"})
         agent_a = [s for s in remaining if s["agent_id"] == "agent_a"]
         assert len(agent_a) == 1  # untouched
+        # Only agent_b's schema was deleted, and its cluster dropped below
+        # MIN_CLUSTER_SIZE: nothing was rebuilt. agent_a's untouched (but
+        # still qualifying) cluster must NOT inflate the rebuilt count.
+        assert result["derived_schemas_deleted"] == 1
+        assert result["derived_schemas_rebuilt"] == 0
+
+    def test_rebuilt_counts_only_clusters_that_lost_a_schema(self, store):
+        """Erase from a cluster that still qualifies, alongside an
+        unrelated qualifying cluster: exactly one schema is rebuilt."""
+        self.seed_cluster(store, n=4)
+        for i in range(4):
+            seed_correction(
+                store,
+                cid=f"other_{i}",
+                reason=f"other agent reason {i}",
+                corrected_claim=f"other agent step {i}",
+                created_by=f"user_{i % 2}",
+                agent_id="agent_b",
+            )
+        extract_error_schemas(store)
+        result = erase_correction(store, "corr_0")
+        assert result["derived_schemas_deleted"] == 1
+        assert result["derived_schemas_rebuilt"] == 1  # agent_a only
 
     def test_derived_cleanup_failure_does_not_fail_erasure(self, store, monkeypatch):
         self.seed_cluster(store, n=4)
@@ -242,6 +265,90 @@ class TestErasureDerivedArtifacts:
         assert result["derived_schemas_deleted"] == 0
         # The source correction is gone regardless.
         assert original_query("corrections", {"id": "corr_0"}) == []
+
+
+# --- Erasure sweeps check-ins that embed the correction text ------------------
+
+
+class TestErasureCheckIns:
+    @pytest.fixture
+    def checkin_manager(self, tmp_path):
+        from {{project_slug}}.learning.checkin_manager import CheckInManager
+
+        return CheckInManager(db_path=tmp_path / "checkins.db")
+
+    def _propose(self, store, checkin_manager):
+        from {{project_slug}}.learning.corrections import CorrectionsManager
+
+        manager = CorrectionsManager(store, checkin_manager=checkin_manager)
+        return manager.propose(
+            agent_id="agent_a",
+            original_claim="the erasable original claim",
+            corrected_claim="the corrected replacement claim",
+            reason="verifiable reason text",
+            evidence_level="documented",
+            created_by="alice",
+        )
+
+    def test_erasure_removes_checkins_embedding_the_text(
+        self, store, checkin_manager, tmp_path
+    ):
+        """Regression: proposing opens a check-in whose prompt embeds the
+        correction verbatim; erasing the correction must not leave that
+        text behind in the check-ins store."""
+        import sqlite3
+
+        correction = self._propose(store, checkin_manager)
+        pending = checkin_manager.get_pending()
+        assert any("erasable original claim" in c.prompt for c in pending)
+
+        result = erase_correction(
+            store, correction.id, checkin_manager=checkin_manager
+        )
+        assert result["checkins_deleted"] == 1
+
+        conn = sqlite3.connect(tmp_path / "checkins.db")
+        rows = conn.execute(
+            "SELECT prompt, suggested_action, context_json FROM checkins"
+        ).fetchall()
+        conn.close()
+        flattened = " ".join(str(v) for row in rows for v in row)
+        assert "erasable original claim" not in flattened
+        assert correction.id not in flattened
+
+    def test_erasure_sweeps_resolved_checkins_too(self, store, checkin_manager):
+        """Expiry/response only flips status -- the sweep must catch
+        non-pending rows as well."""
+        correction = self._propose(store, checkin_manager)
+        pending = checkin_manager.get_pending()
+        checkin_manager.respond(pending[0].id, approved=True)
+
+        result = erase_correction(
+            store, correction.id, checkin_manager=checkin_manager
+        )
+        assert result["checkins_deleted"] == 1
+        assert checkin_manager.get(pending[0].id) is None
+
+    def test_no_manager_means_zero_and_no_error(self, store, checkin_manager):
+        correction = self._propose(store, checkin_manager)
+        result = erase_correction(store, correction.id)  # no manager passed
+        assert result["erased"] is True
+        assert result["checkins_deleted"] == 0
+
+    def test_checkin_sweep_failure_does_not_fail_erasure(
+        self, store, checkin_manager, monkeypatch
+    ):
+        correction = self._propose(store, checkin_manager)
+        monkeypatch.setattr(
+            checkin_manager,
+            "erase_for_correction",
+            lambda cid: (_ for _ in ()).throw(RuntimeError("checkins db gone")),
+        )
+        result = erase_correction(
+            store, correction.id, checkin_manager=checkin_manager
+        )
+        assert result["erased"] is True
+        assert result["checkins_deleted"] == 0
 
 
 # --- Hash-fallback embeddings must not defeat keyword retrieval ---------------
@@ -310,6 +417,75 @@ class TestFallbackRetrievalHonesty:
         results = indexer.search("concise summaries")
         assert results.results
         assert results.results[0].id.endswith("t-2")
+
+    def test_chroma_backend_still_gets_hash_embeddings(
+        self, fallback_embedder, monkeypatch, tmp_path
+    ):
+        """Regression: skipping the hash embedding is only safe on the
+        in-memory store. On Chroma, embedding=None would make Chroma
+        compute its own default-model vectors (different dimensions than
+        stored hash vectors -> upsert errors, empty searches), so the
+        fallback embedding must keep flowing to add() and search()."""
+        import sys
+        import types
+
+        from {{project_slug}}.learning.models import UserPreference
+        from {{project_slug}}.learning.rag.preference_retriever import (
+            PreferenceRetriever,
+        )
+
+        class FakeCollection:
+            def __init__(self):
+                self.upserts = []
+                self.queries = []
+
+            def upsert(self, **kwargs):
+                self.upserts.append(kwargs)
+
+            def query(self, **kwargs):
+                self.queries.append(kwargs)
+                return {"ids": [[]], "documents": [[]],
+                        "metadatas": [[]], "distances": [[]]}
+
+            def count(self):
+                return len(self.upserts)
+
+        collection = FakeCollection()
+
+        class FakeClient:
+            def get_or_create_collection(self, **kwargs):
+                return collection
+
+        monkeypatch.setitem(
+            sys.modules,
+            "chromadb",
+            types.SimpleNamespace(PersistentClient=lambda path: FakeClient()),
+        )
+        chroma_store = VectorStore(
+            project_id="t4",
+            persist_dir=str(tmp_path / "chroma"),
+            use_chroma=True,
+        )
+        assert chroma_store.supports_keyword_search is False
+
+        retriever = PreferenceRetriever(
+            vector_store=chroma_store,
+            embedding_service=fallback_embedder,
+            db_path=tmp_path / "unused.db",
+        )
+        retriever.index_preference(UserPreference(
+            id="p1", preference_type="style", key="verbosity",
+            value="concise responses preferred",
+        ))
+        assert "embeddings" in collection.upserts[-1]
+        assert collection.upserts[-1]["embeddings"][0]  # the hash vector
+
+        retriever.search("how concise should responses be")
+        assert "query_embeddings" in collection.queries[-1]
+
+    def test_in_memory_store_supports_keyword_search(self):
+        store = VectorStore(project_id="t5", use_chroma=False)
+        assert store.supports_keyword_search is True
 
     def test_preference_retriever_uses_keywords_with_fallback(
         self, fallback_embedder, tmp_path

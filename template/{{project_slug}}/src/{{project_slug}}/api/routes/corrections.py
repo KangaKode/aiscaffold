@@ -103,13 +103,16 @@ class CorrectionResponse(BaseModel):
 
 
 class ErasureResponse(BaseModel):
-    """Result of a GDPR erasure (including derived error-schema cleanup)."""
+    """Result of a GDPR erasure, including derived-artifact cleanup:
+    error schemas citing the correction (rebuilt counts only the
+    clusters that lost one) and approval check-ins embedding its text."""
 
     correction_id: str
     erased: bool
     erasures_today: int
     derived_schemas_deleted: int = 0
     derived_schemas_rebuilt: int = 0
+    checkins_deleted: int = 0
 
 
 def _get_manager(request: Request) -> CorrectionsManager:
@@ -438,6 +441,9 @@ async def erase_correction_endpoint(
             _validated_id(correction_id),
             tenant_id=auth.tenant_id,
             actor=auth.user_id,
+            # The same manager that opened the approval check-ins (they
+            # embed the correction text verbatim) sweeps them here.
+            checkin_manager=manager.checkin_manager,
         )
     except ErasureCapExceededError as e:
         raise HTTPException(status_code=429, detail=str(e))
