@@ -175,8 +175,13 @@ async def phase_premise_validation(
     """
     from ..llm import CacheablePrompt
     from ..security.prompt_guard import wrap_user_content
+    from .ingest_scan import scan_user_message
 
     start = time.monotonic()
+    # Detect-only Layer 1 scan (log-only here: no store in scope). The
+    # gate's own outcome is never influenced by the findings -- user
+    # content may legitimately discuss injection techniques.
+    scan_user_message(task.content, surface="premise_gate")
     wrapped_task = wrap_user_content(task.content, label="TASK_CONTENT")
 
     async def _check(agent: Any) -> dict:
