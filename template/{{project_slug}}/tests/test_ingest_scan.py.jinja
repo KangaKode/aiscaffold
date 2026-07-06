@@ -8,6 +8,7 @@ messages may legitimately discuss injection techniques; the scan is
 operator signal, not a gate.
 """
 
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -43,7 +44,7 @@ class TestUserMessageScanDetectOnly:
         # Metadata only: matched patterns are recorded, never the message.
         assert USER_INJECTION not in flags[0]["detail_json"]
 
-    def test_cooldown_suppresses_duplicate_flags(self, flag_store):
+    def test_repeats_never_pile_up_duplicate_rows(self, flag_store):
         scan_user_message(USER_INJECTION, surface="chat", store=flag_store)
         scan_user_message(USER_INJECTION, surface="chat", store=flag_store)
         assert len(_scan_flags(flag_store)) == 1
@@ -68,6 +69,94 @@ class TestUserMessageScanDetectOnly:
 
         findings = scan_user_message(USER_INJECTION, "chat", store=BrokenStore())
         assert findings  # detection still reports; persistence failure swallowed
+
+
+class TestFlagVolumeSignal:
+    """A sustained campaign must not hide behind one stale flag armed by
+    a decoy probe: repeats update the unresolved flag in place and
+    eventually escalate it."""
+
+    def test_repeats_update_hit_count_and_last_seen(self, flag_store):
+        """Regression: repeats were silently suppressed by the cooldown --
+        the flag's detail never changed, so 1 probe and a 1,000-message
+        campaign looked identical to operators."""
+        for _ in range(3):
+            scan_user_message(USER_INJECTION, surface="chat", store=flag_store)
+
+        flags = _scan_flags(flag_store)
+        assert len(flags) == 1
+        detail = json.loads(flags[0]["detail_json"])
+        assert detail["hits"] == 3
+        assert detail["last_seen"]
+        assert detail["patterns"]  # latest matched patterns are kept fresh
+
+    def test_escalates_to_error_after_n_repeats(self, flag_store, monkeypatch):
+        """Regression: severity was always 'warning', so the
+        escalation-past-cooldown path could never fire."""
+        monkeypatch.setenv("USER_SCAN_ESCALATE_AFTER", "3")
+
+        scan_user_message(USER_INJECTION, surface="chat", store=flag_store)
+        scan_user_message(USER_INJECTION, surface="chat", store=flag_store)
+        assert _scan_flags(flag_store)[0]["severity"] == "warning"
+
+        scan_user_message(USER_INJECTION, surface="chat", store=flag_store)
+        flags = _scan_flags(flag_store)
+        assert len(flags) == 1  # escalation updates in place, no new row
+        assert flags[0]["severity"] == "error"
+
+    def test_bad_env_value_falls_back_to_default(self, flag_store, monkeypatch):
+        monkeypatch.setenv("USER_SCAN_ESCALATE_AFTER", "not-a-number")
+        for _ in range(3):
+            scan_user_message(USER_INJECTION, surface="chat", store=flag_store)
+        # Default threshold is 10: three hits stay at warning.
+        assert _scan_flags(flag_store)[0]["severity"] == "warning"
+
+
+class TestScanLoopResponsiveness:
+    async def test_timer_ticks_while_flag_store_is_slow(
+        self, flag_store, monkeypatch
+    ):
+        """Regression: scan_user_message ran its store query/write inline
+        in async callers, so every attack-patterned message blocked the
+        event loop on store I/O (the cooldown suppresses inserts, not the
+        query). Ten concurrent resolves against a slow store must not
+        stop a concurrent timer from ticking."""
+        import asyncio
+        import time
+
+        from {{project_slug}}.orchestration.single_shot import resolve_single_shot
+
+        real_query = flag_store.query
+
+        def slow_query(*args, **kwargs):
+            time.sleep(0.1)  # simulated slow store; must run OFF the loop
+            return real_query(*args, **kwargs)
+
+        monkeypatch.setattr(flag_store, "query", slow_query)
+
+        loop = asyncio.get_running_loop()
+        timer_elapsed = 0.0
+
+        async def timer():
+            nonlocal timer_elapsed
+            started = loop.time()
+            for _ in range(5):
+                await asyncio.sleep(0.05)
+            timer_elapsed = loop.time() - started
+
+        timer_task = asyncio.create_task(timer())
+        results = await asyncio.gather(*(
+            resolve_single_shot(
+                USER_INJECTION, llm=None, learning_store=flag_store
+            )
+            for _ in range(10)
+        ))
+        await timer_task
+
+        assert all(r.escalated for r in results)  # outcome unchanged
+        assert timer_elapsed < 0.7, (
+            f"event loop was blocked: 5x50ms timer took {timer_elapsed:.2f}s"
+        )
 
 
 class TestUserSurfaceWiring:

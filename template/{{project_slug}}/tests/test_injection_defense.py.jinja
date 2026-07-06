@@ -376,3 +376,104 @@ class TestIngestionBoundaryAdvancedScan:
             for r in caplog.records
         )
         assert BENIGN_JWT in out
+
+
+class TestBoundaryScanLoopResponsiveness:
+    """The advanced (Layer 1+2) boundary scans are real CPU work; they
+    must be bounded by truncation and must run off the event loop."""
+
+    async def test_multi_mb_mcp_payload_does_not_stall_loop(self):
+        """Regression: enrich_mcp_data scanned the FULL response content
+        with advanced=True before the 50k-char truncation, inline on the
+        loop -- a hostile server returning ~10MB bought ~1s of loop
+        stall for bytes that never reach a prompt. Sanitize-first plus
+        the off-loop scan keeps a concurrent timer ticking."""
+        import asyncio
+
+        from {{project_slug}}.orchestration.mcp_enrichment import enrich_mcp_data
+
+        chunk = "SGVsbG8gd29ybGQhIFRoaXMgaXMgYSBiZW5pZ24gYmxvYg" * 3 + " "
+        big = chunk * (10_000_000 // len(chunk))  # ~10MB, base64-ish runs
+        registry, client = _mcp_stub(big)
+
+        loop = asyncio.get_running_loop()
+        timer_elapsed = 0.0
+
+        async def timer():
+            nonlocal timer_elapsed
+            started = loop.time()
+            for _ in range(5):
+                await asyncio.sleep(0.05)
+            timer_elapsed = loop.time() - started
+
+        timer_task = asyncio.create_task(timer())
+        await asyncio.sleep(0)  # let the timer take its first tick slot
+        ctx = await enrich_mcp_data({}, {"mcp:tickets"}, "default", client, registry)
+        await timer_task
+
+        assert "mcp:tickets" in ctx
+        # Truncation happened BEFORE the scan: only ~50k survives.
+        assert len(ctx["mcp:tickets"]) < 60_000
+        assert timer_elapsed < 0.7, (
+            f"event loop was blocked: 5x50ms timer took {timer_elapsed:.2f}s"
+        )
+
+    async def test_remote_response_scan_runs_off_the_loop(self, monkeypatch):
+        """Regression: the response sanitize+scan ran inline in the async
+        analyze/challenge/vote consumers; ten concurrent responses with a
+        slow scan serialized the loop. The build is now offloaded once
+        per response."""
+        import asyncio
+        import time
+
+        import httpx
+
+        from {{project_slug}}.agents import remote as remote_module
+        from {{project_slug}}.orchestration.round_table import RoundTableTask
+
+        def slow_scan(text, advanced=False):
+            time.sleep(0.1)  # simulated scan cost; must run OFF the loop
+            return []
+
+        monkeypatch.setattr(remote_module, "detect_injection_attempt", slow_scan)
+
+        def handler(request):
+            return httpx.Response(200, json={
+                "observations": [{"note": "one string field"}],
+                "recommendations": [],
+                "confidence": 0.5,
+            })
+
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            httpx, "AsyncClient",
+            lambda **kw: real_client(
+                transport=httpx.MockTransport(handler), **kw
+            ),
+        )
+
+        agent = remote_module.RemoteAgent(
+            name="stub_remote", domain="testing",
+            base_url="http://agent.internal:3000",
+            allow_private_endpoint=True,
+        )
+        task = RoundTableTask(id="t1", content="hello")
+
+        loop = asyncio.get_running_loop()
+        timer_elapsed = 0.0
+
+        async def timer():
+            nonlocal timer_elapsed
+            started = loop.time()
+            for _ in range(5):
+                await asyncio.sleep(0.05)
+            timer_elapsed = loop.time() - started
+
+        timer_task = asyncio.create_task(timer())
+        analyses = await asyncio.gather(*(agent.analyze(task) for _ in range(10)))
+        await timer_task
+
+        assert all(a.agent_name == "stub_remote" for a in analyses)
+        assert timer_elapsed < 0.7, (
+            f"event loop was blocked: 5x50ms timer took {timer_elapsed:.2f}s"
+        )
