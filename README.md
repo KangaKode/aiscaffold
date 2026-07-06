@@ -134,7 +134,7 @@ The complete feature reference, API listing, architecture diagrams, and configur
 - **Honest boundaries:** every control documents what it does *not* do. See the [non-claims](template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md#known-limitations--non-claims).
 - **Inspectable by design:** cloneable scaffold, generated tests, and progressive docs make every behavior reviewable without reading the entire codebase.
 
-Development follows a gated AI-assisted workflow -- design docs before code, expert review before implementation, tests before production logic, red-team before commit. See [DEVELOPMENT_PROCESS.md](docs/DEVELOPMENT_PROCESS.md).
+Development follows a gated AI-assisted workflow -- design docs before code, expert review before implementation, tests before production logic, red-team before commit. See [DEVELOPMENT_PROCESS.md](docs/DEVELOPMENT_PROCESS.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

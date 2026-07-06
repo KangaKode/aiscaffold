@@ -1,0 +1,23 @@
+---
+description: Expert-gated PR workflow and standing constraints for all changes to this repo
+alwaysApply: true
+---
+
+# Development Process (Gated PRs)
+
+Every feature or fix follows the workflow in `docs/DEVELOPMENT_PROCESS.md`. The short version:
+
+1. **Plan sign-off before code.** Non-trivial changes get a written plan reviewed by the relevant domain experts (security architect, SRE, template-DX) via subagents. Implementation starts only after every reviewer returns APPROVED; CHANGES-REQUIRED verdicts are folded into the plan and re-reviewed.
+2. **One focused PR per change, on a branch.** Never commit directly to `main`.
+3. **Validation before review.** `bash scripts/validate_generated.sh` must pass fully (all checks, zero warnings) before requesting any review. Test/check counts quoted in docs are measured from actual runs, never estimated.
+4. **Post-implementation review of the actual diff.** Bugbot plus the matching domain expert review the branch. Findings are fixed with regression tests (a test that fails on the pre-fix code), then re-reviewed. Nothing is pushed or merged without an explicit final APPROVED.
+5. **Strongest model only.** Implementation and review subagents run on the strongest available model. If a subagent silently falls back to a weaker model (e.g., on API limits), discard its output and redo it — or retro-audit anything already merged.
+
+## Standing constraints
+
+- **Detect, never auto-act:** shipped defaults may flag, log, or refuse explicitly (4xx) — they never silently alter prompts, truncate listings, or degrade responses. Enforcement beyond flags is opt-in via env flags, default off.
+- **Honest docs:** every capability claim cites code and tests; limitations go in GOVERNANCE Non-Claims. Never overclaim.
+- **Schema changes** go through the `MIGRATIONS` mechanism in `learning/tables.py` with the frozen v1 baseline (see the BASELINE FREEZE RULE in that file). Never add columns only to the live `TABLE_COLUMNS` baseline.
+- **Line-cap headers are honest:** respect each module's stated cap; if a file must grow, update the header in the same PR rather than ignoring it.
+- **No internal codenames:** never reference private inspiration/upstream project names in code, comments, docs, commits, or PR text.
+- **Template files that contain jinja placeholders (`{{ ... }}`) must have a `.jinja` suffix** or copier ships them unrendered.
