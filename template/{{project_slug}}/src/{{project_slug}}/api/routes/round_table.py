@@ -287,6 +287,7 @@ async def submit_task(
             duration_seconds=result.duration_seconds,
             degraded=result.degraded,
             failed_agent_count=result.failed_agent_count,
+            vote_gated_count=result.vote_gated_count,
         )
 
         _cache_result(_result_key(task_id, auth), response)

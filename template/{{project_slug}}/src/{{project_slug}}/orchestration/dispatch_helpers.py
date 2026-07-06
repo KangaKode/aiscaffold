@@ -2,7 +2,9 @@
 
 Standalone functions used by orchestrators around each agent call:
 identity verification, capability resolution, rate limiting, scope
-filtering, and call duration logging.
+filtering, and call duration logging -- plus the gated Phase 2/3
+runners (run_challenge_phase, run_voting_phase) so every deliberation
+phase passes the same gates.
 Registry and rate limiter are passed as arguments (no globals).
 """
 
@@ -124,6 +126,80 @@ def gate_agents(
 
         gated.append((agent, agent_task, capability))
     return gated, skipped
+
+
+async def run_challenge_phase(
+    agents: list,
+    task: Any,
+    analyses: list,
+    registry: Any,
+    component: str = "RoundTable",
+) -> list:
+    """Phase 2: agents challenge each other (mediated hub-and-spoke).
+
+    Dispatch passes the same gates as Phase 1 (identity/suspension,
+    rate limit, scope-filtered task) -- gates are re-checked, so an
+    agent suspended mid-run is excluded here.
+    """
+    rate_limiter = getattr(registry, "rate_limiter", None)
+    gated, skipped = gate_agents(agents, task, registry, rate_limiter, component)
+    if skipped:
+        logger.warning(
+            "[%s] %d agent(s) blocked by dispatch gates at challenge phase",
+            component, skipped,
+        )
+    results = await asyncio.gather(
+        *[agent.challenge(agent_task, analyses) for agent, agent_task, _ in gated],
+        return_exceptions=True,
+    )
+    challenges = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            logger.error("[%s] %s challenge failed: %s", component, gated[i][0].name, r)
+            continue
+        challenges.append(r)
+    return challenges
+
+
+async def run_voting_phase(
+    agents: list,
+    task: Any,
+    synthesis: Any,
+    registry: Any,
+    component: str = "RoundTable",
+) -> tuple[list, int]:
+    """Phase 3b: agents vote on the synthesis. Dissent is valuable.
+
+    Dispatch passes the same gates as Phase 1. Gated agents cast no
+    vote and consensus divides by votes actually cast, so callers must
+    mark the result degraded when the returned skipped count is
+    non-zero -- otherwise one surviving approver could present as 100%
+    consensus. Note the asymmetry: a vote() that RAISES records a
+    dissent, a gated-out voter is excluded from the denominator.
+
+    Returns (votes, gated_out_count).
+    """
+    from .round_table import AgentVote  # deferred: avoids an import cycle
+
+    rate_limiter = getattr(registry, "rate_limiter", None)
+    gated, skipped = gate_agents(agents, task, registry, rate_limiter, component)
+    if skipped:
+        logger.warning(
+            "[%s] %d agent(s) blocked by dispatch gates at vote phase",
+            component, skipped,
+        )
+    results = await asyncio.gather(
+        *[agent.vote(agent_task, synthesis) for agent, agent_task, _ in gated],
+        return_exceptions=True,
+    )
+    votes = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            logger.error("[%s] %s vote failed: %s", component, gated[i][0].name, r)
+            votes.append(AgentVote(agent_name=gated[i][0].name, dissent_reason=str(r)))
+            continue
+        votes.append(r)
+    return votes, skipped
 
 
 async def dispatch_with_gates(

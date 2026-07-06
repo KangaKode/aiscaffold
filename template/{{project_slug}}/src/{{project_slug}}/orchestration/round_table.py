@@ -17,7 +17,6 @@ Key design principles from 2026 research:
 Reference: docs/REFERENCES.md
 """
 
-import asyncio
 import logging
 import json
 from dataclasses import asdict, dataclass, field
@@ -146,6 +145,11 @@ class RoundTableResult:
     degraded/failed_agent_count: quorum tracking. degraded=True when fewer
     domain (non-core) agents than config.min_quorum produced analyses AND
     at least one agent was skipped by a dispatch gate or failed.
+
+    vote_gated_count: voters excluded by the Phase 3 dispatch gates
+    (suspension, rate limit). Any vote-phase gate-out also sets
+    degraded=True: the approval rate divides by votes actually cast, so
+    a silently shrunken voter set must never present as a clean result.
     """
 
     task_id: str
@@ -159,6 +163,7 @@ class RoundTableResult:
     duration_seconds: float = 0.0
     degraded: bool = False
     failed_agent_count: int = 0
+    vote_gated_count: int = 0
     requires_approval: bool = False  # Human must approve before acting on this
 
     @property
@@ -316,7 +321,17 @@ class RoundTable:
         )
         self._write_artifact(task.id, "phase3_synthesis", asdict(result.synthesis))
 
-        result.votes = await self._phase_voting(task, result.synthesis)
+        result.votes, result.vote_gated_count = await self._phase_voting(
+            task, result.synthesis
+        )
+        if result.vote_gated_count:
+            # A shrunken voter set must never present as a clean result.
+            result.degraded = True
+            logger.warning(
+                f"[RoundTable] Degraded result: {result.vote_gated_count} voter(s) "
+                f"gated out at Phase 3 -- consensus computed over "
+                f"{len(result.votes)} remaining vote(s)"
+            )
         self._write_artifact(task.id, "phase3_votes", [asdict(v) for v in result.votes])
 
         result.consensus_reached = result.approval_rate >= self.config.consensus_threshold
@@ -330,6 +345,8 @@ class RoundTable:
             "approval_rate": result.approval_rate,
             "duration": result.duration_seconds,
             "requires_approval": result.requires_approval,
+            "degraded": result.degraded,
+            "vote_gated_count": result.vote_gated_count,
         })
 
         logger.info(
@@ -416,69 +433,29 @@ class RoundTable:
 
         return analyses, skipped + failed
 
-    def _gate_agents(self, task: RoundTableTask) -> list[tuple[Any, RoundTableTask]]:
-        """Run the shared dispatch gates (identity/suspension, rate limit,
-        scope filtering) for one phase, exactly as Phase 1 does.
-
-        Gates are re-checked per phase, so an agent suspended mid-run is
-        excluded from every later phase.
-        """
-        from .dispatch_helpers import gate_agents
-
-        rate_limiter = getattr(self._registry, "rate_limiter", None)
-        gated, skipped = gate_agents(
-            self.agents, task, self._registry, rate_limiter, "RoundTable"
-        )
-        if skipped:
-            logger.warning(
-                f"[RoundTable] {skipped} agent(s) blocked by dispatch gates this phase"
-            )
-        return [(agent, agent_task) for agent, agent_task, _ in gated]
-
     async def _phase_challenge(
         self, task: RoundTableTask, analyses: list[AgentAnalysis]
     ) -> list[AgentChallenge]:
-        """Phase 2: Agents challenge each other (mediated hub-and-spoke).
+        """Phase 2 dispatch -- same gates as Phase 1, re-checked
+        (see dispatch_helpers.run_challenge_phase)."""
+        from .dispatch_helpers import run_challenge_phase
 
-        Dispatch passes the same gates as Phase 1 (identity/suspension,
-        rate limit, scope-filtered task).
-        """
-        gated = self._gate_agents(task)
-        results = await asyncio.gather(
-            *[agent.challenge(agent_task, analyses) for agent, agent_task in gated],
-            return_exceptions=True,
+        return await run_challenge_phase(
+            self.agents, task, analyses, self._registry
         )
-        challenges = []
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                logger.error(f"[RoundTable] {gated[i][0].name} challenge failed: {r}")
-                continue
-            challenges.append(r)
-        return challenges
 
     async def _phase_voting(
         self, task: RoundTableTask, synthesis: SynthesisResult
-    ) -> list[AgentVote]:
-        """Phase 3b: Agents vote on synthesis. Dissent is valuable.
+    ) -> tuple[list[AgentVote], int]:
+        """Phase 3b dispatch -- same gates as Phase 1, re-checked.
 
-        Dispatch passes the same gates as Phase 1 (identity/suspension,
-        rate limit, scope-filtered task). Gated agents cast no vote, so
-        consensus is computed over the votes actually returned -- the
-        approval rate never divides by the original agent count.
-        """
-        gated = self._gate_agents(task)
-        results = await asyncio.gather(
-            *[agent.vote(agent_task, synthesis) for agent, agent_task in gated],
-            return_exceptions=True,
+        Returns (votes, gated_out_count); a non-zero count marks the
+        result degraded (see dispatch_helpers.run_voting_phase)."""
+        from .dispatch_helpers import run_voting_phase
+
+        return await run_voting_phase(
+            self.agents, task, synthesis, self._registry
         )
-        votes = []
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                logger.error(f"[RoundTable] {gated[i][0].name} vote failed: {r}")
-                votes.append(AgentVote(agent_name=gated[i][0].name, dissent_reason=str(r)))
-                continue
-            votes.append(r)
-        return votes
 
     def _write_artifact(self, task_id: str, phase: str, data: Any) -> None:
         """Write intermediate results to filesystem for auditability."""
