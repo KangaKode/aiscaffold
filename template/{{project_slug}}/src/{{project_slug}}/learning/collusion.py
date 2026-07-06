@@ -26,7 +26,11 @@ suggested action names registry.suspend() as the human-approved remedy.
 All detectors are heuristic v1 -- thresholds are conservative and the
 pattern lists are extension points.
 
-Keep this file under 300 lines.
+Directed proposer->approver pair escalation over approved corrections
+lives in the sibling leaf module approval_patterns.py (kept out of this
+file to respect the line cap).
+
+Keep this file under 400 lines.
 """
 
 import json

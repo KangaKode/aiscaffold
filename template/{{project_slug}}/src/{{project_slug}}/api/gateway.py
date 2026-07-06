@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..agents.registry import AgentRegistry
 from ..learning.agent_trust import AgentTrustManager
 from ..learning.checkin_manager import CheckInManager
+from ..learning.extraction_guard import warn_inert_once as warn_extraction_defense_inert
 from ..learning.feedback_tracker import FeedbackTracker
 from ..learning.schema import initialize_schema as init_learning_db
 from ..learning.user_profile import UserProfileManager
@@ -159,6 +160,9 @@ def create_app(
             logger.info("[Gateway] Activity tracking enabled")
         except Exception as e:
             logger.warning(f"[Gateway] Activity tracking init failed (non-fatal): {e}")
+            warn_extraction_defense_inert("activity tracking init failed (no store)")
+    else:
+        warn_extraction_defense_inert("ACTIVITY_TRACKING_ENABLED is false")
 
     # Governance: budget manager (attached to the LLM client when both exist)
     # and the deliberation audit trail. Both reuse the learning store and
