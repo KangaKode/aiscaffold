@@ -160,7 +160,17 @@ class RemoteAgent:
             # Re-check DNS before EVERY attempt: with retries and long
             # timeouts the last attempt can run minutes after the first,
             # so a single up-front check would leave a wide rebind window.
-            await self._recheck_dns(endpoint)
+            # Deliberate: a re-check failure (rebind OR resolver error)
+            # aborts the remaining retries -- fail closed beats availability
+            # here. Preserve the prior attempt's error for diagnosis.
+            try:
+                await self._recheck_dns(endpoint)
+            except ConnectionError as e:
+                if last_error is not None:
+                    raise ConnectionError(
+                        f"{e} (previous attempt failed with: {last_error})"
+                    ) from e
+                raise
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     response = await client.post(

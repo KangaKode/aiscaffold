@@ -355,6 +355,31 @@ class TestBudgetCapPersistence:
             "max_budget_usd"
         ] == pytest.approx(2.0)
 
+    def test_ttl_reload_does_not_clobber_concurrent_set_budget(self, store):
+        """Regression: a get_budget thread that saw an expired TTL read the
+        old row, and if a set_budget completed in between, the reader
+        overwrote the fresh cap with its stale load -- the very process
+        that just changed the cap served the old one for a full TTL."""
+        import time as time_module
+
+        manager = BudgetManager(store=store)
+        manager.set_budget("acme", max_budget_usd=1.0)
+        # Force the next get_budget onto the TTL-reload path.
+        manager._config_read_at["acme"] = time_module.monotonic() - 10_000
+
+        real_load = manager._load_config
+
+        def load_then_lose_race(tenant_id):
+            stale = real_load(tenant_id)  # reads the 1.0 row...
+            # ...then a concurrent set_budget lands before we apply it.
+            manager.set_budget("acme", max_budget_usd=5.0)
+            return stale
+
+        manager._load_config = load_then_lose_race
+        assert manager.get_budget("acme")["max_budget_usd"] == pytest.approx(5.0)
+        manager._load_config = real_load
+        assert manager.get_budget("acme")["max_budget_usd"] == pytest.approx(5.0)
+
     @pytest.mark.asyncio
     async def test_budget_exceeded_still_propagates_from_llm_call(self, store):
         """Budget enforcement moved off the event loop (asyncio.to_thread)
@@ -378,6 +403,43 @@ class TestBudgetCapPersistence:
                 await client.call("hello")
         finally:
             _tenant_context.reset(token)
+
+
+class TestConcurrentUsageAccounting:
+    """_track_usage and the in-memory spend fallback run in
+    asyncio.to_thread workers, so their read-modify-write on shared
+    accumulators must be lock-guarded or concurrent calls lose updates
+    -- undercounting the _max_cost_usd circuit breaker."""
+
+    def test_concurrent_track_usage_does_not_lose_updates(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from {{project_slug}}.llm.client import LLMClient, TokenUsage
+
+        client = LLMClient(provider="anthropic", api_key="test-key")
+        usage = TokenUsage(
+            input_tokens=10, output_tokens=5, cached_input_tokens=1,
+            estimated_cost_usd=0.001,
+        )
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda _: client._track_usage(usage), range(200)))
+
+        total = client.total_usage
+        assert total.input_tokens == 2000
+        assert total.output_tokens == 1000
+        assert total.cached_input_tokens == 200
+        assert total.estimated_cost_usd == pytest.approx(0.2)
+
+    def test_concurrent_memory_spend_does_not_lose_updates(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        manager = BudgetManager()  # store-less: in-memory fallback path
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(
+                lambda _: manager.record_spend("acme", 0.01, model="m"),
+                range(200),
+            ))
+        assert manager.current_spend("acme") == pytest.approx(2.0)
 
 
 class TestSumAggregate:
@@ -615,6 +677,51 @@ class TestConnectTimeDnsRevalidation:
         with pytest.raises(ConnectionError, match="failed on"):
             await agent.analyze(sample_task)
         assert len(recheck_urls) == MAX_RETRIES + 1  # once per attempt
+
+    @pytest.mark.asyncio
+    async def test_recheck_failure_mid_retry_preserves_prior_error(
+        self, monkeypatch, sample_task
+    ):
+        """A re-check failure aborts the remaining retries (deliberate:
+        fail closed), but the error that triggered the retry must not be
+        dropped from the raised message."""
+        import httpx
+
+        from {{project_slug}}.agents import remote as remote_module
+        from {{project_slug}}.agents.remote import RemoteAgent
+        from {{project_slug}}.security.validators import ValidationError
+
+        recheck_count = 0
+
+        def flaky_recheck(url, field_name):
+            nonlocal recheck_count
+            recheck_count += 1
+            if recheck_count > 1:
+                raise ValidationError("hostname re-resolution failed")
+
+        monkeypatch.setattr(
+            remote_module, "revalidate_url_at_connect", flaky_recheck
+        )
+
+        def always_times_out(request):
+            raise httpx.TimeoutException("upstream stalled")
+
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            httpx, "AsyncClient",
+            lambda **kw: real_client(
+                transport=httpx.MockTransport(always_times_out), **kw
+            ),
+        )
+
+        agent = RemoteAgent(
+            name="flaky", domain="t", base_url="http://agent.example.com"
+        )
+        with pytest.raises(
+            ConnectionError, match="previous attempt failed with"
+        ) as exc_info:
+            await agent.analyze(sample_task)
+        assert "upstream stalled" in str(exc_info.value)
 
 
 # --- MCP client: URL validation off the event loop -----------------------------

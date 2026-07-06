@@ -42,6 +42,7 @@ Keep this file under 500 lines.
 import contextvars
 import logging
 import os
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -129,6 +130,9 @@ class BudgetManager:
         self._default_budget_usd = float(default_budget_usd)
         self._budgets: dict[str, dict] = {}
         self._memory_spend: dict[str, float] = {}
+        # Guards the in-memory spend fallback's read-modify-write, which
+        # runs in asyncio.to_thread workers under concurrent LLM calls.
+        self._spend_lock = threading.Lock()
         # Store-backed cap configs are re-read at most once per TTL;
         # tenants present here but absent from _budgets are cached
         # negative lookups (no cap configured).
@@ -241,9 +245,15 @@ class BudgetManager:
             read_at = self._config_read_at.get(tenant_id)
             if read_at is None or now - read_at >= self._config_ttl:
                 loaded = self._load_config(tenant_id)
-                self._config_read_at[tenant_id] = now
-                if loaded is not None:
-                    self._budgets[tenant_id] = loaded
+                # A concurrent set_budget may have refreshed the cap (and
+                # its stamp) while we were reading the old row -- applying
+                # our stale read would clobber the fresh cap in the very
+                # process that just changed it. Only apply if the stamp is
+                # unchanged since we decided to reload.
+                if self._config_read_at.get(tenant_id) == read_at:
+                    self._config_read_at[tenant_id] = now
+                    if loaded is not None:
+                        self._budgets[tenant_id] = loaded
         configured = self._budgets.get(tenant_id)
         if configured is not None:
             max_budget = configured["max_budget_usd"]
@@ -289,9 +299,12 @@ class BudgetManager:
                     f"falling back to in-memory spend for '{tenant_id}'"
                 )
 
-        self._memory_spend[tenant_id] = (
-            self._memory_spend.get(tenant_id, 0.0) + amount_usd
-        )
+        # record_spend is reached from asyncio.to_thread workers; the
+        # read-modify-write on the fallback accumulator needs the lock.
+        with self._spend_lock:
+            self._memory_spend[tenant_id] = (
+                self._memory_spend.get(tenant_id, 0.0) + amount_usd
+            )
 
     def current_spend(self, tenant_id: str, since_iso: str = "") -> float:
         """Total recorded spend for a tenant (store rows + in-memory fallback).

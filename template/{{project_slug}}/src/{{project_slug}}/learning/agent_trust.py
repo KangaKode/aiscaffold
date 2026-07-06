@@ -159,7 +159,7 @@ class AgentTrustManager:
                     conn.execute("ROLLBACK")
                 except sqlite3.Error:
                     # A failed ROLLBACK must not mask the original error;
-                    # the connection is closed by the context manager anyway.
+                    # the connection is closed in the finally block anyway.
                     logger.warning("[AgentTrust] ROLLBACK failed after error")
                 raise
 

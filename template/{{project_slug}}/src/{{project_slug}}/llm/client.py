@@ -8,6 +8,7 @@ Uses CacheablePrompt(system, context, user_message) for automatic caching.
 import asyncio
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -140,6 +141,11 @@ class LLMClient:
         self.budget_manager = budget_manager
         self._client: Any = None
         self._total_usage = TokenUsage()
+        # _track_usage runs in asyncio.to_thread workers, so concurrent
+        # calls on one shared client (the round-table fan-out case) would
+        # lose += updates without a lock -- undercounting the _max_cost_usd
+        # circuit breaker.
+        self._usage_lock = threading.Lock()
 
         self._init_client()
         logger.info(
@@ -441,12 +447,17 @@ class LLMClient:
         return type(error).__name__ in RETRYABLE_ERRORS
 
     def _track_usage(self, usage: TokenUsage) -> None:
-        """Accumulate usage stats and record tenant spend when budgets are on."""
-        self._total_usage.input_tokens += usage.input_tokens
-        self._total_usage.output_tokens += usage.output_tokens
-        self._total_usage.cached_input_tokens += usage.cached_input_tokens
-        self._total_usage.total_tokens += usage.total_tokens
-        self._total_usage.estimated_cost_usd += usage.estimated_cost_usd
+        """Accumulate usage stats and record tenant spend when budgets are on.
+
+        Thread-safe: called from asyncio.to_thread workers, so the shared
+        accumulator is guarded (see _usage_lock).
+        """
+        with self._usage_lock:
+            self._total_usage.input_tokens += usage.input_tokens
+            self._total_usage.output_tokens += usage.output_tokens
+            self._total_usage.cached_input_tokens += usage.cached_input_tokens
+            self._total_usage.total_tokens += usage.total_tokens
+            self._total_usage.estimated_cost_usd += usage.estimated_cost_usd
         record_response_spend(
             self.budget_manager, usage.estimated_cost_usd, self._model
         )
