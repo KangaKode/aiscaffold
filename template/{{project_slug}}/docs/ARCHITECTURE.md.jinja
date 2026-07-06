@@ -27,24 +27,29 @@ The codebase follows strict layered architecture with enforced dependency direct
 
 ### Additional Modules (outside the layer stack)
 
-These modules are not part of the dependency chain above:
+These modules are not part of the dependency chain above. This table is descriptive (measured from the import graph), not test-enforced -- `tests/test_architecture.py` checks the layer directories above, which start empty, and does not currently scan `src/`:
 
 | Module | Imports From | Imported By | Purpose |
 |--------|-------------|-------------|---------|
-| `llm/` | `security/` | `orchestration/`, `agents/` | LLM client with prompt caching |
 | `security/` | (none) | All modules | Prompt guard, validators, SSRF protection |
+| `observability/` | (none) | `llm/`, `orchestration/`, `api/` | Optional Prometheus metrics (no-op shim without the `[metrics]` extra) |
+| `llm/` | `security/`, `observability/` | `orchestration/`, `agents/`, `enforcement/`, `api/` | LLM client with prompt caching + model router |
+| `enforcement/` | `llm/` | `orchestration/`, `agents/` | Evidence enforcement pipeline + output signing |
+| `agents/` | `security/`, `llm/`, `enforcement/`, `orchestration/` (protocol types) | `orchestration/`, `api/` | Agent implementations, registry, identity |
 | `connectors/` | `security/` | `orchestration/`, `api/` | MCP client + per-tenant server registry |
 {% if include_api_gateway -%}
 | `api/` | All modules | (external HTTP) | FastAPI gateway, routes, middleware |
 {% endif -%}
 {% if include_learning -%}
-| `learning/` | `security/` | `api/`, `harness/` | Feedback, trust, preferences, RAG |
+| `learning/` | `security/` | `api/`, `harness/`, `orchestration/` | Feedback, trust, preferences, RAG |
 {% endif -%}
-| `harness/` | `learning/` (optional) | `api/` | Session lifecycle |
+| `harness/` | `learning/` (optional) | `api/` | Session lifecycle + sequence detector |
+
+Note the `agents/` <-> `orchestration/` cycle: agent protocol types currently live in `orchestration/round_table.py`, so `agents/` imports them back. It is a known wart, documented rather than hidden.
 
 ### Dependency Direction Rules
 
-These are enforced by `tests/test_architecture.py`:
+These apply to the layer directories above and are enforced by `tests/test_architecture.py` (the directories start empty -- the rules bind the code you add there):
 
 {% for layer in layer_list -%}
 {% set forbidden_layers = layer_list[loop.index0 + 1:] -%}
@@ -71,7 +76,7 @@ Provider-agnostic wrapper supporting Anthropic, OpenAI, and Google. Auto-detects
 
 - `llm/budget_manager.py` -- Per-tenant LLM spend governance: warn/exhaust thresholds, tenant context propagation via contextvars, and a pre-call gate that raises `BudgetExceededError` for exhausted tenants
 - `llm/mock.py` -- `MockLLMClient`: deterministic, offline, zero-cost LLM client (role-keyed canned responses or a scripted list) for tests and demos with no API key
-- `llm/model_config.py` + `llm/model_router.py` -- Optional model routing across four cost tiers (nano/budget/standard/frontier). The tier map and role->tier assignments are env/JSON-configurable (no hardcoded price table); the router does heuristic tier selection, one-tier cascade on failure, a per-tier circuit breaker, and budget-aware downgrades via `BudgetManager.remaining_pct`. Off unless `MODEL_ROUTING_ENABLED` is set
+- `llm/model_config.py` + `llm/model_router.py` -- Optional model routing across four cost tiers (nano/budget/standard/frontier). The tier map and role->tier assignments are env/JSON-configurable (no hardcoded price table); the router does heuristic tier selection, one-tier cascade on failure, a per-tier circuit breaker, and budget-aware downgrades via `BudgetManager.remaining_pct`. Off unless `MODEL_ROUTING_ENABLED` is set -- and even then it is initialized at the gateway but not yet consulted by the LLM client; wiring `route()`/`cascade()` into your client is an extension point (see GOVERNANCE.md Non-Claims)
 
 **Key files:** `llm/client.py`, `llm/budget_manager.py`, `llm/model_router.py`
 
@@ -196,11 +201,11 @@ FastAPI application with route modules:
 
 ### Security (`security/`)
 - `prompt_guard.py` -- XML delimiter wrapping, injection pattern detection, content sanitization
-- `injection_defense.py` -- Homoglyph normalization, invisible-character stripping, encoding-attack detection, canary tokens, output drift and multi-turn poisoning detection
+- `injection_defense.py` -- Homoglyph normalization, invisible-character stripping, encoding-attack detection, canary tokens, output drift and multi-turn poisoning detection (the response-side helpers -- `check_canary`, `detect_output_drift`, `detect_multi_turn_poisoning` -- are caller-invoked utilities, not wired into the default pipeline)
 - `validators.py` -- Input length, URL (anti-SSRF), identifier, list/dict size validation
 - `pii.py` -- Pattern-based PII redaction (emails, SSNs, Luhn-verified cards, IPs, phones, names-in-context) with Unicode normalization; idempotent `[REDACTED:CATEGORY]` tokens
 
-Prompt injection is defended in 3 layers: static pattern matching in `prompt_guard.py` (Layer 1), advanced normalization and detection in `injection_defense.py` (Layer 2), and semantic screening by the Sentinel core agent (Layer 3). Security is wired into every module that handles external input, not bolted on as an afterthought.
+Prompt injection is defended in 3 layers: static pattern matching in `prompt_guard.py` (Layer 1), advanced normalization and detection in `injection_defense.py` (Layer 2), and semantic screening by the Sentinel core agent (Layer 3). Coverage differs by surface at runtime: user messages are sanitized and boundary-wrapped (no pattern scan); remote-agent and MCP content gets the Layer 1 scan without Layer 2 decoding; knowledge writes get the full Layer 1+2 scan; and the Sentinel screens the deliberation path semantically. The per-surface breakdown is a stated Non-Claim in GOVERNANCE.md.
 
 {% if include_learning -%}
 ### Learning System (`learning/`)
@@ -215,8 +220,8 @@ Prompt injection is defended in 3 layers: static pattern matching in `prompt_gua
 - `store.py` -- Pluggable `LearningStore` protocol (6 methods) with SQLite (default) and Postgres reference backends (`LEARNING_BACKEND`); table definitions in `tables.py`
 - `corrections.py` -- Correction lifecycle (proposed -> approved -> retired) with four-eyes approval and budgeted, sanitized prompt rendering
 - `override_detector.py` -- Screens proposed corrections for injection, safety-agent targeting, and evidence-level inflation
-- `collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection over round-table history
-- `activity.py` -- User activity thresholds and per-agent behavioral baselines over dispatch stats
+- `collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection over round-table history (tested detector library; the default runtime does not record votes into it -- see GOVERNANCE.md Non-Claims)
+- `activity.py` -- User activity thresholds (wired into the sampled activity middleware) and per-agent behavioral baselines over dispatch stats (baseline deviation checks are a library the default dispatch does not invoke -- see GOVERNANCE.md Non-Claims)
 - `content_policy.py` -- Heuristic classifier for knowledge writes (approved/flagged/rejected); blocks standing-rule manipulation and persists integrity flags
 - `reflector.py` -- Deterministic process-level lessons after each round table (agent effectiveness, evidence patterns, challenge impact, dissent value); capped, structured-fields-only, read via `GET /api/v1/reflections`
 - `error_schemata.py` -- Generalizes clusters of approved corrections (>= 3, >= 2 distinct proposers) into reusable error schemas injected into single-shot context
