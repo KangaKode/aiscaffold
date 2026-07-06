@@ -297,6 +297,20 @@ class TestBudgetCapPersistence:
         writer.set_budget("acme", max_budget_usd=5.0)  # "another process"
         assert reader.get_budget("acme")["max_budget_usd"] == pytest.approx(5.0)
 
+    def test_malformed_ttl_env_var_does_not_disable_budgets(
+        self, store, monkeypatch
+    ):
+        """Regression: a malformed BUDGET_CONFIG_TTL_SECONDS (e.g. "60s")
+        raised ValueError in the constructor, which the gateway swallows
+        as a non-fatal init failure -- silently disabling ALL budget
+        enforcement. The manager must construct with the default TTL and
+        still enforce caps."""
+        monkeypatch.setenv("BUDGET_CONFIG_TTL_SECONDS", "60s")
+        manager = BudgetManager(store=store)  # must not raise
+        manager.set_budget("acme", max_budget_usd=1.0)
+        manager.record_spend("acme", 2.0, model="test-model")
+        assert manager.check("acme") == BudgetStatus.EXHAUSTED
+
     def test_unconfigured_tenant_lookups_are_cached_within_ttl(
         self, store, monkeypatch
     ):

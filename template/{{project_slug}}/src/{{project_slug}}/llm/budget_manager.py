@@ -133,9 +133,20 @@ class BudgetManager:
         # tenants present here but absent from _budgets are cached
         # negative lookups (no cap configured).
         self._config_read_at: dict[str, float] = {}
-        self._config_ttl = float(
-            os.getenv("BUDGET_CONFIG_TTL_SECONDS", str(DEFAULT_CONFIG_TTL_SECONDS))
-        )
+        # Defensive parse: a malformed value must not raise, because the
+        # gateway treats a BudgetManager construction failure as non-fatal
+        # and would silently disable budget enforcement entirely.
+        ttl_raw = os.getenv("BUDGET_CONFIG_TTL_SECONDS", "")
+        try:
+            self._config_ttl = float(ttl_raw) if ttl_raw.strip() else float(
+                DEFAULT_CONFIG_TTL_SECONDS
+            )
+        except ValueError:
+            logger.warning(
+                f"[Budget] Invalid BUDGET_CONFIG_TTL_SECONDS={ttl_raw!r}; "
+                f"using default {DEFAULT_CONFIG_TTL_SECONDS}s"
+            )
+            self._config_ttl = float(DEFAULT_CONFIG_TTL_SECONDS)
 
     def set_budget(
         self, tenant_id: str, max_budget_usd: float, warn_at: float = DEFAULT_WARN_AT
