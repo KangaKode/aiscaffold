@@ -20,7 +20,7 @@ from ...orchestration.round_table import (
     RoundTableTask,
     SynthesisResult,
 )
-from ._fail_closed import llm_call_failed, parse_agent_json
+from ...llm.response_guard import llm_call_failed, parse_agent_json
 
 logger = logging.getLogger(__name__)
 
