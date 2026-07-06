@@ -1,0 +1,414 @@
+"""Regression tests for the fail-closed safety contract.
+
+Three related audit findings:
+
+1. LLMResponse error contract: every error return from LLMClient sets
+   is_error=True with a machine-readable error_type, so callers can fail
+   closed without pattern-matching bracketed strings in content.
+2. Core agents fail closed on LLM failure: a transport/budget error must
+   never flow into JSON parsing as a benign non-answer. Sentinel refuses
+   (premise_valid=False), voters dissent; parse failures on REAL model
+   output still degrade gracefully (two-way split).
+3. Challenge/vote dispatch gates: Phases 2 and 3 pass the same
+   identity/suspension/rate-limit/scope gates as Phase 1, so an agent
+   suspended mid-run is excluded from later phases and consensus math
+   handles the shrinking voter set.
+"""
+
+import json
+
+import pytest
+
+from {{project_slug}}.agents.capability import AgentCapability
+from {{project_slug}}.agents.core import (
+    CitationAgent,
+    EvidenceAgent,
+    FactCheckerAgent,
+    QualityAgent,
+    SentinelAgent,
+    SkepticAgent,
+)
+from {{project_slug}}.agents.registry import AgentRegistry
+from {{project_slug}}.llm.client import LLMClient, LLMResponse
+from {{project_slug}}.orchestration.round_table import (
+    AgentAnalysis,
+    AgentChallenge,
+    AgentVote,
+    RoundTable,
+    RoundTableConfig,
+    RoundTableTask,
+    SynthesisResult,
+)
+
+
+class StubLLM:
+    """Returns one fixed LLMResponse for every call."""
+
+    def __init__(self, response: LLMResponse):
+        self._response = response
+
+    async def call(self, **kwargs) -> LLMResponse:
+        return self._response
+
+
+def _error_response(content: str, error_type: str) -> LLMResponse:
+    return LLMResponse(
+        content=content, provider="test", model="test",
+        is_error=True, error_type=error_type,
+    )
+
+
+def _budget_exhausted_client() -> LLMClient:
+    """A real LLMClient whose budget circuit breaker is already tripped.
+
+    max_cost_usd=0.0 makes the pre-call budget check fail immediately
+    (0.0 spent >= 0.0 cap), so call() returns the budget-exhausted error
+    response without touching any provider SDK.
+    """
+    return LLMClient(provider="anthropic", api_key="test-key", max_cost_usd=0.0)
+
+
+def _task() -> RoundTableTask:
+    return RoundTableTask(id="fail_closed_test", content="Analyze the dataset")
+
+
+# =============================================================================
+# 1. LLMResponse error contract
+# =============================================================================
+
+
+class TestLLMResponseErrorContract:
+    def test_defaults_are_not_error(self):
+        response = LLMResponse(content="ok")
+        assert response.is_error is False
+        assert response.error_type == ""
+
+    @pytest.mark.asyncio
+    async def test_budget_exhausted_sets_is_error(self):
+        """Pre-fix, the budget-exhausted return carried only a bracketed
+        string in content and no error flag (the is_error field did not
+        exist), so callers could not distinguish it from model output."""
+        client = _budget_exhausted_client()
+        response = await client.call("test prompt")
+        assert "Budget exhausted" in response.content
+        assert response.is_error is True
+        assert response.error_type == "budget_exhausted"
+
+    @pytest.mark.asyncio
+    async def test_client_not_initialized_sets_is_error(self):
+        client = LLMClient(provider="anthropic", api_key="test-key")
+        client._client = None
+        response = await client.call("test prompt")
+        assert "not initialized" in response.content
+        assert response.is_error is True
+        assert response.error_type == "client_not_initialized"
+
+    @pytest.mark.asyncio
+    async def test_call_failed_after_retries_sets_is_error(self):
+        client = LLMClient(provider="anthropic", api_key="test-key", max_retries=0)
+        client._client = object()
+
+        async def failing_provider(prompt, temp, max_tok):
+            raise ValueError("bad input")
+
+        client._call_provider = failing_provider
+        response = await client.call("test prompt")
+        assert "LLM call failed" in response.content
+        assert response.is_error is True
+        assert response.error_type == "call_failed"
+
+    @pytest.mark.asyncio
+    async def test_successful_call_is_not_error(self):
+        client = LLMClient(provider="anthropic", api_key="test-key")
+        client._client = object()
+
+        async def ok_provider(prompt, temp, max_tok):
+            return LLMResponse(content="ok", provider="anthropic", model="test")
+
+        client._call_provider = ok_provider
+        response = await client.call("test prompt")
+        assert response.is_error is False
+        assert response.error_type == ""
+
+
+# =============================================================================
+# 2. Core agents fail closed
+# =============================================================================
+
+
+class TestSentinelFailClosed:
+    @pytest.mark.asyncio
+    async def test_budget_exhausted_refuses(self):
+        """THE audit finding: a budget-exhausted message must refuse.
+
+        Pre-fix, the budget-exhausted string flowed into json.loads,
+        raised JSONDecodeError, and the fallback only recognized
+        '[LLM call failed' as an LLM failure -- so budget exhaustion was
+        treated as a benign parse failure and screening PASSED
+        (premise_valid=True). This test fails on that code."""
+        agent = SentinelAgent(llm_client=_budget_exhausted_client())
+        analysis = await agent.analyze(_task())
+        assert analysis.premise_valid is False
+        assert analysis.refusal_reason == "sentinel_unavailable"
+        assert analysis.observations[0]["severity"] == "critical"
+
+    @pytest.mark.asyncio
+    async def test_transport_failure_refuses(self):
+        agent = SentinelAgent(llm_client=StubLLM(
+            _error_response("[LLM call failed: APITimeoutError]", "call_failed")
+        ))
+        analysis = await agent.analyze(_task())
+        assert analysis.premise_valid is False
+        assert analysis.refusal_reason == "sentinel_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_from_live_model_degrades_to_warning(self):
+        """The other half of the two-way split: a REAL model response
+        that fails to parse is a formatting quirk, not a refusal."""
+        agent = SentinelAgent(llm_client=StubLLM(
+            LLMResponse(content="The input looks safe to me.", provider="test")
+        ))
+        analysis = await agent.analyze(_task())
+        assert analysis.premise_valid is True
+        assert analysis.refusal_reason == ""
+        assert analysis.observations[0]["severity"] == "warning"
+
+    @pytest.mark.asyncio
+    async def test_fenced_json_parses(self):
+        """Pre-fix, bare json.loads could not parse markdown-fenced JSON,
+        so a well-formed screening verdict was discarded as unparseable."""
+        verdict = json.dumps({
+            "risk_level": "SAFE", "reasoning": "No indicators",
+            "indicators": [], "recommended_action": "proceed",
+        })
+        agent = SentinelAgent(llm_client=StubLLM(
+            LLMResponse(content=f"```json\n{verdict}\n```", provider="test")
+        ))
+        analysis = await agent.analyze(_task())
+        assert analysis.observations[0]["finding"] == "Input screening: SAFE"
+        assert analysis.premise_valid is True
+
+    @pytest.mark.asyncio
+    async def test_vote_dissents_on_llm_error(self):
+        agent = SentinelAgent(llm_client=StubLLM(
+            _error_response("[Budget exhausted: $1.0 limit reached]", "budget_exhausted")
+        ))
+        vote = await agent.vote(_task(), SynthesisResult())
+        assert vote.approve is False
+        assert "LLM call failed" in vote.dissent_reason
+
+
+ANALYZER_AGENTS = [EvidenceAgent, QualityAgent, SkepticAgent]
+ALL_LLM_AGENTS = [
+    EvidenceAgent, QualityAgent, SkepticAgent, FactCheckerAgent, CitationAgent,
+]
+
+
+class TestCoreAgentsFailClosed:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent_cls", ANALYZER_AGENTS)
+    async def test_analyze_flags_llm_error_without_surfacing_it(self, agent_cls):
+        """Pre-fix, the budget-exhausted string became the analysis
+        'finding' verbatim (severity info) -- an error message presented
+        as a deliberation observation."""
+        agent = agent_cls(llm_client=StubLLM(
+            _error_response("[Budget exhausted: $1.0 limit reached]", "budget_exhausted")
+        ))
+        analysis = await agent.analyze(_task())
+        assert "LLM call failed" in analysis.observations[0]["finding"]
+        assert analysis.observations[0]["severity"] == "warning"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent_cls", ANALYZER_AGENTS)
+    async def test_analyze_parses_fenced_json(self, agent_cls):
+        """Pre-fix, bare json.loads dropped fenced observations."""
+        payload = json.dumps({
+            "observations": [{"finding": "Fenced finding", "evidence": "e",
+                              "severity": "info", "confidence": 0.8}],
+            "recommendations": [],
+        })
+        agent = agent_cls(llm_client=StubLLM(
+            LLMResponse(content=f"```json\n{payload}\n```", provider="test")
+        ))
+        analysis = await agent.analyze(_task())
+        assert analysis.observations[0]["finding"] == "Fenced finding"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent_cls", ALL_LLM_AGENTS)
+    async def test_vote_dissents_on_llm_error(self, agent_cls):
+        agent = agent_cls(llm_client=StubLLM(
+            _error_response("[LLM call failed: RuntimeError]", "call_failed")
+        ))
+        vote = await agent.vote(_task(), SynthesisResult())
+        assert vote.approve is False
+        assert "LLM call failed" in vote.dissent_reason
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent_cls", ALL_LLM_AGENTS)
+    async def test_challenge_empty_on_llm_error(self, agent_cls):
+        agent = agent_cls(llm_client=StubLLM(
+            _error_response("[LLM call failed: RuntimeError]", "call_failed")
+        ))
+        peer = AgentAnalysis(agent_name="peer", domain="testing",
+                             observations=[{"finding": "x"}])
+        challenge = await agent.challenge(_task(), [peer])
+        assert challenge.challenges == []
+
+
+# =============================================================================
+# 3. Challenge/vote dispatch gates
+# =============================================================================
+
+
+class TrackingAgent:
+    """Records which phases it was dispatched in, and the context it saw."""
+
+    def __init__(self, name: str, domain: str = "general analysis"):
+        self.name = name
+        self.domain = domain
+        self.challenge_called = False
+        self.vote_called = False
+        self.challenge_context: dict | None = None
+        self.vote_context: dict | None = None
+
+    async def analyze(self, task):
+        return AgentAnalysis(agent_name=self.name, domain=self.domain,
+                             confidence=0.7)
+
+    async def challenge(self, task, other_analyses):
+        self.challenge_called = True
+        self.challenge_context = dict(task.context)
+        return AgentChallenge(agent_name=self.name)
+
+    async def vote(self, task, synthesis):
+        self.vote_called = True
+        self.vote_context = dict(task.context)
+        return AgentVote(agent_name=self.name, approve=True)
+
+
+class SelfSuspendingAgent(TrackingAgent):
+    """Suspends itself in the registry during Phase 1 -- models an agent
+    suspended by an operator between analysis and the later phases."""
+
+    def __init__(self, name: str, registry: AgentRegistry):
+        super().__init__(name)
+        self._registry = registry
+
+    async def analyze(self, task):
+        result = await super().analyze(task)
+        self._registry.suspend(self.name)
+        return result
+
+
+def _config(tmp_path, **overrides) -> RoundTableConfig:
+    defaults = dict(
+        artifacts_dir=tmp_path / "artifacts",
+        include_core_agents=False,
+        enforce_evidence=False,
+        enable_strategy_phase=False,
+        enable_challenge_phase=True,
+        premise_challenge_enabled=False,
+    )
+    defaults.update(overrides)
+    return RoundTableConfig(**defaults)
+
+
+class TestChallengeVoteGating:
+    @pytest.mark.asyncio
+    async def test_agent_suspended_between_phases_is_excluded(self, tmp_path):
+        """Pre-fix, _phase_challenge and _phase_voting iterated
+        self.agents directly with no gate checks, so a mid-run suspension
+        changed nothing: the suspended agent still challenged and voted
+        (3 votes, not 2). This test fails on that code."""
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        steady_a = TrackingAgent("steady_a")
+        steady_b = TrackingAgent("steady_b")
+        turncoat = SelfSuspendingAgent("turncoat", registry)
+        agents = [steady_a, steady_b, turncoat]
+        for agent in agents:
+            registry.register_local(agent)
+
+        rt = RoundTable(agents=agents, config=_config(tmp_path),
+                        registry=registry)
+        result = await rt.run(_task())
+
+        # Phase 1 dispatched all three (suspension landed mid-phase).
+        assert len(result.analyses) == 3
+
+        # Phases 2 and 3 re-check the gates: suspended agent excluded.
+        assert turncoat.challenge_called is False
+        assert turncoat.vote_called is False
+        assert steady_a.challenge_called and steady_b.challenge_called
+        assert {v.agent_name for v in result.votes} == {"steady_a", "steady_b"}
+
+    @pytest.mark.asyncio
+    async def test_consensus_math_handles_shrinking_voter_set(self, tmp_path):
+        """Both remaining agents approve: approval must be 2/2 = 1.0
+        (votes actually cast), not 2/3 against the original roster --
+        and the run must complete rather than deadlock."""
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        agents = [
+            TrackingAgent("steady_a"),
+            TrackingAgent("steady_b"),
+            SelfSuspendingAgent("turncoat", registry),
+        ]
+        for agent in agents:
+            registry.register_local(agent)
+
+        rt = RoundTable(
+            agents=agents,
+            config=_config(tmp_path, consensus_threshold=0.7),
+            registry=registry,
+        )
+        result = await rt.run(_task())
+
+        assert len(result.votes) == 2
+        assert result.approval_rate == 1.0
+        assert result.consensus_reached is True
+
+    @pytest.mark.asyncio
+    async def test_scope_filter_applies_to_challenge_and_vote(self, tmp_path):
+        """Later phases receive the scope-filtered task exactly as
+        Phase 1 does: context keys outside the agent's access_scopes
+        must not appear in challenge/vote dispatches either."""
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        scoped = TrackingAgent("scoped_agent")
+        registry.register_local(
+            scoped, capability=AgentCapability(access_scopes=["allowed_key"]),
+        )
+
+        rt = RoundTable(agents=[scoped], config=_config(tmp_path),
+                        registry=registry)
+        task = RoundTableTask(
+            id="scope_test", content="Analyze",
+            context={"allowed_key": "visible", "secret_key": "hidden"},
+        )
+        await rt.run(task)
+
+        assert scoped.challenge_context is not None
+        assert scoped.vote_context is not None
+        assert "secret_key" not in scoped.challenge_context
+        assert "secret_key" not in scoped.vote_context
+        assert scoped.challenge_context.get("allowed_key") == "visible"
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_gates_later_phases(self, tmp_path):
+        """Each phase consumes one rate-limit token; an agent capped at
+        1 call/hour analyzes but is blocked from challenge and vote."""
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        capped = TrackingAgent("capped_agent")
+        free = TrackingAgent("free_agent")
+        registry.register_local(
+            capped, capability=AgentCapability(max_calls_per_hour=1),
+        )
+        registry.register_local(free)
+
+        rt = RoundTable(agents=[capped, free], config=_config(tmp_path),
+                        registry=registry)
+        result = await rt.run(_task())
+
+        assert len(result.analyses) == 2
+        assert capped.challenge_called is False
+        assert capped.vote_called is False
+        assert free.vote_called is True
+        assert {v.agent_name for v in result.votes} == {"free_agent"}
