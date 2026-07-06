@@ -114,6 +114,17 @@ make docker-run  # Run with Docker
 {% endif -%}
 ```
 
+## Updating from the template
+
+This project was generated with [Copier](https://copier.readthedocs.io/) and records
+its template version and answers in `.copier-answers.yml` (keep that file committed).
+To pull in a newer template release:
+
+```bash
+pip install copier
+copier update --trust   # from a clean git working tree; review the diff, then run make test
+```
+
 ## Architecture
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for layering rules and dependency directions.
