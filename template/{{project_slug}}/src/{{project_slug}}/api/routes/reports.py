@@ -55,6 +55,14 @@ def _parse_date(raw: str, field_name: str) -> datetime:
             status_code=422,
             detail=f"{field_name} must be an ISO date (e.g. 2026-07-01)",
         )
+    if parsed.tzinfo is not None:
+        # Everything the store timestamps is naive local time; letting an
+        # aware datetime through would raise on comparison (a 500, and a
+        # cap-free error probe). Reject at the boundary instead.
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field_name} must not include a timezone offset",
+        )
     if not MIN_YEAR <= parsed.year <= MAX_YEAR:
         raise HTTPException(
             status_code=422,
@@ -136,4 +144,8 @@ async def get_governance_report(
     report = build_governance_report(store, auth.tenant_id, from_dt, to_dt)
     record_report_event(store, auth.tenant_id, auth.user_id)
     report["reports_today"] = cap_used + 1
+    if to_date:
+        # Echo the caller's requested bound, not the internal exclusive
+        # upper bound (date-only requests are widened to next midnight).
+        report["to_date"] = to_date
     return report

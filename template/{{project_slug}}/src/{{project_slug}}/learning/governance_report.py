@@ -25,7 +25,7 @@ Rate cap: report generation is capped per user per day
 same way erasure caps are (learning/erasure.py), so the cap survives
 restarts. Every generated report leaves an audit event.
 
-Keep this file under 300 lines.
+Keep this file under 350 lines.
 """
 
 import json
@@ -35,6 +35,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from .aging import row_is_stale, stale_days
+from .erasure import ERASURE_EVENT_TYPE
 from .store import LearningStore
 
 logger = logging.getLogger(__name__)
@@ -181,7 +182,14 @@ def _count_by(rows: list[dict], column: str) -> dict[str, int]:
     return counts
 
 
+# Meta audit events the platform writes about itself (rate-cap ledgers,
+# not deliberation activity). Excluded from the deliberation section so
+# generating reports or processing erasures cannot inflate its counts.
+META_EVENT_TYPES = {REPORT_EVENT_TYPE, ERASURE_EVENT_TYPE}
+
+
 def _deliberation_section(rows: list[dict], coverage: dict) -> dict:
+    rows = [r for r in rows if r.get("event_type") not in META_EVENT_TYPES]
     completed = [r for r in rows if r.get("event_type") == "deliberation_completed"]
     return {
         "events_by_type": _count_by(rows, "event_type"),
@@ -202,11 +210,27 @@ def _flags_section(rows: list[dict], coverage: dict) -> dict:
 
 
 def _corrections_section(
-    windowed: list[dict], all_fetched: list[dict], coverage: dict
+    windowed: list[dict],
+    all_fetched: list[dict],
+    coverage: dict,
+    from_dt: datetime,
+    to_dt: datetime,
 ) -> dict:
-    """Lifecycle counts for the window, plus a point-in-time staleness
-    snapshot over every fetched approved row (staleness is a property of
-    NOW, not of the reporting window)."""
+    """Lifecycle-activity counts for the window, plus a point-in-time
+    staleness snapshot over every fetched approved row (staleness is a
+    property of NOW, not of the reporting window).
+
+    Windowing is by updated_at -- every lifecycle transition (approve /
+    reject / retire) bumps it -- so approving an old proposal inside the
+    window counts, and old corrections without window activity do not.
+    Revalidations deliberately do NOT bump updated_at; they are counted
+    separately via last_validated_at.
+    """
+    revalidations_in_window = 0
+    for row in all_fetched:
+        stamp = _parse(row.get("last_validated_at") or "")
+        if stamp is not None and from_dt <= stamp < to_dt:
+            revalidations_in_window += 1
     approved = [r for r in all_fetched if r.get("status") == "approved"]
     stale_now = [r for r in approved if row_is_stale(r)]
     # Fresh purely because someone revalidated: would be stale on the
@@ -225,7 +249,10 @@ def _corrections_section(
         and r.get("last_validated_by") == r.get("created_by")
     )
     return {
-        "by_status": _count_by(windowed, "status"),
+        # Corrections with lifecycle activity (updated_at) in the window,
+        # bucketed by their CURRENT status.
+        "lifecycle_activity_by_status": _count_by(windowed, "status"),
+        "revalidations_in_window": revalidations_in_window,
         "stale_days_threshold": stale_days(),
         "stale_approved_now": len(stale_now),
         "fresh_only_via_revalidation": len(revalidation_carried),
@@ -251,8 +278,11 @@ def build_governance_report(
     flag_rows, flag_cov = _fetch_section(
         store, "integrity_flags", tenant_id, from_dt, to_dt
     )
+    # Window corrections by updated_at so lifecycle transitions inside
+    # the window on OLDER corrections are counted (see _corrections_section).
     corr_rows, corr_cov = _fetch_section(
-        store, "corrections", tenant_id, from_dt, to_dt
+        store, "corrections", tenant_id, from_dt, to_dt,
+        time_column="updated_at",
     )
     # Staleness snapshot needs every fetched approved row, not only the
     # window slice; refetch cheaply at the same cap.
@@ -277,7 +307,9 @@ def build_governance_report(
         "sections": {
             "deliberation": _deliberation_section(audit_rows, audit_cov),
             "integrity_flags": _flags_section(flag_rows, flag_cov),
-            "corrections": _corrections_section(corr_rows, corr_all, corr_cov),
+            "corrections": _corrections_section(
+                corr_rows, corr_all, corr_cov, from_dt, to_dt
+            ),
             "reflections": {
                 "count": len(refl_rows),
                 "by_type": _count_by(refl_rows, "reflection_type"),

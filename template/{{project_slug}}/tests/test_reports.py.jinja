@@ -93,7 +93,7 @@ class TestReportBuilder:
 
         report = build_governance_report(store, "default", *WINDOW)
         sections = report["sections"]
-        assert sections["corrections"]["by_status"] == {}
+        assert sections["corrections"]["lifecycle_activity_by_status"] == {}
         assert sections["integrity_flags"]["by_type"] == {}
         assert sections["deliberation"]["total_events"] == 0
 
@@ -126,7 +126,9 @@ class TestReportBuilder:
         })
 
         sections = build_governance_report(store, "default", *WINDOW)["sections"]
-        assert sections["corrections"]["by_status"] == {"approved": 1, "proposed": 1}
+        assert sections["corrections"]["lifecycle_activity_by_status"] == {
+            "approved": 1, "proposed": 1,
+        }
         assert sections["integrity_flags"]["resolved"] == 1
         assert sections["integrity_flags"]["unresolved"] == 1
         assert sections["integrity_flags"]["by_type"]["timing_regularity_anomaly"] == 1
@@ -153,6 +155,46 @@ class TestReportBuilder:
         assert section["stale_approved_now"] == 1
         assert section["fresh_only_via_revalidation"] == 1
         assert section["self_revalidated_ids"] == ["corr-0002"]
+
+    def test_lifecycle_counts_window_by_updated_at(self, store):
+        old = "2020-01-01T00:00:00"
+        # Old correction APPROVED inside the window: lifecycle activity.
+        store.insert("corrections", correction_row(1, created_at=old))
+        # Old correction with no window activity at all.
+        store.insert("corrections", correction_row(
+            2, created_at=old, updated_at=old, status="retired",
+        ))
+
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["corrections"]
+        assert section["lifecycle_activity_by_status"] == {"approved": 1}
+
+    def test_revalidations_counted_separately_from_lifecycle(self, store):
+        old = "2020-01-01T00:00:00"
+        # Revalidated in the window; updated_at untouched (item: revalidate
+        # is not a lifecycle change), so it must NOT appear in the
+        # lifecycle buckets but MUST count as a revalidation.
+        store.insert("corrections", correction_row(
+            1, created_at=old, updated_at=old,
+            last_validated_at=NOW.isoformat(), last_validated_by="bob",
+        ))
+
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["corrections"]
+        assert section["lifecycle_activity_by_status"] == {}
+        assert section["revalidations_in_window"] == 1
+
+    def test_meta_events_excluded_from_deliberation_section(self, store):
+        store.insert("audit_events", audit_row(1))
+        record_report_event(store, "default", "user-a")
+        store.insert("audit_events", audit_row(
+            2, event_type="correction_erasure", outcome="erased",
+        ))
+
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["deliberation"]
+        assert section["total_events"] == 1
+        assert set(section["events_by_type"]) == {"deliberation_completed"}
 
     def test_horizon_annotated_when_fetch_cap_hit(self, store, monkeypatch):
         monkeypatch.setattr(governance_report, "SECTION_FETCH_CAP", 3)
@@ -206,11 +248,14 @@ class TestReportCap:
 class TestGovernanceReportAPI:
     @pytest.fixture
     async def api(self, tmp_path, monkeypatch):
-        """(client, store) pair -- gateway wired to a tmp-path learning store."""
+        """(client, store) pair -- gateway wired to a tmp-path learning
+        store, with the corrections manager rebound to the SAME store so
+        lifecycle endpoints and the report see one database."""
         from httpx import ASGITransport, AsyncClient
 
         from {{project_slug}}.agents.registry import AgentRegistry
         from {{project_slug}}.api.gateway import create_app
+        from {{project_slug}}.learning.corrections import CorrectionsManager
 
         monkeypatch.delenv("API_KEY", raising=False)
         monkeypatch.delenv("ENV", raising=False)
@@ -220,6 +265,7 @@ class TestGovernanceReportAPI:
         app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
         api_store = SqliteLearningStore(db_path=tmp_path / "api_learning.db")
         app.state.learning_store = api_store
+        app.state.corrections_manager = CorrectionsManager(api_store)
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -233,7 +279,9 @@ class TestGovernanceReportAPI:
         assert r.status_code == 200
         body = r.json()
         assert body["tenant_id"] == "default"
-        assert body["sections"]["corrections"]["by_status"] == {"approved": 1}
+        assert body["sections"]["corrections"]["lifecycle_activity_by_status"] == {
+            "approved": 1,
+        }
         assert body["reports_today"] == 1
         assert "SECRET-" not in r.text
 
@@ -246,7 +294,8 @@ class TestGovernanceReportAPI:
 
         r = await client.get("/api/v1/reports/governance")
         assert r.status_code == 200
-        assert r.json()["sections"]["corrections"]["by_status"] == {}
+        assert r.json()["sections"]["corrections"][
+            "lifecycle_activity_by_status"] == {}
 
     async def test_date_validation(self, api):
         client, _ = api
@@ -260,6 +309,67 @@ class TestGovernanceReportAPI:
             "/api/v1/reports/governance?from_date=2020-01-01&to_date=2026-01-01"
         )
         assert r.status_code == 422
+
+    async def test_timezone_aware_dates_rejected_not_500(self, api):
+        client, _ = api
+        r = await client.get(
+            "/api/v1/reports/governance"
+            "?from_date=2026-01-01T00:00:00%2B00:00&to_date=2026-01-31"
+        )
+        assert r.status_code == 422
+        r = await client.get(
+            "/api/v1/reports/governance"
+            "?from_date=2026-01-01&to_date=2026-01-31T00:00:00Z"
+        )
+        assert r.status_code == 422
+
+    async def test_to_date_echoes_requested_value(self, api):
+        client, _ = api
+        r = await client.get(
+            "/api/v1/reports/governance?from_date=2026-01-01&to_date=2026-01-15"
+        )
+        assert r.status_code == 200
+        # The caller's bound, not the internal exclusive next-midnight one.
+        assert r.json()["to_date"] == "2026-01-15"
+
+    async def test_fresh_only_via_revalidation_through_api(self, api):
+        """approve -> (time passes) -> revalidate via the endpoint: the
+        metric must reflect it, which requires revalidate to leave
+        updated_at untouched."""
+        client, api_store = api
+        from {{project_slug}}.learning.corrections import CorrectionsManager
+
+        # Same store the fixture wired into the app -- propose/approve
+        # directly, then drive revalidation over HTTP.
+        manager = CorrectionsManager(api_store)
+        correction = manager.propose(
+            agent_id="analyst", original_claim="a", corrected_claim="b",
+            reason="", evidence_level="documented", created_by="alice",
+        )
+        manager.approve(correction.id, approved_by="bob")
+        # Simulate the approval having happened long ago.
+        old = "2020-01-01T00:00:00"
+        api_store.update(
+            "corrections", correction.id,
+            {"created_at": old, "updated_at": old},
+        )
+
+        r = await client.get("/api/v1/reports/governance")
+        assert r.json()["sections"]["corrections"][
+            "fresh_only_via_revalidation"] == 0
+
+        # Revalidate through the real endpoint.
+        r = await client.post(f"/api/v1/corrections/{correction.id}/revalidate")
+        assert r.status_code == 200
+
+        row = api_store.query("corrections", {"id": correction.id})[0]
+        assert row["updated_at"] == old  # revalidate must not bump it
+        assert row["last_validated_at"] != ""
+
+        r = await client.get("/api/v1/reports/governance")
+        section = r.json()["sections"]["corrections"]
+        assert section["fresh_only_via_revalidation"] == 1
+        assert section["revalidations_in_window"] == 1
 
     async def test_daily_cap_returns_429(self, api, monkeypatch):
         client, _ = api

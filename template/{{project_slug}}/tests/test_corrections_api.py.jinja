@@ -106,6 +106,7 @@ class TestRevalidation:
     def test_revalidate_sets_freshness_fields(self, manager):
         correction = propose(manager)
         manager.approve(correction.id, approved_by="bob")
+        updated_at_after_approval = manager.get(correction.id).updated_at
 
         revalidated = manager.revalidate(correction.id, validated_by="carol")
         assert revalidated.last_validated_by == "carol"
@@ -114,6 +115,10 @@ class TestRevalidation:
         stored = manager.get(correction.id)
         assert stored.status == STATUS_APPROVED
         assert stored.last_validated_by == "carol"
+        # Revalidation is not a lifecycle change: updated_at must not move
+        # (the report's fresh_only_via_revalidation metric and the
+        # updated_at-windowed pattern checks depend on this).
+        assert stored.updated_at == updated_at_after_approval
 
     def test_revalidate_requires_approved(self, manager):
         correction = propose(manager)

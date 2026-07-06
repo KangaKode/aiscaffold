@@ -190,7 +190,7 @@ API route modules expose the core workflow over HTTP:
 - `GET/POST /api/v1/graduation/...` -- Candidates, propose (opens check-ins), apply (requires approved check-in)
 - `GET/PUT /api/v1/budgets/{tenant_id}` -- Read and set per-tenant spend budgets
 - `GET  /api/v1/audit/deliberations/{correlation_id}` -- Full audit trail for one deliberation, with reasoning-chain hash
-- `GET  /api/v1/reports/governance?from_date=&to_date=` -- Tenant-scoped governance report (counts only): deliberation outcomes, integrity flags, corrections lifecycle + stale-knowledge summary, reflections, budget spend
+- `GET  /api/v1/reports/governance?from_date=&to_date=` -- Tenant-scoped governance report (counts only): deliberation outcomes, integrity flags, corrections lifecycle activity + stale-knowledge summary, reflections, budget spend
 - `GET  /api/v1/activity/anomalies` -- Behavioral integrity flags (+ `POST .../resolve`)
 - `POST /api/v1/sessions` -- Session lifecycle (turns, retrieval, listing)
 - `POST /api/v1/webhooks/agents/{agent_id}` -- HMAC-verified async agent callbacks
@@ -473,7 +473,7 @@ The scaffold itself is validated by a 16-check pipeline:
 make quick     (~5s)  -- Template-level checks (banned patterns, secrets, Jinja syntax)
 make validate  (~8s)  -- Generate test project + full suite:
                          ruff lint, bandit security, import validation, red team,
-                         AI checks, agent review, pytest (666 tests, 85% coverage),
+                         AI checks, agent review, pytest (673 tests, 85% coverage),
                          file structure verification
 make validate-matrix (~2min) -- 3 configurations (web-app/multi-agent/api-service)
 ```
@@ -505,6 +505,6 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 666 tests across 27 test files
+  tests/              # 673 tests across 27 test files
   evals/              # Eval infrastructure
 ```

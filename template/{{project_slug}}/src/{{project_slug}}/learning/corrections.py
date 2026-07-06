@@ -51,8 +51,32 @@ MAX_FIELD_RENDER_CHARS = 500
 # Row-fetch cap for get_approved_for_context (newest first). The char
 # budget stops rendering long before this in practice; the cap bounds
 # the query itself so a huge knowledge base cannot make every prompt
-# build fetch every approved row.
-MAX_CONTEXT_FETCH_ROWS = 500
+# build fetch every approved row. Env override:
+# CORRECTION_CONTEXT_FETCH_CAP. When a fetch saturates the cap, older
+# approved corrections are silently absent from grounding -- a single
+# warning per process says so.
+DEFAULT_CONTEXT_FETCH_CAP = 500
+_fetch_cap_warned = False
+
+
+def _context_fetch_cap() -> int:
+    raw = os.environ.get("CORRECTION_CONTEXT_FETCH_CAP", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return DEFAULT_CONTEXT_FETCH_CAP
+
+
+def _warn_fetch_cap_once(cap: int) -> None:
+    global _fetch_cap_warned
+    if _fetch_cap_warned:
+        return
+    _fetch_cap_warned = True
+    logger.warning(
+        f"[Corrections] get_approved_for_context fetched {cap} rows (the "
+        "fetch cap): older approved corrections may be missing from prompt "
+        "grounding. Raise CORRECTION_CONTEXT_FETCH_CAP or retire stale "
+        "knowledge."
+    )
 
 
 @dataclass
@@ -306,7 +330,11 @@ class CorrectionsManager:
         """
         Re-validate an APPROVED correction: a human confirms it is still
         true, refreshing its staleness clock (last_validated_at/by) while
-        leaving the status untouched.
+        leaving status AND updated_at untouched. updated_at must stay a
+        pure lifecycle-change timestamp: bumping it here would zero the
+        governance report's fresh_only_via_revalidation metric and drag
+        old approvals back into updated_at-windowed pattern checks
+        (approval_patterns).
 
         Raises ValueError if the correction is missing or not APPROVED.
         """
@@ -319,14 +347,12 @@ class CorrectionsManager:
         now = datetime.now().isoformat()
         correction.last_validated_at = now
         correction.last_validated_by = validated_by
-        correction.updated_at = now
         self._store.update(
             "corrections",
             correction_id,
             {
                 "last_validated_at": now,
                 "last_validated_by": validated_by,
-                "updated_at": now,
             },
         )
         logger.info(
@@ -382,12 +408,15 @@ class CorrectionsManager:
         filters: dict[str, Any] = {"tenant_id": tenant_id, "status": STATUS_APPROVED}
         if agent_id:
             filters["agent_id"] = agent_id
+        fetch_cap = _context_fetch_cap()
         rows = self._store.query(
             "corrections",
             filters,
             order_by="created_at DESC",
-            limit=MAX_CONTEXT_FETCH_ROWS,
+            limit=fetch_cap,
         )
+        if len(rows) >= fetch_cap:
+            _warn_fetch_cap_once(fetch_cap)
         if not rows:
             return ""
 

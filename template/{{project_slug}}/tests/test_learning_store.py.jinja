@@ -304,6 +304,31 @@ class TestCorrectionsContext:
         assert small.count("Instead of:") == 1
         assert mgr.get_approved_for_context(budget_chars=10) == ""
 
+    def test_fetch_cap_env_override_and_one_time_warning(
+        self, store, monkeypatch, caplog
+    ):
+        import logging
+
+        from {{project_slug}}.learning import corrections as corrections_module
+
+        monkeypatch.delenv("CORRECTION_CONTEXT_BUDGET", raising=False)
+        monkeypatch.setenv("CORRECTION_CONTEXT_FETCH_CAP", "2")
+        monkeypatch.setattr(corrections_module, "_fetch_cap_warned", False)
+        mgr = CorrectionsManager(store)
+        for i in range(3):
+            propose_approved(mgr, f"old claim {i}", f"new claim {i}")
+
+        with caplog.at_level(logging.WARNING):
+            block = mgr.get_approved_for_context()
+            mgr.get_approved_for_context()
+
+        assert block.count("Instead of:") == 2  # oldest row not fetched
+        saturation_warnings = [
+            r for r in caplog.records
+            if "CORRECTION_CONTEXT_FETCH_CAP" in r.getMessage()
+        ]
+        assert len(saturation_warnings) == 1  # once per process
+
     def test_rendered_text_is_sanitized(self, store, monkeypatch):
         monkeypatch.delenv("CORRECTION_CONTEXT_BUDGET", raising=False)
         mgr = CorrectionsManager(store)
