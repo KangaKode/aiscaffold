@@ -12,7 +12,11 @@ This adapter handles the HTTP calls, timeouts, retries, and JSON conversion.
 
 Security:
   - All agent responses are sanitized (null bytes stripped, size-limited)
-  - Prompt injection patterns in agent output are detected and logged
+  - Prompt injection patterns in agent output are detected and logged with
+    the full Layer 1+2 scan (advanced=True: static patterns plus
+    homoglyph/invisible-char/encoding decoding). Detection is log-only on
+    this surface -- benign encoded content (JWTs, hex digests, base64
+    blobs) is normal in agent responses, so a finding never drops a field
   - Response size is capped to prevent memory exhaustion
   - String fields are truncated to safe limits
   - DNS is re-validated before every request attempt (anti-rebinding),
@@ -111,7 +115,9 @@ class RemoteAgent:
     def _sanitize_string(self, value: str, field_name: str = "field") -> str:
         """Sanitize a string field from an external agent response."""
         sanitized = sanitize_for_prompt(value, max_length=MAX_FIELD_LENGTH)
-        injections = detect_injection_attempt(sanitized)
+        # advanced=True adds Layer 2 decoding (lazy imports inside the
+        # guard). Log-only: the sanitized value is returned regardless.
+        injections = detect_injection_attempt(sanitized, advanced=True)
         if injections:
             logger.warning(
                 f"[RemoteAgent:{self._name}] Prompt injection patterns detected "

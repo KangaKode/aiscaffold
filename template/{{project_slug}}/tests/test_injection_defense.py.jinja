@@ -1,6 +1,9 @@
 """Unit tests for injection_defense -- Layer 2 defenses and prompt_guard integration."""
 
 import codecs
+import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from {{project_slug}}.security.injection_defense import (
     check_canary,
@@ -274,3 +277,102 @@ def payload_region(wrapped: str, label: str) -> str:
     if idx != -1:
         body = body[:idx]
     return body
+
+
+# =============================================================================
+# Ingestion boundaries: MCP tool output + remote-agent responses run the
+# full Layer 1+2 scan (advanced=True), log-only -- findings never block.
+# =============================================================================
+
+# Benign encoded content that legitimately appears in tool/agent output.
+BENIGN_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkphbmUgRG9lIiwiaWF0IjoxNTE2MjM5"
+    "MDIyLCJyb2xlIjoicmVhZGVyIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c"
+)
+
+
+def _mcp_stub(content: str):
+    """Stub registry + client pair whose default tool returns `content`."""
+    from {{project_slug}}.connectors.mcp_client import MCPToolResult
+
+    config = SimpleNamespace(
+        name="stub-server",
+        server_url="https://mcp.example.com",
+        default_tool="fetch",
+        auth_type="none",
+        credential_env_var="",
+        default_arguments={},
+        timeout=5.0,
+        resolve_credential=lambda: "",
+    )
+    registry = SimpleNamespace(get_by_scope=lambda scope, tenant: config)
+    client = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=MCPToolResult(content=content, tool_name="fetch")
+        )
+    )
+    return registry, client
+
+
+class TestIngestionBoundaryAdvancedScan:
+    async def test_mcp_enrichment_detects_encoded_injection(self, caplog):
+        """Layer 2 unmasking runs on MCP output: base64 payload is flagged.
+
+        Regression: with advanced=False this payload sailed through unlogged.
+        """
+        from {{project_slug}}.orchestration.mcp_enrichment import enrich_mcp_data
+
+        registry, client = _mcp_stub(ENCODED_PAYLOADS[0])
+        with caplog.at_level(logging.WARNING):
+            ctx = await enrich_mcp_data({}, {"mcp:tickets"}, "default", client, registry)
+
+        assert any("Injection patterns" in r.message for r in caplog.records)
+        # Log-only posture: the sanitized, wrapped content still enriches.
+        assert "mcp:tickets" in ctx
+
+    async def test_mcp_enrichment_benign_jwt_not_flagged(self, caplog):
+        """Benign encoded blobs (JWTs) must not trip the advanced scan."""
+        from {{project_slug}}.orchestration.mcp_enrichment import enrich_mcp_data
+
+        registry, client = _mcp_stub(f"Auth token issued: {BENIGN_JWT}")
+        with caplog.at_level(logging.WARNING):
+            ctx = await enrich_mcp_data({}, {"mcp:tickets"}, "default", client, registry)
+
+        assert not any("Injection patterns" in r.message for r in caplog.records)
+        assert "mcp:tickets" in ctx
+
+    def _remote_agent(self):
+        from {{project_slug}}.agents.remote import RemoteAgent
+
+        return RemoteAgent(
+            name="stub_remote",
+            domain="testing",
+            base_url="http://agent.internal:3000",
+            allow_private_endpoint=True,
+        )
+
+    def test_remote_agent_detects_encoded_injection(self, caplog):
+        """Regression: encoded payloads in agent fields were invisible to
+        the advanced=False scan."""
+        agent = self._remote_agent()
+        with caplog.at_level(logging.WARNING):
+            out = agent._sanitize_string(ENCODED_PAYLOADS[0], "analyze.finding")
+
+        assert any(
+            "injection patterns detected" in r.message.lower()
+            for r in caplog.records
+        )
+        # Log-only posture: the sanitized value is returned, never dropped.
+        assert ENCODED_PAYLOADS[0] in out
+
+    def test_remote_agent_benign_jwt_not_flagged(self, caplog):
+        agent = self._remote_agent()
+        with caplog.at_level(logging.WARNING):
+            out = agent._sanitize_string(f"token: {BENIGN_JWT}", "vote.condition")
+
+        assert not any(
+            "injection patterns detected" in r.message.lower()
+            for r in caplog.records
+        )
+        assert BENIGN_JWT in out

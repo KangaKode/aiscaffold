@@ -13,8 +13,12 @@ Scope gating: each server's response lands in the task context under its
 AgentCapability.access_scopes include that key.
 
 Injection defense: MCP responses are untrusted external content. They are
-scanned (detect_injection_attempt), sanitized (sanitize_for_prompt), and
-boundary-wrapped (wrap_user_content) before entering any context.
+scanned with the full Layer 1+2 pipeline (detect_injection_attempt with
+advanced=True: static patterns plus homoglyph/invisible-char/encoding
+decoding), sanitized (sanitize_for_prompt), and boundary-wrapped
+(wrap_user_content) before entering any context. Detection is log-only on
+this surface: benign encoded blobs (data URIs, JWTs, base64 configs) are
+common in tool output, so a finding never blocks the enrichment.
 
 Keep this file under 200 lines.
 """
@@ -114,7 +118,10 @@ async def enrich_mcp_data(
             )
             continue
 
-        findings = detect_injection_attempt(result.content)
+        # advanced=True adds Layer 2 (unicode/encoding decoding); Layer-2
+        # imports stay lazy inside detect_injection_attempt. Log-only:
+        # the sanitized, wrapped content proceeds regardless of findings.
+        findings = detect_injection_attempt(result.content, advanced=True)
         if findings:
             logger.warning(
                 "[MCPEnrichment] Injection patterns in %s response: %d finding(s)",
