@@ -1,19 +1,29 @@
 """Multi-tenant integrity regressions.
 
-Covers three audited findings:
+Covers three audited findings plus their review follow-ups:
   - Agent control plane is tenant-scoped: the registry keys entries by
     (tenant_id, name) and every agents API operation (list/get/rotate/
     revoke/suspend/unsuspend/unregister/health) resolves only within the
     caller's tenant -- cross-tenant access reads as 404 (never 403), so
     tenant existence does not leak. Single-tenant behavior is unchanged.
+  - Dispatch gates survive cross-tenant name collisions: identity
+    verification, capability/scope filtering, and last-active tracking
+    resolve the dispatched agent by OBJECT identity, so a second tenant
+    registering the same name cannot re-open a revoked agent's gate,
+    disable scope filtering, or misdirect activity tracking. A
+    registered-but-unresolvable agent fails CLOSED at identity check.
   - Activity attribution: recorded activity events carry the caller's
     resolved tenant (request.state.auth_context), with a one-time inert
-    warning when MULTI_TENANT_AUTH_ENABLED=true yet events still land in
-    the "default" tenant.
+    warning when MULTI_TENANT_AUTH_ENABLED=true yet an AUTHENTICATED
+    request still lands in the "default" tenant (unauthenticated
+    fallback traffic must not burn the warning).
   - Four-eyes enforceability is explicit: CORRECTIONS_FOUR_EYES=strict
     rejects self-approval; warn (the default) allows it but logs loudly
     and records a "four_eyes_unenforceable" integrity flag once.
 """
+
+from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
 
@@ -25,6 +35,8 @@ from {{project_slug}}.learning.corrections import (
 )
 from {{project_slug}}.learning.four_eyes import FLAG_TYPE_FOUR_EYES
 from {{project_slug}}.learning.store import SqliteLearningStore
+from {{project_slug}}.orchestration.dispatch_helpers import gate_agents, get_capability
+from {{project_slug}}.orchestration.identity_check import verify_agent_identity
 
 
 class SimpleAgent:
@@ -142,6 +154,98 @@ class TestRegistryTenantKeying:
         registry.get_entry("team_local").tenant_id = "tenant-a"
         assert registry.get_entry("team_local", tenant_id="tenant-a") is not None
         assert registry.get_entry("team_local", tenant_id="tenant-b") is None
+
+
+# --- Dispatch gates under cross-tenant name collision -------------------------
+
+
+@dataclass
+class GateTask:
+    """Minimal dataclass task for gate_agents (scope filter uses replace())."""
+
+    context: dict[str, Any] = field(default_factory=dict)
+
+
+def register_shared_bot(registry, tenant_id, **kwargs):
+    return registry.register_remote(
+        "shared_bot",
+        "analysis",
+        f"https://{tenant_id}.example.com",
+        tenant_id=tenant_id,
+        **kwargs,
+    )
+
+
+class TestDispatchGatesUnderCollision:
+    """A second tenant registering the same agent name must not weaken
+    the gates protecting the first tenant's agent (fail-open regression)."""
+
+    def test_revoked_agent_stays_blocked_after_collision(self, registry):
+        agent_a = register_shared_bot(registry, "tenant-a")
+        registry.revoke_credentials("shared_bot", tenant_id="tenant-a")
+        assert verify_agent_identity(agent_a, registry) is False
+
+        register_shared_bot(registry, "tenant-b")
+        # Revocation bypass: pre-fix, the now-ambiguous name lookup made
+        # the revoked agent read as unregistered -> allowed.
+        assert verify_agent_identity(agent_a, registry) is False
+
+    def test_suspended_agent_stays_blocked_after_collision(self, registry):
+        agent_a = register_shared_bot(registry, "tenant-a")
+        registry.suspend("shared_bot", tenant_id="tenant-a")
+        register_shared_bot(registry, "tenant-b")
+        assert verify_agent_identity(agent_a, registry) is False
+
+    def test_registered_but_unresolvable_agent_fails_closed(self, registry):
+        """An agent OBJECT the registry does not hold, with a name that is
+        registered ambiguously, must be blocked -- not treated as
+        unregistered."""
+        register_shared_bot(registry, "tenant-a")
+        register_shared_bot(registry, "tenant-b")
+        outsider = SimpleAgent("shared_bot")
+        assert verify_agent_identity(outsider, registry) is False
+        # Truly unregistered names keep the historical allow.
+        assert verify_agent_identity(SimpleAgent("ghost"), registry) is True
+
+    def test_capability_still_resolves_after_collision(self, registry):
+        agent_a = register_shared_bot(
+            registry, "tenant-a", access_scopes=["sales_data"]
+        )
+        register_shared_bot(registry, "tenant-b")
+        capability = get_capability(registry, agent_a)
+        assert capability is not None
+        assert capability.access_scopes == ["sales_data"]
+
+    def test_scope_filter_still_applies_after_collision(self, registry):
+        """Pre-fix, the collision resolved capability to None and ScopeFilter
+        passed the FULL task context to the scoped agent."""
+        agent_a = register_shared_bot(
+            registry, "tenant-a", access_scopes=["sales_data"]
+        )
+        register_shared_bot(registry, "tenant-b")
+        task = GateTask(context={"sales_data": [1], "hr_records": [2]})
+
+        gated, skipped = gate_agents([agent_a], task, registry, None, "Test")
+
+        assert skipped == 0 and len(gated) == 1
+        _, gated_task, capability = gated[0]
+        assert capability is not None
+        assert "sales_data" in gated_task.context
+        assert "hr_records" not in gated_task.context
+
+    def test_touch_last_active_updates_owning_entry(self, registry):
+        agent_a = register_shared_bot(registry, "tenant-a")
+        register_shared_bot(registry, "tenant-b")
+        entry_a = registry.get_entry("shared_bot", tenant_id="tenant-a")
+        entry_b = registry.get_entry("shared_bot", tenant_id="tenant-b")
+        stale = "2000-01-01T00:00:00+00:00"
+        entry_a.last_active = stale
+        entry_b.last_active = stale
+
+        gate_agents([agent_a], GateTask(), registry, None, "Test")
+
+        assert entry_a.last_active != stale, "dispatched entry must be touched"
+        assert entry_b.last_active == stale, "other tenant's entry untouched"
 
 
 # --- Four-eyes enforceability posture ----------------------------------------
@@ -468,6 +572,29 @@ class TestActivityTenantAttribution:
             assert len(misattribution_warnings()) == 1
             # Inert and one-time: later default-tenant events stay silent
             # and are still recorded normally.
+            assert (await client.get("/api/v1/agents")).status_code == 200
+            assert len(misattribution_warnings()) == 1
+
+    async def test_unauthenticated_fallback_does_not_burn_warning(
+        self, tracking_api, monkeypatch, caplog
+    ):
+        """An unauthenticated request (no auth context, e.g. a /health
+        probe) legitimately falls back to the default tenant; it must not
+        consume the one-time warning, which still fires for the first
+        AUTHENTICATED default-tenant event."""
+        monkeypatch.setenv("MULTI_TENANT_AUTH_ENABLED", "true")
+        client, _, switch = tracking_api
+        switch.tenant_id = "default"
+
+        def misattribution_warnings():
+            return [
+                r for r in caplog.records
+                if "MULTI_TENANT_AUTH_ENABLED" in r.message
+            ]
+
+        with caplog.at_level("WARNING"):
+            assert (await client.get("/health")).status_code == 200
+            assert misattribution_warnings() == []
             assert (await client.get("/api/v1/agents")).status_code == 200
             assert len(misattribution_warnings()) == 1
 
