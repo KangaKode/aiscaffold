@@ -7,7 +7,7 @@ No AI expertise required.
 
 ## What Is This?
 
-This is a **multi-agent AI system** -- a team of specialized AI assistants that collaborate to answer questions and review work. Instead of relying on a single AI, multiple agents with different expertise analyze the same task, challenge each other, and produce a consensus recommendation.
+This is a **multi-agent AI system** -- a team of specialized AI assistants that collaborate to answer questions and review work. Instead of relying on a single AI, multiple agents with different expertise analyze the same task, challenge each other, and produce a recommendation. They do not have to agree. Dissenting votes and minority views are shown alongside the result, because knowing who disagreed and why is often as useful as the answer itself. The team is not fixed: your teams can build and connect their own agents.
 
 Think of it like a review board: each member brings a different perspective, they debate, and they vote on the final answer.
 
@@ -29,6 +29,16 @@ For simpler questions, the **chat orchestrator** selects 1-3 relevant agents, co
 
 ---
 
+## Your Agents, Not Just the Core Round Table Members
+
+The agents that ship with this platform are a starting lineup, not the whole roster. Your teams can build their own specialist agents in any programming language and connect them by registering a web address with a single API call. Once connected, a team's agent takes a real seat at the round table under the same rules as the built-in members. It analyzes tasks, challenges other agents' findings, and votes on recommendations. It also joins chat consultations when its expertise matches the question.
+
+Connecting outside agents does not loosen security. Every connected agent gets its own verified identity badge that is checked every time the platform calls it. You can limit which parts of a task it sees, it is rate limited, and it can be suspended or removed at any time. If it goes offline or returns an error, the platform skips it for that phase and the deliberation continues. Suspicious output is flagged for your review, and you can suspend the agent on the spot.
+
+Building one takes an afternoon. An agent is three web endpoints. The full contract, with schemas and a working example, is in `docs/AGENT_PROTOCOL.md`.
+
+---
+
 ## Why This Architecture?
 
 | Design Choice | Reason |
@@ -39,12 +49,13 @@ For simpler questions, the **chat orchestrator** selects 1-3 relevant agents, co
 | **Voting + dissent** | Minority views are preserved, not silenced. Decision-makers see the full picture. |
 | **Prompt caching** | System instructions are cached across calls, cutting input-token costs by up to ~90% on cached content (provider-dependent). |
 | **Trust scores** | User feedback adjusts which agents get consulted. The system learns who you trust over time. |
+| **Bring-your-own agents** | Teams plug in their own specialists in any language. Every connected agent is identity-checked and rate limited, and you can restrict what it sees, so extending the team does not loosen the rules. |
 
 ---
 
 ## It Gets Better With Use
 
-When your team uses the learning features, the platform accumulates institutional knowledge instead of starting from zero every session. When you accept or reject an answer, the responsible agent's trust score moves, and future questions route toward the agents you have found reliable. When an answer was wrong, a reviewer can record the correct one as a **correction** -- a second person must approve it before it takes effect -- and from then on every answer path (quick answers, chat, and full team analyses) is grounded in those approved corrections. Each approval also automatically distills recurring mistakes into reusable "error schemas" and checks the knowledge base for contradictions.
+When your team uses the learning features, the platform accumulates institutional knowledge instead of starting from zero every session. When you accept or reject an answer, the responsible agent's trust score moves, and future questions route toward the agents you have found reliable. When an answer was wrong, a reviewer can record the correct one as a **correction** -- a second person must approve it before it takes effect -- and from then on every answer path (quick answers, chat, and full team analyses) is grounded in those approved corrections. Each approval also automatically distills recurring mistakes into reusable "error schemas" and checks the knowledge base for contradictions. The same compounding applies to agents your teams connect: their findings are held to the same evidence checks, they earn trust scores from your feedback, and when a reviewer corrects an answer they helped produce, that correction becomes institutional knowledge that grounds every future answer.
 
 Two guardrails keep this trustworthy: nothing adapts silently (behavior changes go through an explicit check-in you approve or dismiss), and learned knowledge is governed (corrections are policy-screened, four-eyes approved, auditable, and erasable).
 
