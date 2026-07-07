@@ -17,6 +17,15 @@ Multi-tenancy:
     verify_api_key returns an AuthContext (not a raw string). Routes receive
     tenant_id, user_id, and the API key in a structured object. Single-tenant
     deployments use the defaults ("default" tenant, "anon" user) transparently.
+
+    The resolved AuthContext is also stored on request.state.auth_context so
+    middleware that runs OUTSIDE the dependency graph (e.g. activity
+    tracking) attributes events to the same tenant/user the routes see.
+    Deployments that replace verify_api_key with their own IdP integration
+    (see docs/PLATFORM_GUIDE.md) keep that propagation for free as long as
+    they go through this function; set MULTI_TENANT_AUTH_ENABLED=true in
+    such deployments so the scaffold can warn when attribution silently
+    falls back to the "default" tenant (a misconfiguration signal).
 """
 
 import hashlib
@@ -77,6 +86,19 @@ def _auth_explicitly_disabled() -> bool:
     return os.environ.get("AUTH_DISABLED", "").lower() in ("true", "1", "yes")
 
 
+def multi_tenant_auth_enabled() -> bool:
+    """True when the operator declares multi-tenant auth is wired in.
+
+    The scaffold itself never resolves a non-default tenant (that requires
+    replacing verify_api_key with an IdP integration); this flag is the
+    operator's declaration of that fact, and it powers misconfiguration
+    warnings only -- it never changes enforcement.
+    """
+    return os.environ.get("MULTI_TENANT_AUTH_ENABLED", "").strip().lower() in (
+        "true", "1", "yes",
+    )
+
+
 def check_production_auth() -> None:
     """
     Call on startup to verify auth is configured in production.
@@ -114,14 +136,18 @@ async def verify_api_key(
     """
     Verify the API key from the Authorization header.
 
-    Returns an AuthContext with user_id and tenant_id for downstream use.
+    Returns an AuthContext with user_id and tenant_id for downstream use,
+    and mirrors it onto request.state.auth_context for middleware (activity
+    tracking) that runs outside the dependency graph.
     Uses constant-time comparison to prevent timing attacks.
     If API_KEY is not set, auth is disabled (dev mode only).
     """
     expected_key = get_api_key()
 
     if expected_key is None:
-        return AuthContext()
+        context = AuthContext()
+        request.state.auth_context = context
+        return context
 
     if credentials is None:
         client_host = request.client.host if request.client else "unknown"
@@ -135,8 +161,10 @@ async def verify_api_key(
 
     key = credentials.credentials
     user_hash = hashlib.sha256(key.encode()).hexdigest()[:16] if key else "anon"
-    return AuthContext(
+    context = AuthContext(
         api_key=key,
         user_id=user_hash,
         tenant_id="default",
     )
+    request.state.auth_context = context
+    return context

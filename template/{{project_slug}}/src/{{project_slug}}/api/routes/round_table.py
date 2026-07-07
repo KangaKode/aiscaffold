@@ -193,7 +193,10 @@ async def submit_task(
                 enrich_mcp_data,
             )
 
-            entries = [registry.get_entry(getattr(a, "name", "")) for a in agents]
+            # Resolve by agent OBJECT identity: the roster can include
+            # public agents from other tenants, and a bare-name lookup
+            # would resolve to None on a cross-tenant name collision.
+            entries = [registry.entry_for_agent(a) for a in agents]
             needed = collect_mcp_scopes([e for e in entries if e is not None])
             if needed:
                 task.context = await enrich_mcp_data(

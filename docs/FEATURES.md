@@ -388,7 +388,9 @@ flowchart LR
     AC --> Registry["Agent Registry\n(visibility: public/team/private)"]
 ```
 
-- `AuthContext` propagates `tenant_id` and `user_id` to all routes
+- `AuthContext` propagates `tenant_id` and `user_id` to all routes (and onto `request.state.auth_context` for middleware)
+- Agent registry keyed by `(tenant_id, name)`: the agents control-plane API (list/get/health/rotate/revoke/suspend/unregister) operates only within the caller's tenant, and cross-tenant access reads as 404; in-process dispatch gates resolve the dispatched agent by object identity, so a same-name agent in another tenant never weakens identity checks or scope filtering
+- Activity events, anomaly flags, and retention are attributed to the caller's resolved tenant (with a one-time warning under `MULTI_TENANT_AUTH_ENABLED=true` if attribution falls back to `"default"`)
 - Agent visibility controls: `public` (all tenants), `team` / `private` (same tenant; per-user private filtering is a documented extension in the platform guide)
 - Session isolation: session keys are scoped by tenant + user + session id
 - Legacy learning tables carry `project_id` (maps to tenant isolation); the extended learning tables are keyed by `tenant_id` directly
@@ -489,7 +491,7 @@ make validate         -- Generate test projects for all 4 profiles
                          (full / gateway-off / minimal / defaults) + full suite:
                          unrendered-template guard, ruff lint, bandit security,
                          import validation, red team, AI checks, agent review,
-                         pytest (835 tests collected, 831 passing, 87% coverage),
+                         pytest (868 tests collected, 864 passing, 87% coverage),
                          injection-defense golden set, file structure and
                          toggle-wiring verification
 make validate-matrix  -- Adds 2 more configurations (multi-agent/api-service)
@@ -523,7 +525,7 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 835 tests across 34 files: 831 pass, 3 skip without the
+  tests/              # 868 tests across 35 files: 864 pass, 3 skip without the
                       # [metrics] extra, 1 opt-in Postgres skip (+ tests/load/ Locust harness)
   evals/              # Eval infrastructure
 ```

@@ -401,7 +401,10 @@ class TestCorrectionsLifecycle:
         assert mgr.get(correction.id).status == STATUS_APPROVED
 
     def test_four_eyes_self_approval_raises(self, store):
-        mgr = CorrectionsManager(store)
+        # require_four_eyes=True pins strict mode regardless of the
+        # CORRECTIONS_FOUR_EYES env posture (default "warn" allows-and-
+        # flags; see tests/test_tenant_integrity.py for the env modes).
+        mgr = CorrectionsManager(store, require_four_eyes=True)
         correction = propose(mgr, created_by="alice")
         with pytest.raises(ValueError, match="Four-eyes"):
             mgr.approve(correction.id, approved_by="alice")

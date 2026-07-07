@@ -1,0 +1,651 @@
+"""Multi-tenant integrity regressions.
+
+Covers three audited findings plus their review follow-ups:
+  - Agent control plane is tenant-scoped: the registry keys entries by
+    (tenant_id, name) and every agents API operation (list/get/rotate/
+    revoke/suspend/unsuspend/unregister/health) resolves only within the
+    caller's tenant -- cross-tenant access reads as 404 (never 403), so
+    tenant existence does not leak. Single-tenant behavior is unchanged.
+  - Dispatch gates survive cross-tenant name collisions: identity
+    verification, capability/scope filtering, and last-active tracking
+    resolve the dispatched agent by OBJECT identity, so a second tenant
+    registering the same name cannot re-open a revoked agent's gate,
+    disable scope filtering, or misdirect activity tracking. A
+    registered-but-unresolvable agent fails CLOSED at identity check.
+  - Activity attribution: recorded activity events carry the caller's
+    resolved tenant (request.state.auth_context), with a one-time inert
+    warning when MULTI_TENANT_AUTH_ENABLED=true yet an AUTHENTICATED
+    request still lands in the "default" tenant (unauthenticated
+    fallback traffic must not burn the warning).
+  - Four-eyes enforceability is explicit: CORRECTIONS_FOUR_EYES=strict
+    rejects self-approval; warn (the default) allows it but logs loudly
+    and records a "four_eyes_unenforceable" integrity flag once.
+"""
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
+
+from {{project_slug}}.agents.registry import AgentRegistry
+from {{project_slug}}.learning.corrections import (
+    STATUS_APPROVED,
+    STATUS_PROPOSED,
+    CorrectionsManager,
+)
+from {{project_slug}}.learning.four_eyes import FLAG_TYPE_FOUR_EYES
+from {{project_slug}}.learning.store import SqliteLearningStore
+from {{project_slug}}.orchestration.dispatch_helpers import gate_agents, get_capability
+from {{project_slug}}.orchestration.identity_check import verify_agent_identity
+
+
+class SimpleAgent:
+    """Minimal agent satisfying the registry's name/domain protocol."""
+
+    def __init__(self, name, domain="general analysis"):
+        self._name = name
+        self._domain = domain
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def domain(self) -> str:
+        return self._domain
+
+
+@pytest.fixture
+def registry(tmp_path):
+    return AgentRegistry(persist_path=tmp_path / "agents.json")
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
+
+
+# --- Registry (tenant, name) keying -----------------------------------------
+
+
+class TestRegistryTenantKeying:
+    def test_same_name_coexists_across_tenants(self, registry):
+        registry.register_remote(
+            "shared_bot", "analysis", "https://a.example.com", tenant_id="tenant-a"
+        )
+        registry.register_remote(
+            "shared_bot", "analysis", "https://b.example.com", tenant_id="tenant-b"
+        )
+        assert registry.count == 2
+        entry_a = registry.get_entry("shared_bot", tenant_id="tenant-a")
+        entry_b = registry.get_entry("shared_bot", tenant_id="tenant-b")
+        assert entry_a is not entry_b
+        assert entry_a.agent._base_url == "https://a.example.com"
+        assert entry_b.agent._base_url == "https://b.example.com"
+
+    def test_tenant_scoped_lookup_misses_other_tenant(self, registry):
+        registry.register_remote(
+            "team_bot", "analysis", "https://a.example.com", tenant_id="tenant-a"
+        )
+        assert registry.get("team_bot", tenant_id="tenant-b") is None
+        assert registry.get_entry("team_bot", tenant_id="tenant-b") is None
+        assert registry.rotate_credentials("team_bot", tenant_id="tenant-b") is None
+        assert registry.revoke_credentials("team_bot", tenant_id="tenant-b") is False
+        assert registry.suspend("team_bot", tenant_id="tenant-b") is False
+        assert registry.unregister("team_bot", tenant_id="tenant-b") is False
+        # The owning tenant still resolves it.
+        assert registry.get("team_bot", tenant_id="tenant-a") is not None
+
+    def test_tenant_scoped_unregister_leaves_other_tenants_agent(self, registry):
+        registry.register_remote(
+            "shared_bot", "analysis", "https://a.example.com", tenant_id="tenant-a"
+        )
+        registry.register_remote(
+            "shared_bot", "analysis", "https://b.example.com", tenant_id="tenant-b"
+        )
+        assert registry.unregister("shared_bot", tenant_id="tenant-a") is True
+        assert registry.get("shared_bot", tenant_id="tenant-a") is None
+        assert registry.get("shared_bot", tenant_id="tenant-b") is not None
+
+    def test_ambiguous_tenantless_lookup_resolves_to_none(self, registry):
+        """A bare-name lookup must never guess between two tenants."""
+        registry.register_remote(
+            "shared_bot", "analysis", "https://a.example.com", tenant_id="tenant-a"
+        )
+        registry.register_remote(
+            "shared_bot", "analysis", "https://b.example.com", tenant_id="tenant-b"
+        )
+        assert registry.get_entry("shared_bot") is None
+
+    def test_tenant_keying_survives_persistence_reload(self, tmp_path):
+        path = tmp_path / "agents.json"
+        registry = AgentRegistry(persist_path=path)
+        registry.register_remote(
+            "shared_bot", "analysis", "https://a.example.com", tenant_id="tenant-a"
+        )
+        registry.register_remote(
+            "shared_bot", "analysis", "https://b.example.com", tenant_id="tenant-b"
+        )
+        reloaded = AgentRegistry(persist_path=path)
+        assert reloaded.count == 2
+        assert (
+            reloaded.get_entry("shared_bot", tenant_id="tenant-b").agent._base_url
+            == "https://b.example.com"
+        )
+
+    def test_single_tenant_behavior_unchanged(self, registry):
+        """Default-tenant deployments keep the historical name-keyed flow:
+        tenant-less registration and lookups all resolve the same entry."""
+        registry.register_local(SimpleAgent("solo_agent"), capabilities=["testing"])
+        assert registry.get("solo_agent") is not None
+        assert registry.get_entry("solo_agent").tenant_id == "default"
+        assert registry.get("solo_agent", tenant_id="default") is not None
+        assert registry.suspend("solo_agent") is True
+        assert registry.get_entry("solo_agent").suspended is True
+        assert registry.unsuspend("solo_agent") is True
+        token = registry.rotate_credentials("solo_agent")
+        assert token is None or isinstance(token, str)
+        assert registry.unregister("solo_agent") is True
+
+    def test_mutated_entry_tenant_still_resolves_by_tenant(self, registry):
+        """PLATFORM_GUIDE documents mutating entry.tenant_id in place after
+        register_local; tenant-scoped lookups must honor the attribute."""
+        registry.register_local(SimpleAgent("team_local"), capabilities=["testing"])
+        registry.get_entry("team_local").tenant_id = "tenant-a"
+        assert registry.get_entry("team_local", tenant_id="tenant-a") is not None
+        assert registry.get_entry("team_local", tenant_id="tenant-b") is None
+
+
+# --- Dispatch gates under cross-tenant name collision -------------------------
+
+
+@dataclass
+class GateTask:
+    """Minimal dataclass task for gate_agents (scope filter uses replace())."""
+
+    context: dict[str, Any] = field(default_factory=dict)
+
+
+def register_shared_bot(registry, tenant_id, **kwargs):
+    return registry.register_remote(
+        "shared_bot",
+        "analysis",
+        f"https://{tenant_id}.example.com",
+        tenant_id=tenant_id,
+        **kwargs,
+    )
+
+
+class TestDispatchGatesUnderCollision:
+    """A second tenant registering the same agent name must not weaken
+    the gates protecting the first tenant's agent (fail-open regression)."""
+
+    def test_revoked_agent_stays_blocked_after_collision(self, registry):
+        agent_a = register_shared_bot(registry, "tenant-a")
+        registry.revoke_credentials("shared_bot", tenant_id="tenant-a")
+        assert verify_agent_identity(agent_a, registry) is False
+
+        register_shared_bot(registry, "tenant-b")
+        # Revocation bypass: pre-fix, the now-ambiguous name lookup made
+        # the revoked agent read as unregistered -> allowed.
+        assert verify_agent_identity(agent_a, registry) is False
+
+    def test_suspended_agent_stays_blocked_after_collision(self, registry):
+        agent_a = register_shared_bot(registry, "tenant-a")
+        registry.suspend("shared_bot", tenant_id="tenant-a")
+        register_shared_bot(registry, "tenant-b")
+        assert verify_agent_identity(agent_a, registry) is False
+
+    def test_registered_but_unresolvable_agent_fails_closed(self, registry):
+        """An agent OBJECT the registry does not hold, with a name that is
+        registered ambiguously, must be blocked -- not treated as
+        unregistered."""
+        register_shared_bot(registry, "tenant-a")
+        register_shared_bot(registry, "tenant-b")
+        outsider = SimpleAgent("shared_bot")
+        assert verify_agent_identity(outsider, registry) is False
+        # Truly unregistered names keep the historical allow.
+        assert verify_agent_identity(SimpleAgent("ghost"), registry) is True
+
+    def test_capability_still_resolves_after_collision(self, registry):
+        agent_a = register_shared_bot(
+            registry, "tenant-a", access_scopes=["sales_data"]
+        )
+        register_shared_bot(registry, "tenant-b")
+        capability = get_capability(registry, agent_a)
+        assert capability is not None
+        assert capability.access_scopes == ["sales_data"]
+
+    def test_scope_filter_still_applies_after_collision(self, registry):
+        """Pre-fix, the collision resolved capability to None and ScopeFilter
+        passed the FULL task context to the scoped agent."""
+        agent_a = register_shared_bot(
+            registry, "tenant-a", access_scopes=["sales_data"]
+        )
+        register_shared_bot(registry, "tenant-b")
+        task = GateTask(context={"sales_data": [1], "hr_records": [2]})
+
+        gated, skipped = gate_agents([agent_a], task, registry, None, "Test")
+
+        assert skipped == 0 and len(gated) == 1
+        _, gated_task, capability = gated[0]
+        assert capability is not None
+        assert "sales_data" in gated_task.context
+        assert "hr_records" not in gated_task.context
+
+    def test_touch_last_active_updates_owning_entry(self, registry):
+        agent_a = register_shared_bot(registry, "tenant-a")
+        register_shared_bot(registry, "tenant-b")
+        entry_a = registry.get_entry("shared_bot", tenant_id="tenant-a")
+        entry_b = registry.get_entry("shared_bot", tenant_id="tenant-b")
+        stale = "2000-01-01T00:00:00+00:00"
+        entry_a.last_active = stale
+        entry_b.last_active = stale
+
+        gate_agents([agent_a], GateTask(), registry, None, "Test")
+
+        assert entry_a.last_active != stale, "dispatched entry must be touched"
+        assert entry_b.last_active == stale, "other tenant's entry untouched"
+
+
+# --- Four-eyes enforceability posture ----------------------------------------
+
+
+def propose(mgr, created_by="alice", tenant_id="default"):
+    return mgr.propose(
+        agent_id="analyst",
+        original_claim="rate limit is 100",
+        corrected_claim="rate limit is 60",
+        reason="vendor docs",
+        evidence_level="documented",
+        created_by=created_by,
+        tenant_id=tenant_id,
+    )
+
+
+class TestFourEyesModes:
+    def test_default_warn_mode_allows_and_flags_self_approval(
+        self, store, monkeypatch, caplog
+    ):
+        monkeypatch.delenv("CORRECTIONS_FOUR_EYES", raising=False)
+        mgr = CorrectionsManager(store)
+        correction = propose(mgr, created_by="alice")
+
+        with caplog.at_level("WARNING"):
+            approved = mgr.approve(correction.id, approved_by="alice")
+
+        assert approved.status == STATUS_APPROVED
+        assert any("NOT enforceable" in r.message for r in caplog.records)
+        flags = store.query(
+            "integrity_flags", {"flag_type": FLAG_TYPE_FOUR_EYES}
+        )
+        assert len(flags) == 1
+        assert flags[0]["subject_id"] == "alice"
+
+    def test_warn_mode_flags_once_per_subject(self, store, monkeypatch):
+        monkeypatch.setenv("CORRECTIONS_FOUR_EYES", "warn")
+        mgr = CorrectionsManager(store)
+        for _ in range(2):
+            correction = propose(mgr, created_by="alice")
+            mgr.approve(correction.id, approved_by="alice")
+        flags = store.query(
+            "integrity_flags", {"flag_type": FLAG_TYPE_FOUR_EYES}
+        )
+        assert len(flags) == 1  # unresolved flag arms the cooldown
+
+    def test_strict_mode_rejects_self_approval(self, store, monkeypatch):
+        monkeypatch.setenv("CORRECTIONS_FOUR_EYES", "strict")
+        mgr = CorrectionsManager(store)
+        correction = propose(mgr, created_by="alice")
+        with pytest.raises(ValueError, match="Four-eyes"):
+            mgr.approve(correction.id, approved_by="alice")
+        assert mgr.get(correction.id).status == STATUS_PROPOSED
+        # No unenforceability flag: strict mode enforced, nothing degraded.
+        assert store.query(
+            "integrity_flags", {"flag_type": FLAG_TYPE_FOUR_EYES}
+        ) == []
+
+    def test_strict_mode_still_allows_distinct_approver(self, store, monkeypatch):
+        monkeypatch.setenv("CORRECTIONS_FOUR_EYES", "strict")
+        mgr = CorrectionsManager(store)
+        correction = propose(mgr, created_by="alice")
+        assert mgr.approve(correction.id, approved_by="bob").status == STATUS_APPROVED
+
+    def test_explicit_booleans_override_env(self, store, monkeypatch):
+        monkeypatch.setenv("CORRECTIONS_FOUR_EYES", "warn")
+        strict_mgr = CorrectionsManager(store, require_four_eyes=True)
+        correction = propose(strict_mgr, created_by="alice")
+        with pytest.raises(ValueError, match="Four-eyes"):
+            strict_mgr.approve(correction.id, approved_by="alice")
+
+        monkeypatch.setenv("CORRECTIONS_FOUR_EYES", "strict")
+        off_mgr = CorrectionsManager(store, require_four_eyes=False)
+        correction = propose(off_mgr, created_by="alice")
+        approved = off_mgr.approve(correction.id, approved_by="alice")
+        assert approved.status == STATUS_APPROVED
+        # Silent-off records no unenforceability flag.
+        assert store.query(
+            "integrity_flags", {"flag_type": FLAG_TYPE_FOUR_EYES}
+        ) == []
+
+    def test_invalid_mode_falls_back_to_warn(self, store, monkeypatch):
+        monkeypatch.setenv("CORRECTIONS_FOUR_EYES", "sideways")
+        mgr = CorrectionsManager(store)
+        correction = propose(mgr, created_by="alice")
+        assert mgr.approve(correction.id, approved_by="alice").status == STATUS_APPROVED
+
+
+{% if include_api_gateway -%}
+# --- API-level tenant isolation ----------------------------------------------
+
+
+REGISTRATION = {
+    "name": "shared_bot",
+    "domain": "code analysis",
+    "base_url": "https://agents.example.com",
+    "capabilities": ["testing"],
+}
+
+
+class TenantSwitch:
+    """Mutable auth identity the dependency override reads per request."""
+
+    def __init__(self):
+        self.tenant_id = "default"
+        self.user_id = "anon"
+
+
+@pytest.fixture
+async def api(tmp_path, monkeypatch):
+    """(client, app, switch): gateway whose auth resolves to a switchable
+    tenant, mirroring request.state.auth_context exactly like the real
+    verify_api_key does once an IdP integration supplies tenant ids."""
+    from httpx import ASGITransport, AsyncClient
+    from starlette.requests import Request
+
+    from {{project_slug}}.api.gateway import create_app
+    from {{project_slug}}.api.middleware.auth import AuthContext, verify_api_key
+
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.setenv("ACTIVITY_TRACKING_ENABLED", "false")
+    monkeypatch.chdir(tmp_path)
+
+    app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
+    switch = TenantSwitch()
+
+    async def _switched_auth(request: Request) -> AuthContext:
+        context = AuthContext(
+            api_key=None, user_id=switch.user_id, tenant_id=switch.tenant_id
+        )
+        request.state.auth_context = context
+        return context
+
+    app.dependency_overrides[verify_api_key] = _switched_auth
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, app, switch
+
+
+async def register_as(client, switch, tenant_id, **overrides):
+    switch.tenant_id = tenant_id
+    r = await client.post("/api/v1/agents", json={**REGISTRATION, **overrides})
+    assert r.status_code == 200, r.text
+    return r
+
+
+class TestAgentsAPITenantIsolation:
+    CROSS_TENANT_CALLS = [
+        ("get", "/api/v1/agents/shared_bot"),
+        ("delete", "/api/v1/agents/shared_bot"),
+        ("post", "/api/v1/agents/shared_bot/credentials/rotate"),
+        ("delete", "/api/v1/agents/shared_bot/credentials"),
+        ("post", "/api/v1/agents/shared_bot/suspend"),
+        ("post", "/api/v1/agents/shared_bot/unsuspend"),
+    ]
+
+    async def test_cross_tenant_operations_read_as_404(self, api):
+        client, _, switch = api
+        await register_as(client, switch, "tenant-a")
+
+        switch.tenant_id = "tenant-b"
+        for method, path in self.CROSS_TENANT_CALLS:
+            r = await getattr(client, method)(path)
+            assert r.status_code == 404, f"{method.upper()} {path}: {r.status_code}"
+            # 404 (not 403): existence in another tenant must not leak.
+
+    async def test_rotate_never_mints_cross_tenant_token(self, api):
+        """The takeover primitive: rotate must not hand tenant-b a valid
+        identity token for tenant-a's agent."""
+        client, _, switch = api
+        await register_as(client, switch, "tenant-a")
+
+        switch.tenant_id = "tenant-b"
+        r = await client.post("/api/v1/agents/shared_bot/credentials/rotate")
+        assert r.status_code == 404
+        assert "identity_token" not in r.text
+
+        switch.tenant_id = "tenant-a"
+        r = await client.post("/api/v1/agents/shared_bot/credentials/rotate")
+        assert r.status_code == 200
+        assert r.json()["identity_token"]
+
+    async def test_listing_shows_only_callers_tenant(self, api):
+        client, _, switch = api
+        await register_as(client, switch, "tenant-a")
+
+        switch.tenant_id = "tenant-b"
+        r = await client.get("/api/v1/agents")
+        assert r.status_code == 200
+        assert r.json()["total"] == 0
+        assert all(a["name"] != "shared_bot" for a in r.json()["agents"])
+
+        switch.tenant_id = "tenant-a"
+        r = await client.get("/api/v1/agents")
+        assert [a["name"] for a in r.json()["agents"]] == ["shared_bot"]
+
+    async def test_health_check_scoped_to_tenant(self, api):
+        client, _, switch = api
+        await register_as(client, switch, "tenant-a")
+
+        switch.tenant_id = "tenant-b"
+        r = await client.post("/api/v1/agents/health")
+        assert r.status_code == 200
+        assert "shared_bot" not in r.json()["results"]
+
+    async def test_same_name_registers_in_both_tenants(self, api):
+        """(tenant, name) keying: no cross-tenant 409, no overwrite."""
+        client, app, switch = api
+        await register_as(client, switch, "tenant-a")
+        await register_as(
+            client, switch, "tenant-b", base_url="https://b.example.com"
+        )
+
+        assert app.state.registry.count == 2
+        switch.tenant_id = "tenant-a"
+        r = await client.get("/api/v1/agents/shared_bot")
+        assert r.json()["base_url"] == "https://agents.example.com"
+        switch.tenant_id = "tenant-b"
+        r = await client.get("/api/v1/agents/shared_bot")
+        assert r.json()["base_url"] == "https://b.example.com"
+
+    async def test_duplicate_within_tenant_still_409(self, api):
+        client, _, switch = api
+        await register_as(client, switch, "tenant-a")
+        r = await client.post("/api/v1/agents", json=REGISTRATION)
+        assert r.status_code == 409
+
+    async def test_single_tenant_lifecycle_unchanged(self, api):
+        """Default-tenant callers keep the full historical flow."""
+        client, _, switch = api
+        await register_as(client, switch, "default")
+
+        assert (await client.get("/api/v1/agents/shared_bot")).status_code == 200
+        r = await client.post("/api/v1/agents/shared_bot/credentials/rotate")
+        assert r.status_code == 200
+        assert (
+            await client.post("/api/v1/agents/shared_bot/suspend")
+        ).status_code == 200
+        assert (
+            await client.post("/api/v1/agents/shared_bot/unsuspend")
+        ).status_code == 200
+        assert (await client.delete("/api/v1/agents/shared_bot")).status_code == 200
+
+
+# --- Activity attribution ------------------------------------------------------
+
+
+@pytest.fixture
+async def tracking_api(tmp_path, monkeypatch):
+    """Gateway with activity tracking ON and switchable tenant auth."""
+    from httpx import ASGITransport, AsyncClient
+    from starlette.requests import Request
+
+    from {{project_slug}}.api.gateway import create_app
+    from {{project_slug}}.api.middleware import activity as activity_middleware
+    from {{project_slug}}.api.middleware.auth import AuthContext, verify_api_key
+
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.setenv("ACTIVITY_TRACKING_ENABLED", "true")
+    monkeypatch.chdir(tmp_path)
+    # Re-arm the one-time default-tenant warning for each test.
+    monkeypatch.setattr(activity_middleware, "_default_tenant_warned", False)
+
+    app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
+    switch = TenantSwitch()
+
+    async def _switched_auth(request: Request) -> AuthContext:
+        context = AuthContext(
+            api_key=None, user_id=switch.user_id, tenant_id=switch.tenant_id
+        )
+        request.state.auth_context = context
+        return context
+
+    app.dependency_overrides[verify_api_key] = _switched_auth
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, app, switch
+
+
+class TestActivityTenantAttribution:
+    async def test_events_carry_callers_tenant(self, tracking_api):
+        client, app, switch = tracking_api
+        switch.tenant_id = "tenant-a"
+        switch.user_id = "user-a"
+
+        r = await client.get("/api/v1/agents")
+        assert r.status_code == 200
+
+        rows = app.state.learning_store.query(
+            "activity_events", {"route": "/api/v1/agents"}
+        )
+        assert rows, "expected the request to be recorded"
+        assert {row["tenant_id"] for row in rows} == {"tenant-a"}
+        assert {row["user_id"] for row in rows} == {"user-a"}
+
+    async def test_unauthenticated_routes_fall_back_to_default(self, tracking_api):
+        client, app, _ = tracking_api
+        r = await client.get("/health")
+        assert r.status_code == 200
+        rows = app.state.learning_store.query(
+            "activity_events", {"route": "/health"}
+        )
+        assert rows
+        assert {row["tenant_id"] for row in rows} == {"default"}
+
+    async def test_default_tenant_warning_fires_once(
+        self, tracking_api, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("MULTI_TENANT_AUTH_ENABLED", "true")
+        client, _, switch = tracking_api
+        switch.tenant_id = "default"
+
+        def misattribution_warnings():
+            return [
+                r for r in caplog.records
+                if "MULTI_TENANT_AUTH_ENABLED" in r.message
+            ]
+
+        with caplog.at_level("WARNING"):
+            assert (await client.get("/api/v1/agents")).status_code == 200
+            assert len(misattribution_warnings()) == 1
+            # Inert and one-time: later default-tenant events stay silent
+            # and are still recorded normally.
+            assert (await client.get("/api/v1/agents")).status_code == 200
+            assert len(misattribution_warnings()) == 1
+
+    async def test_unauthenticated_fallback_does_not_burn_warning(
+        self, tracking_api, monkeypatch, caplog
+    ):
+        """An unauthenticated request (no auth context, e.g. a /health
+        probe) legitimately falls back to the default tenant; it must not
+        consume the one-time warning, which still fires for the first
+        AUTHENTICATED default-tenant event."""
+        monkeypatch.setenv("MULTI_TENANT_AUTH_ENABLED", "true")
+        client, _, switch = tracking_api
+        switch.tenant_id = "default"
+
+        def misattribution_warnings():
+            return [
+                r for r in caplog.records
+                if "MULTI_TENANT_AUTH_ENABLED" in r.message
+            ]
+
+        with caplog.at_level("WARNING"):
+            assert (await client.get("/health")).status_code == 200
+            assert misattribution_warnings() == []
+            assert (await client.get("/api/v1/agents")).status_code == 200
+            assert len(misattribution_warnings()) == 1
+
+    async def test_no_warning_without_declared_multi_tenancy(
+        self, tracking_api, monkeypatch, caplog
+    ):
+        monkeypatch.delenv("MULTI_TENANT_AUTH_ENABLED", raising=False)
+        client, _, _ = tracking_api
+        with caplog.at_level("WARNING"):
+            assert (await client.get("/api/v1/agents")).status_code == 200
+        assert not any(
+            "MULTI_TENANT_AUTH_ENABLED" in r.message for r in caplog.records
+        )
+
+
+# --- Four-eyes over HTTP ---------------------------------------------------------
+
+
+PROPOSAL = {
+    "agent_id": "analyst",
+    "original_claim": "The rate limit is 100/min",
+    "corrected_claim": "The rate limit is 60/min",
+    "reason": "vendor documentation",
+    "evidence_level": "documented",
+}
+
+
+class TestFourEyesAPI:
+    async def test_default_mode_allows_single_key_approval(self, api, monkeypatch):
+        """Under the single-key identity default, approvals must work --
+        loudly -- instead of being silently impossible."""
+        monkeypatch.delenv("CORRECTIONS_FOUR_EYES", raising=False)
+        client, app, _ = api
+        r = await client.post("/api/v1/corrections", json=PROPOSAL)
+        correction_id = r.json()["id"]
+
+        r = await client.post(f"/api/v1/corrections/{correction_id}/approve")
+        assert r.status_code == 200
+        assert r.json()["status"] == STATUS_APPROVED
+
+        store = app.state.corrections_manager.store
+        flags = store.query("integrity_flags", {"flag_type": FLAG_TYPE_FOUR_EYES})
+        assert len(flags) == 1
+
+    async def test_strict_mode_rejects_single_key_approval(self, api, monkeypatch):
+        monkeypatch.setenv("CORRECTIONS_FOUR_EYES", "strict")
+        client, _, _ = api
+        r = await client.post("/api/v1/corrections", json=PROPOSAL)
+        correction_id = r.json()["id"]
+
+        r = await client.post(f"/api/v1/corrections/{correction_id}/approve")
+        assert r.status_code == 409
+        assert "Four-eyes" in r.json()["detail"]
+{% endif %}

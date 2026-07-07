@@ -16,17 +16,23 @@ from typing import Any
 
 from ..agents.capability import AgentCapability
 from ..agents.rate_limiter import DEFAULT_MAX_CALLS_PER_HOUR, AgentRateLimiter
-from .identity_check import verify_agent_identity
+from .identity_check import resolve_registry_entry, verify_agent_identity
 from .scope_filter import ScopeFilter
 
 logger = logging.getLogger(__name__)
 
 
 def get_capability(registry: Any, agent: Any) -> AgentCapability | None:
-    """Resolve agent capability -- prefer registry entry over agent instance."""
+    """Resolve agent capability -- prefer registry entry over agent instance.
+
+    The entry is resolved by agent OBJECT identity, so the capability
+    binds to the exact entry being dispatched even when the same name
+    exists in other tenants (a bare-name lookup would resolve to None
+    on collision and silently disable scope filtering).
+    """
     capability = None
     if registry:
-        entry = registry.get_entry(agent.name)
+        entry = resolve_registry_entry(registry, agent)
         if entry:
             capability = getattr(entry, "capability", None)
     if capability is None:
@@ -113,7 +119,12 @@ def gate_agents(
             skipped += 1
             continue
         if registry is not None and hasattr(registry, "touch_last_active"):
-            registry.touch_last_active(agent.name)
+            # Scope the touch to the dispatched entry's tenant so a
+            # same-name agent in another tenant is never the one updated.
+            entry = resolve_registry_entry(registry, agent)
+            registry.touch_last_active(
+                agent.name, getattr(entry, "tenant_id", None)
+            )
 
         capability = get_capability(registry, agent)
         agent_task = task

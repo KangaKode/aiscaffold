@@ -10,6 +10,20 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def resolve_registry_entry(registry: Any, agent: Any) -> Any | None:
+    """Resolve the registry entry for an agent by OBJECT identity.
+
+    Prefers registry.entry_for_agent (binds to the exact entry the
+    orchestrator pulled from the registry, immune to same-name entries
+    in other tenants); falls back to the historical name lookup for
+    registry implementations without it.
+    """
+    resolver = getattr(registry, "entry_for_agent", None)
+    if resolver is not None:
+        return resolver(agent)
+    return registry.get_entry(agent.name)
+
+
 def verify_agent_identity(
     agent: Any,
     registry: Any | None,
@@ -21,6 +35,10 @@ def verify_agent_identity(
 
     Policy:
     - No registry, or agent not in registry: allowed (backward compatible).
+    - Registered name that cannot be resolved to one entry (same name in
+      multiple tenants, agent object unknown to the registry): blocked
+      (fail closed -- never treat a registered-but-ambiguous agent as
+      unregistered).
     - Suspended agents: blocked.
     - Local agents without tokens: allowed (backward compatible).
     - Remote agents without tokens: blocked.
@@ -29,8 +47,18 @@ def verify_agent_identity(
     if registry is None:
         return True
 
-    entry = registry.get_entry(agent.name)
+    entry = resolve_registry_entry(registry, agent)
     if entry is None:
+        name_registered = getattr(registry, "name_registered", None)
+        if name_registered is not None and name_registered(agent.name):
+            logger.warning(
+                "[%s] Agent '%s' is registered but cannot be resolved to a "
+                "single registry entry (same name in multiple tenants?) — "
+                "blocking dispatch (fail closed)",
+                caller,
+                agent.name,
+            )
+            return False
         return True
 
     if getattr(entry, "suspended", False):
