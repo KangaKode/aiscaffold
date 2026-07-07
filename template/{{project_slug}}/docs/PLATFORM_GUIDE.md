@@ -57,7 +57,7 @@ async def verify_api_key(
     return context
 ```
 
-Every route in the system already receives `AuthContext` -- no other changes needed for tenant identification. Once your IdP integration is live, set `MULTI_TENANT_AUTH_ENABLED=true` in the environment: it is a detection-only declaration that makes the activity middleware log a one-time warning if events ever fall back to the `"default"` tenant (the signature of a broken `request.state.auth_context` mirror). It never blocks anything.
+Every route in the system already receives `AuthContext` -- no other changes needed for tenant identification. Once your IdP integration is live, set `MULTI_TENANT_AUTH_ENABLED=true` in the environment: it is a detection-only declaration that makes the activity middleware log a one-time warning if an authenticated request's event ever resolves to the `"default"` tenant (the signature of a broken `request.state.auth_context` mirror; unauthenticated traffic such as health probes legitimately falls back to `"default"` and never triggers it). It never blocks anything.
 
 > **SECURITY: JWT Verification**
 > - Always verify the JWT signature cryptographically against your IdP's public key. Never use decode-only.
@@ -198,7 +198,7 @@ curl -X POST https://platform.example.com/api/v1/agents \
   }'
 ```
 
-Registration already respects tenant isolation out of the box: the `register_agent` route passes `auth.tenant_id` to `registry.register_remote()`, the registry keys every entry by `(tenant_id, name)` (so two tenants can each own an agent with the same name), and all agents-API operations -- list, get, health, rotate/revoke credentials, suspend/unsuspend, unregister -- resolve only within the caller's tenant. Cross-tenant access returns 404, never 403, so agent existence in other tenants does not leak. What remains yours: harden the visibility default (see the checklist below).
+Registration already respects tenant isolation out of the box: the `register_agent` route passes `auth.tenant_id` to `registry.register_remote()`, the registry keys every entry by `(tenant_id, name)` (so two tenants can each own an agent with the same name), and all agents-API operations -- list, get, health, rotate/revoke credentials, suspend/unsuspend, unregister -- resolve only within the caller's tenant. Cross-tenant access returns 404, never 403, so agent existence in other tenants does not leak. In-process dispatch gates (identity verification, capability/scope filtering, last-active tracking) resolve the dispatched agent by object identity, so a same-name agent in another tenant never weakens them. What remains yours: harden the visibility default (see the checklist below).
 
 ### Visibility rules
 
