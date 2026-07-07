@@ -16,6 +16,11 @@ Security:
   - Agent name must be a safe identifier
   - Capabilities list is size-limited
   - All mutation endpoints require API key
+  - Every operation is scoped to the caller's tenant (auth.tenant_id):
+    listings show only the caller's tenant's agents, and lookups of
+    another tenant's agent return 404 (never 403 -- existence of agents
+    in other tenants must not leak). Single-tenant deployments run
+    entirely in the "default" tenant, unchanged.
 """
 
 import asyncio
@@ -67,7 +72,7 @@ async def register_agent(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if registry.get(registration.name) is not None:
+    if registry.get(registration.name, tenant_id=auth.tenant_id) is not None:
         raise HTTPException(
             status_code=409,
             detail=f"Agent '{registration.name}' already registered. "
@@ -103,12 +108,12 @@ async def list_agents(
     request: Request,
     auth: AuthContext = Depends(verify_api_key),
 ) -> AgentListResponse:
-    """List all registered agents with their status."""
+    """List the caller's tenant's registered agents with their status."""
     registry = request.app.state.registry
     agents_info = [
-        AgentInfo(**entry) for entry in registry.list_info()
+        AgentInfo(**entry) for entry in registry.list_info(tenant_id=auth.tenant_id)
     ]
-    return AgentListResponse(agents=agents_info, total=registry.count)
+    return AgentListResponse(agents=agents_info, total=len(agents_info))
 
 
 @router.get("/agents/{agent_id}", response_model=AgentInfo)
@@ -117,9 +122,9 @@ async def get_agent(
     request: Request,
     auth: AuthContext = Depends(verify_api_key),
 ) -> AgentInfo:
-    """Get detailed info about a specific agent."""
+    """Get detailed info about one of the caller's tenant's agents."""
     registry = request.app.state.registry
-    entry = registry.get_entry(agent_id)
+    entry = registry.get_entry(agent_id, tenant_id=auth.tenant_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     return AgentInfo(**entry.to_dict())
@@ -131,9 +136,9 @@ async def unregister_agent(
     request: Request,
     auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
-    """Remove an agent from the registry."""
+    """Remove one of the caller's tenant's agents from the registry."""
     registry = request.app.state.registry
-    if not registry.unregister(agent_id):
+    if not registry.unregister(agent_id, tenant_id=auth.tenant_id):
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     logger.info(f"[AgentsAPI] Unregistered: {agent_id}")
     return {"status": "removed", "agent": agent_id}
@@ -144,9 +149,9 @@ async def health_check_all(
     request: Request,
     auth: AuthContext = Depends(verify_api_key),
 ) -> dict:
-    """Run health checks on all remote agents."""
+    """Run health checks on the caller's tenant's remote agents."""
     registry = request.app.state.registry
-    results = await registry.health_check_all()
+    results = await registry.health_check_all(tenant_id=auth.tenant_id)
     return {"results": results, "all_healthy": all(results.values())}
 
 
@@ -157,9 +162,13 @@ async def rotate_agent_credentials(
     auth: AuthContext = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ) -> dict:
-    """Re-issue an agent's identity token. The raw token is shown ONCE."""
+    """Re-issue an agent's identity token. The raw token is shown ONCE.
+
+    Tenant-scoped: rotating another tenant's agent is a 404, so a valid
+    caller can never mint an identity token outside their own tenant.
+    """
     registry = request.app.state.registry
-    token = registry.rotate_credentials(agent_id)
+    token = registry.rotate_credentials(agent_id, tenant_id=auth.tenant_id)
     if token is None:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     logger.info(
@@ -177,7 +186,7 @@ async def revoke_agent_credentials(
 ) -> dict:
     """Revoke an agent's identity token (remote agents blocked at dispatch)."""
     registry = request.app.state.registry
-    if not registry.revoke_credentials(agent_id):
+    if not registry.revoke_credentials(agent_id, tenant_id=auth.tenant_id):
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     logger.info(
         f"[AgentsAPI] Revoked credentials: {agent_id} (tenant={auth.tenant_id})"
@@ -194,7 +203,7 @@ async def suspend_agent(
 ) -> dict:
     """Suspend an agent -- excluded from dispatch and tenant listings."""
     registry = request.app.state.registry
-    if not registry.suspend(agent_id):
+    if not registry.suspend(agent_id, tenant_id=auth.tenant_id):
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     logger.info(f"[AgentsAPI] Suspended: {agent_id} (tenant={auth.tenant_id})")
     return {"status": "suspended", "agent": agent_id}
@@ -209,7 +218,7 @@ async def unsuspend_agent(
 ) -> dict:
     """Lift an agent's suspension."""
     registry = request.app.state.registry
-    if not registry.unsuspend(agent_id):
+    if not registry.unsuspend(agent_id, tenant_id=auth.tenant_id):
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     logger.info(f"[AgentsAPI] Unsuspended: {agent_id} (tenant={auth.tenant_id})")
     return {"status": "active", "agent": agent_id}

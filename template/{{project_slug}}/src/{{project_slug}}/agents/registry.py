@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PERSIST_PATH = Path(".aiscaffold/agents.json")
 
+DEFAULT_TENANT = "default"
+
 DORMANT_AFTER_DAYS = 30
 
 
@@ -154,10 +156,21 @@ class AgentRegistry:
 
     Remote registrations persist to JSON so they survive process restarts.
     Local agents must be re-registered on startup (they're in-process objects).
+
+    Tenant isolation: entries are keyed by (tenant_id, name), so the same
+    agent name can exist independently in two tenants and every lookup can
+    be scoped to the caller's tenant. Name-based methods take an optional
+    ``tenant_id``: a given tenant resolves ONLY within that tenant (a miss
+    returns None/False -- callers surface it as 404 so tenant existence
+    never leaks); None (in-process orchestration) resolves in the "default"
+    tenant first, then falls back to a unique cross-tenant name match --
+    ambiguous names resolve to nothing rather than guessing. Single-tenant
+    deployments register everything under "default", so both paths behave
+    exactly like the historical name-keyed registry.
     """
 
     def __init__(self, persist_path: Path = DEFAULT_PERSIST_PATH):
-        self._agents: dict[str, AgentEntry] = {}
+        self._agents: dict[tuple[str, str], AgentEntry] = {}
         self._persist_path = persist_path
         self._rate_limiter: AgentRateLimiter | None = None
         self._load_remote_agents()
@@ -193,7 +206,42 @@ class AgentRegistry:
         """Load persisted remote agent registrations (validation and env-based
         credential resolution live in registry_persistence)."""
         for kwargs in load_remote_entries(self._persist_path):
-            self._agents[kwargs["agent"].name] = AgentEntry(**kwargs)
+            key = (kwargs.get("tenant_id", DEFAULT_TENANT), kwargs["agent"].name)
+            self._agents[key] = AgentEntry(**kwargs)
+
+    def _find_key(
+        self, name: str, tenant_id: str | None = None
+    ) -> tuple[str, str] | None:
+        """Resolve a (tenant_id, name) registry key (see class docstring).
+        Entries whose tenant_id attribute was mutated in place after
+        registration (a documented platform customization) match by
+        attribute when the direct key misses."""
+        if tenant_id is not None:
+            key = (tenant_id, name)
+            if key in self._agents:
+                return key
+            for k, entry in self._agents.items():
+                if k[1] == name and entry.tenant_id == tenant_id:
+                    return k
+            return None
+        default_key = (DEFAULT_TENANT, name)
+        if default_key in self._agents:
+            return default_key
+        matches = [k for k in self._agents if k[1] == name]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            logger.warning(
+                f"[AgentRegistry] Agent name '{name}' exists in multiple "
+                "tenants; tenant-less lookup is ambiguous and resolves to none"
+            )
+        return None
+
+    def _find_entry(
+        self, name: str, tenant_id: str | None = None
+    ) -> AgentEntry | None:
+        key = self._find_key(name, tenant_id)
+        return self._agents[key] if key is not None else None
 
     def _save_remote_agents(self) -> None:
         """Persist remote agent registrations to disk. The raw identity token
@@ -205,18 +253,25 @@ class AgentRegistry:
         agent: Any,
         capabilities: list[str] | None = None,
         capability: AgentCapability | None = None,
+        tenant_id: str = DEFAULT_TENANT,
     ) -> None:
-        """Register an in-process Python agent and issue an identity token."""
+        """Register an in-process Python agent and issue an identity token.
+
+        tenant_id scopes the registry key -- platform deployments that run
+        per-team local agents can register the same name once per tenant.
+        """
         if not hasattr(agent, "name") or not hasattr(agent, "domain"):
             raise ValueError("Agent must have 'name' and 'domain' properties")
+        tenant_id = validate_identifier(tenant_id, "tenant_id")
         name = agent.name
-        if name in self._agents:
+        if (tenant_id, name) in self._agents:
             logger.warning(f"[AgentRegistry] Replacing existing agent '{name}'")
-        token, token_hash = self._issue_entry_token(name, capability)
-        self._agents[name] = AgentEntry(
+        token, token_hash = self._issue_entry_token(name, capability, tenant_id)
+        self._agents[(tenant_id, name)] = AgentEntry(
             agent=agent,
             agent_type="local",
             capabilities=capabilities,
+            tenant_id=tenant_id,
             identity_token=token,
             identity_token_hash=token_hash,
             capability=capability,
@@ -267,8 +322,13 @@ class AgentRegistry:
                     max_calls_per_hour if max_calls_per_hour is not None else default_max
                 ),
             )
+        if (tenant_id, name) in self._agents:
+            logger.warning(
+                f"[AgentRegistry] Replacing existing agent '{name}' "
+                f"(tenant '{tenant_id}')"
+            )
         token, token_hash = self._issue_entry_token(name, capability, tenant_id)
-        self._agents[name] = AgentEntry(
+        self._agents[(tenant_id, name)] = AgentEntry(
             agent=agent,
             agent_type="remote",
             capabilities=capabilities,
@@ -283,19 +343,22 @@ class AgentRegistry:
         logger.info(f"[AgentRegistry] Registered remote agent: {name} at {base_url}")
         return agent
 
-    def unregister(self, name: str) -> bool:
-        """Remove an agent from the registry."""
-        if name not in self._agents:
+    def unregister(self, name: str, tenant_id: str | None = None) -> bool:
+        """Remove an agent from the registry (tenant-scoped when given)."""
+        key = self._find_key(name, tenant_id)
+        if key is None:
             return False
-        agent_type = self._agents[name].agent_type
-        del self._agents[name]
+        agent_type = self._agents[key].agent_type
+        del self._agents[key]
         if agent_type == "remote":
             self._save_remote_agents()
         logger.info(f"[AgentRegistry] Unregistered agent: {name}")
         return True
 
-    def _set_suspended(self, name: str, suspended: bool) -> bool:
-        entry = self._agents.get(name)
+    def _set_suspended(
+        self, name: str, suspended: bool, tenant_id: str | None = None
+    ) -> bool:
+        entry = self._find_entry(name, tenant_id)
         if entry is None:
             return False
         entry.suspended = suspended
@@ -305,19 +368,19 @@ class AgentRegistry:
         logger.warning(f"[AgentRegistry] Agent '{name}' {state}")
         return True
 
-    def suspend(self, name: str) -> bool:
+    def suspend(self, name: str, tenant_id: str | None = None) -> bool:
         """Suspend an agent (excluded from dispatch and tenant listings)."""
-        return self._set_suspended(name, True)
+        return self._set_suspended(name, True, tenant_id)
 
-    def unsuspend(self, name: str) -> bool:
+    def unsuspend(self, name: str, tenant_id: str | None = None) -> bool:
         """Lift an agent's suspension."""
-        return self._set_suspended(name, False)
+        return self._set_suspended(name, False, tenant_id)
 
-    def rotate_credentials(self, name: str) -> str | None:
+    def rotate_credentials(self, name: str, tenant_id: str | None = None) -> str | None:
         """Re-issue an agent's identity token. Returns the new raw token
         exactly once (only the hash is retained on disk); None if the
-        agent is unknown or issuance failed."""
-        entry = self._agents.get(name)
+        agent is unknown (in the given tenant) or issuance failed."""
+        entry = self._find_entry(name, tenant_id)
         if entry is None:
             return None
         token, token_hash = self._issue_entry_token(
@@ -332,11 +395,11 @@ class AgentRegistry:
         logger.info(f"[AgentRegistry] Rotated credentials for '{name}'")
         return token
 
-    def revoke_credentials(self, name: str) -> bool:
+    def revoke_credentials(self, name: str, tenant_id: str | None = None) -> bool:
         """Clear an agent's identity token and hash. Remote agents are
         blocked at dispatch until credentials are rotated; local agents
         fall back to tokenless (allowed) operation."""
-        entry = self._agents.get(name)
+        entry = self._find_entry(name, tenant_id)
         if entry is None:
             return False
         entry.identity_token = None
@@ -346,21 +409,21 @@ class AgentRegistry:
         logger.warning(f"[AgentRegistry] Revoked credentials for '{name}'")
         return True
 
-    def touch_last_active(self, name: str) -> None:
+    def touch_last_active(self, name: str, tenant_id: str | None = None) -> None:
         """Record dispatch activity (drives dormancy). In-memory only;
         persisted opportunistically on the next remote-registration save."""
-        entry = self._agents.get(name)
+        entry = self._find_entry(name, tenant_id)
         if entry is not None:
             entry.last_active = _now_iso()
 
-    def get(self, name: str) -> Any | None:
-        """Get an agent by name."""
-        entry = self._agents.get(name)
+    def get(self, name: str, tenant_id: str | None = None) -> Any | None:
+        """Get an agent by name (tenant-scoped when tenant_id is given)."""
+        entry = self._find_entry(name, tenant_id)
         return entry.agent if entry else None
 
-    def get_entry(self, name: str) -> AgentEntry | None:
+    def get_entry(self, name: str, tenant_id: str | None = None) -> AgentEntry | None:
         """Get full registry entry (agent + metadata) by name."""
-        return self._agents.get(name)
+        return self._find_entry(name, tenant_id)
 
     def get_all(self) -> list:
         """Get all registered agents (for passing to RoundTable)."""
@@ -378,10 +441,14 @@ class AgentRegistry:
             if capability in entry.capabilities
         ]
 
-    async def health_check_all(self) -> dict[str, bool]:
-        """Run health checks on all remote agents. Returns {name: healthy}."""
+    async def health_check_all(self, tenant_id: str | None = None) -> dict[str, bool]:
+        """Run health checks on remote agents. Returns {name: healthy}.
+        tenant_id restricts the pass (and the returned names) to that
+        tenant's agents; None checks every registered agent."""
         results = {}
-        for name, entry in self._agents.items():
+        for (_, name), entry in self._agents.items():
+            if tenant_id is not None and entry.tenant_id != tenant_id:
+                continue
             if entry.agent_type == "remote" and hasattr(entry.agent, "health_check"):
                 healthy = await entry.agent.health_check()
                 entry.healthy = healthy
@@ -390,9 +457,16 @@ class AgentRegistry:
                 results[name] = True
         return results
 
-    def list_info(self) -> list[dict]:
-        """Get serializable info for all agents (for API responses)."""
-        return [entry.to_dict() for entry in self._agents.values()]
+    def list_info(self, tenant_id: str | None = None) -> list[dict]:
+        """Get serializable info for agents (for API responses).
+        tenant_id limits the listing to entries REGISTERED BY that tenant
+        (the management view -- suspended agents included, other tenants'
+        public agents excluded); None lists everything."""
+        return [
+            entry.to_dict()
+            for entry in self._agents.values()
+            if tenant_id is None or entry.tenant_id == tenant_id
+        ]
 
     def list_for_tenant(self, tenant_id: str = "default") -> list[AgentEntry]:
         """Get agents visible to a specific tenant (suspended agents excluded).

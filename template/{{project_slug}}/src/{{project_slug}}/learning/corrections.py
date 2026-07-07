@@ -8,13 +8,14 @@ original claim.
 
 Lifecycle: PROPOSED -> APPROVED -> RETIRED (REJECTED is a terminal branch).
 APPROVED corrections can additionally be REVALIDATED in place: a human
-confirms the knowledge is still true, refreshing last_validated_at /
-last_validated_by without changing status (see learning/aging.py for
-how staleness is derived from those fields).
+confirms the knowledge is still true, refreshing last_validated_at/by
+without changing status (learning/aging.py derives staleness from them).
 
-Four-eyes rule: by default the approver must be a different person than the
-proposer (require_four_eyes=True). Single-operator deployments can pass
-require_four_eyes=False to allow self-approval.
+Four-eyes rule: the approver should differ from the proposer. Policy
+lives in learning/four_eyes.py: require_four_eyes=None (the default)
+defers to CORRECTIONS_FOUR_EYES ("strict" rejects self-approval; "warn",
+the default, allows it but logs loudly and records an integrity flag
+once). True/False pin the historical strict/off semantics.
 
 Security: PII is redacted from correction text before it is persisted
 (security.pii), and rendered correction text passes through
@@ -40,6 +41,7 @@ from typing import Any
 
 from ..security.pii import redact_pii
 from ..security.prompt_guard import sanitize_for_prompt
+from .four_eyes import check_four_eyes
 from .lifecycle import transition
 from .store import LearningStore
 
@@ -150,12 +152,14 @@ class CorrectionsManager:
         self,
         store: LearningStore,
         checkin_manager=None,
-        require_four_eyes: bool = True,
+        require_four_eyes: bool | None = None,
         on_approve: Callable[[Correction], None] | None = None,
         content_policy=None,
     ):
         self._store = store
         self._checkin_manager = checkin_manager
+        # None = defer to CORRECTIONS_FOUR_EYES (strict|warn, default warn);
+        # True = always strict; False = self-approval silently allowed.
         self._require_four_eyes = require_four_eyes
         self._on_approve = on_approve
         self._content_policy = content_policy
@@ -246,7 +250,10 @@ class CorrectionsManager:
         Approve a PROPOSED correction.
 
         Raises ValueError if the correction is missing, not in PROPOSED
-        status, or if the four-eyes rule is violated (approver == proposer).
+        status, or if the four-eyes rule is violated (approver == proposer)
+        while the effective mode is strict. In warn mode (the default) a
+        self-approval succeeds but is logged loudly and recorded as a
+        "four_eyes_unenforceable" integrity flag (see learning/four_eyes.py).
         """
         correction = self._get_or_raise(correction_id)
         if correction.status != STATUS_PROPOSED:
@@ -254,17 +261,10 @@ class CorrectionsManager:
                 f"Correction {correction_id} is '{correction.status}', "
                 f"only '{STATUS_PROPOSED}' corrections can be approved"
             )
-        if (
-            self._require_four_eyes
-            and correction.created_by
-            and approved_by == correction.created_by
-        ):
-            raise ValueError(
-                f"Four-eyes rule: correction {correction_id} was proposed by "
-                f"'{correction.created_by}' and cannot be approved by the same "
-                "user. Pass require_four_eyes=False for single-operator "
-                "deployments."
-            )
+        check_four_eyes(
+            self._store, correction_id, correction.created_by, approved_by,
+            tenant_id=correction.tenant_id, require=self._require_four_eyes,
+        )
 
         correction.status = STATUS_APPROVED
         correction.approved_by = approved_by

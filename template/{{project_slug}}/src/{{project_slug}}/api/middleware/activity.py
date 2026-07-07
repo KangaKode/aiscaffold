@@ -6,8 +6,19 @@ and the learning store is available. The middleware itself is a no-op
 whenever app.state.activity_tracker is missing, so the app works
 identically with tracking disabled or the store unavailable.
 
-The user is attributed the same way auth does it: a 16-hex-char SHA-256
-prefix of the bearer token (or "anon"). The raw key is never stored.
+Attribution: the resolved AuthContext (mirrored by verify_api_key onto
+request.state.auth_context) is preferred, so events carry the SAME
+tenant_id and user_id the route handler saw -- baselines, anomaly flags,
+and retention land in the caller's tenant. Requests that never resolve
+an auth context (unauthenticated paths, failed auth) fall back to the
+historical derivation: tenant "default" and a 16-hex-char SHA-256 prefix
+of the bearer token (or "anon"). The raw key is never stored.
+
+When the operator declares multi-tenant auth (MULTI_TENANT_AUTH_ENABLED
+=true) but events keep resolving to the "default" tenant, a one-time
+warning fires -- attribution is misconfigured (e.g. a custom
+verify_api_key that no longer sets request.state.auth_context). The
+warning is inert: nothing is blocked or altered.
 
 Every Nth recorded request (ACTIVITY_CHECK_SAMPLE_N, default 25) the
 middleware also runs the detection pass for that user: the burst
@@ -34,9 +45,17 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from .auth import multi_tenant_auth_enabled
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHECK_SAMPLE_N = 25
+
+DEFAULT_TENANT = "default"
+
+# One warning per process when multi-tenant auth is declared but events
+# still land in the default tenant (misconfigured attribution).
+_default_tenant_warned = False
 
 
 def _check_sample_n() -> int:
@@ -55,6 +74,35 @@ def _user_id_from_request(request: Request) -> str:
     return "anon"
 
 
+def _attribution_from_request(request: Request) -> tuple[str, str]:
+    """Resolve (tenant_id, user_id) for one recorded event.
+
+    Prefers the AuthContext the route's verify_api_key dependency mirrored
+    onto request.state; falls back to the header-derived user and the
+    default tenant when no context was resolved (unauthenticated routes,
+    failed auth -- an unauthenticated caller can never claim a tenant).
+    """
+    auth = getattr(request.state, "auth_context", None)
+    if auth is not None:
+        return auth.tenant_id, auth.user_id
+    return DEFAULT_TENANT, _user_id_from_request(request)
+
+
+def _warn_default_tenant_once() -> None:
+    global _default_tenant_warned
+    if _default_tenant_warned:
+        return
+    _default_tenant_warned = True
+    logger.warning(
+        "[ActivityMiddleware] MULTI_TENANT_AUTH_ENABLED=true but an activity "
+        "event was recorded under the 'default' tenant. Tenant attribution "
+        "for behavioral baselines, anomaly flags, and retention may be "
+        "misconfigured -- confirm your auth integration sets "
+        "request.state.auth_context with the caller's real tenant_id. "
+        "Detection-only: this request was recorded normally."
+    )
+
+
 class ActivityTrackingMiddleware(BaseHTTPMiddleware):
     """Records route/method/status per request via app.state.activity_tracker."""
 
@@ -67,7 +115,9 @@ class ActivityTrackingMiddleware(BaseHTTPMiddleware):
         try:
             tracker = getattr(request.app.state, "activity_tracker", None)
             if tracker is not None:
-                user_id = _user_id_from_request(request)
+                tenant_id, user_id = _attribution_from_request(request)
+                if tenant_id == DEFAULT_TENANT and multi_tenant_auth_enabled():
+                    _warn_default_tenant_once()
                 # Blocking SQLite write: off the event loop.
                 await asyncio.to_thread(
                     tracker.record,
@@ -75,29 +125,31 @@ class ActivityTrackingMiddleware(BaseHTTPMiddleware):
                     method=request.method,
                     status_code=response.status_code,
                     user_id=user_id,
+                    tenant_id=tenant_id,
                 )
                 self._records_since_check += 1
                 if self._records_since_check >= _check_sample_n():
                     self._records_since_check = 0
                     await asyncio.to_thread(
-                        self._run_checks, request, tracker, user_id
+                        self._run_checks, request, tracker, user_id, tenant_id
                     )
         except Exception as exc:
             logger.warning(f"[ActivityMiddleware] recording failed (ignored): {exc}")
         return response
 
     @staticmethod
-    def _run_checks(request: Request, tracker, user_id: str) -> None:
+    def _run_checks(request: Request, tracker, user_id: str, tenant_id: str) -> None:
         """Sampled detection pass: burst thresholds + timing regularity,
         plus the opt-in retention prune (ACTIVITY_RETENTION_DAYS -- a
         no-op unless the operator sets it). Best-effort -- findings
         persist as integrity flags; failures are logged and can never
-        fail the request."""
-        tracker.check_thresholds(user_id)
+        fail the request. Runs in the caller's tenant so flags land
+        where the events did."""
+        tracker.check_thresholds(user_id, tenant_id=tenant_id)
         store = getattr(request.app.state, "learning_store", None)
         if store is not None:
             from ...learning.retention import prune_activity_events
             from ...learning.timing_analysis import check_timing_regularity
 
-            check_timing_regularity(store, user_id=user_id)
+            check_timing_regularity(store, user_id=user_id, tenant_id=tenant_id)
             prune_activity_events(store)
