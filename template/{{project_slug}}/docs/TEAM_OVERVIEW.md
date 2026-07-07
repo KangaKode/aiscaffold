@@ -7,7 +7,7 @@ No AI expertise required.
 
 ## What Is This?
 
-This is a **multi-agent AI system** -- a team of specialized AI assistants that collaborate to answer questions and review work. Instead of relying on a single AI, multiple agents with different expertise analyze the same task, challenge each other, and produce a consensus recommendation. The team is not fixed: your teams can build and connect their own agents.
+This is a **multi-agent AI system** -- a team of specialized AI assistants that collaborate to answer questions and review work. Instead of relying on a single AI, multiple agents with different expertise analyze the same task, challenge each other, and produce a recommendation. They do not have to agree. Dissenting votes and minority views are shown alongside the result, because knowing who disagreed and why is often as useful as the answer itself. The team is not fixed: your teams can build and connect their own agents.
 
 Think of it like a review board: each member brings a different perspective, they debate, and they vote on the final answer.
 
