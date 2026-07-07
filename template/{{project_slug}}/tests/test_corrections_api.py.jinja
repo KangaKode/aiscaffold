@@ -219,7 +219,11 @@ class TestCorrectionsAPI:
         assert r.status_code == 201
         assert r.json()["override_flags"] != []
 
-    async def test_four_eyes_blocks_self_approval_via_api(self, api):
+    async def test_four_eyes_blocks_self_approval_via_api(self, api, monkeypatch):
+        # Strict mode: the four-eyes posture is env-explicit
+        # (CORRECTIONS_FOUR_EYES; default "warn" logs-and-allows --
+        # see tests/test_tenant_integrity.py for both modes).
+        monkeypatch.setenv("CORRECTIONS_FOUR_EYES", "strict")
         client, _ = api
         r = await client.post("/api/v1/corrections", json=PROPOSAL)
         correction_id = r.json()["id"]
