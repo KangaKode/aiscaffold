@@ -43,16 +43,21 @@ async def verify_api_key(
         raise HTTPException(status_code=401, detail="Missing credentials")
 
     payload = decode_jwt(credentials.credentials)  # Your JWT decoder
-    return AuthContext(
+    context = AuthContext(
         api_key=credentials.credentials,
         user_id=payload["sub"],
         tenant_id=payload["org_id"],      # Maps to tenant isolation
         # Add custom fields as needed:
         # role=payload.get("role", "viewer"),
     )
+    # Keep this mirror: activity tracking (and any middleware that runs
+    # outside the dependency graph) reads request.state.auth_context to
+    # attribute events to the caller's tenant/user.
+    request.state.auth_context = context
+    return context
 ```
 
-Every route in the system already receives `AuthContext` -- no other changes needed for tenant identification.
+Every route in the system already receives `AuthContext` -- no other changes needed for tenant identification. Once your IdP integration is live, set `MULTI_TENANT_AUTH_ENABLED=true` in the environment: it is a detection-only declaration that makes the activity middleware log a one-time warning if events ever fall back to the `"default"` tenant (the signature of a broken `request.state.auth_context` mirror). It never blocks anything.
 
 > **SECURITY: JWT Verification**
 > - Always verify the JWT signature cryptographically against your IdP's public key. Never use decode-only.
@@ -193,14 +198,7 @@ curl -X POST https://platform.example.com/api/v1/agents \
   }'
 ```
 
-To make the registration respect tenant isolation, update the `register_agent` route to set tenant_id and visibility from the auth context:
-
-```python
-# In api/routes/agents.py, after registry.register_remote():
-entry = registry.get_entry(registration.name)
-entry.tenant_id = auth.tenant_id
-entry.visibility = registration.visibility or "team"  # Default to team-private
-```
+Registration already respects tenant isolation out of the box: the `register_agent` route passes `auth.tenant_id` to `registry.register_remote()`, the registry keys every entry by `(tenant_id, name)` (so two tenants can each own an agent with the same name), and all agents-API operations -- list, get, health, rotate/revoke credentials, suspend/unsuspend, unregister -- resolve only within the caller's tenant. Cross-tenant access returns 404, never 403, so agent existence in other tenants does not leak. What remains yours: harden the visibility default (see the checklist below).
 
 ### Visibility rules
 
@@ -211,7 +209,7 @@ entry.visibility = registration.visibility or "team"  # Default to team-private
 | `private` | Registering user only | Only the specific user |
 
 > **SECURITY: Visibility enforcement checklist**
-> - Replace `registry.list_info()` and `registry.get_all()` with `registry.list_for_tenant(auth.tenant_id)` in the `GET /agents` route. Without this, any user can see all agents across tenants.
+> - `GET /agents` is the tenant's MANAGEMENT view: it lists only agents registered by the caller's tenant (via `registry.list_info(tenant_id=...)`), including suspended ones. Dispatch-time visibility (which agents join a round table, including other tenants' `public` agents) is the separate `registry.list_for_tenant(auth.tenant_id)` filter, already used by the round-table and chat paths.
 > - For `private` agents, `list_for_tenant` alone is insufficient -- it filters by tenant but not user. Implement `list_for_user(tenant_id, user_id)` that also checks `entry.user_id == auth.user_id` for private agents.
 > - Only platform admins should set `visibility="public"`. Default all new registrations to `"team"`. Reject `visibility="public"` from non-admin callers.
 > - Never read `tenant_id` from the request body. Always use `auth.tenant_id` from the verified JWT.
@@ -433,7 +431,7 @@ The gateway wires a learning-store-backed `BudgetManager` and `DeliberationAudit
 | `/api/v1/audit/deliberations/{correlation_id}` | GET | Metadata timeline for one deliberation run (404 when empty) |
 | `/api/v1/corrections` | POST | Propose a correction (override-screened; PII-redacted) |
 | `/api/v1/corrections` | GET | List this tenant's corrections (filter by `status`, `agent_id`) |
-| `/api/v1/corrections/{id}/approve` | POST | Approve -- approver is the authenticated caller (four-eyes enforced) |
+| `/api/v1/corrections/{id}/approve` | POST | Approve -- approver is the authenticated caller (four-eyes posture per `CORRECTIONS_FOUR_EYES`) |
 | `/api/v1/corrections/{id}/reject` | POST | Reject a proposed correction (terminal) |
 | `/api/v1/corrections/{id}/retire` | POST | Retire an approved correction |
 | `/api/v1/corrections/{id}` | DELETE | GDPR Art. 17 hard-delete (daily-capped, audited) |
@@ -467,7 +465,7 @@ Because every caller goes through the protocol, enterprise deployments extend wi
 
 The learning layer reshapes agent behavior, so it gets its own integrity controls. All findings are persisted as integrity flags and surfaced through `GET /api/v1/activity/anomalies` (resolve via `POST /api/v1/activity/anomalies/{flag_id}/resolve`) -- nothing is auto-rejected or auto-suspended; a human closes every flag:
 
-- **Corrections lifecycle**: corrections only influence prompts after human approval, with a four-eyes rule (approver must differ from proposer; `require_four_eyes=False` for single-operator setups) and a check-in opened per proposal. The full lifecycle is exposed over HTTP at `/api/v1/corrections` (see the governance API routes above).
+- **Corrections lifecycle**: corrections only influence prompts after human approval, with an explicit four-eyes posture (`CORRECTIONS_FOUR_EYES`) and a check-in opened per proposal. `strict` rejects approver == proposer with a 409 -- use it once your IdP gives callers real distinct identities. `warn` (the default) allows self-approval but logs loudly and records a `four_eyes_unenforceable` integrity flag once per (tenant, approver): under the scaffold's single API key every caller is the same user, so strict mode would make approval impossible -- warn mode keeps single-operator deployments working while making the gap visible. Library callers can pin `require_four_eyes=True` (always strict) or `False` (silently allowed). The full lifecycle is exposed over HTTP at `/api/v1/corrections` (see the governance API routes above).
 - **Right to be forgotten**: `learning/erasure.py` hard-deletes a correction on request (GDPR Art. 17) -- an actual row delete, not a status flip -- with a per-tenant daily cap (`ERASURE_DAILY_CAP`, default 10) so a compromised credential cannot bulk-wipe learned knowledge, and a metadata-only audit event recording that the erasure happened. Derived artifacts: error schemas citing the erased correction are deleted and re-extracted from the remaining corrections only (the erased text does not survive in generalized form), and the approval check-ins opened for the correction -- their prompts embed the original/corrected claim verbatim, and expiry alone never deletes them -- are hard-deleted whatever their status (the API passes the check-in manager through; library callers must do the same to get this sweep, and the response's `checkins_deleted` count reports what happened). Reflections and the RAG preference/transcript indexes are not derived from corrections and are untouched. Backups and text already sent to LLM providers remain out of scope (see GOVERNANCE.md Non-Claims).
 - **Context budget**: approved corrections render into prompts under a character budget (`CORRECTION_CONTEXT_BUDGET`, default 4000) with sanitized fields.
 - **Override screening**: each proposed correction is screened for prompt injection, safety-agent targeting ("ignore the skeptic"), and evidence-level inflation before it reaches a reviewer.

@@ -5,7 +5,7 @@
 
 **A security-first scaffold for multi-agent AI systems, whatever your domain.** Multi-agent deliberation with security controls wired in on day one -- each control mapped to the code that implements it and the tests that prove it, with [documented non-claims](template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md#known-limitations--non-claims) about what it does *not* guarantee.
 
-One `copier` command generates a complete project: round-table deliberation with six adversarial safety agents, evidence-graded claims, 3-layer prompt-injection defense, tenant-aware isolation, audit trails, human approval gates, and Docker/Kubernetes deployment -- validated by 835 generated tests at 87% coverage.
+One `copier` command generates a complete project: round-table deliberation with six adversarial safety agents, evidence-graded claims, 3-layer prompt-injection defense, tenant-aware isolation, audit trails, human approval gates, and Docker/Kubernetes deployment -- validated by 861 generated tests at 87% coverage.
 
 The scaffold red-teams itself: its own review process caught a tenant-isolation bug where remote agents silently reverted to public visibility after a restart -- [here is the fix](https://github.com/KangaKode/roundtable/commit/9168334ac050e22022ab2787b7b3ff3ce06796cc), tests included. An [adversarial harness](template/%7B%7Bproject_slug%7D%7D/tests/adversarial_agents.py.jinja) of six hostile agents attacks every generated project in CI.
 
@@ -60,7 +60,7 @@ cd my-project   # the destination directory IS the project root
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
-make test    # 831 tests pass from day 1 (835 total; 4 opt-in skips)
+make test    # 857 tests pass from day 1 (861 total; 4 opt-in skips)
 make demo    # the round table above, on your machine (no API keys)
 make serve   # start the API gateway
 ```
