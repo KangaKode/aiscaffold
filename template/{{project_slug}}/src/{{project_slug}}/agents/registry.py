@@ -7,14 +7,8 @@ registrations to JSON so they survive restarts.
 
 Usage:
     registry = AgentRegistry(persist_path=Path(".aiscaffold/agents.json"))
-
-    # Local agents
     registry.register_local(MyPythonAgent(llm))
-
-    # Remote agents (any language)
     registry.register_remote("ts_analyzer", "code analysis", "http://localhost:3000")
-
-    # Pass all agents to round table
     rt = RoundTable(agents=registry.get_all(), config=config)
 """
 
@@ -79,16 +73,13 @@ class AgentLike(Protocol):
 class AgentEntry:
     """Internal registry entry wrapping an agent with metadata.
 
-    Multi-tenancy fields:
-        visibility: "public" (all tenants), "team" (same tenant), "private" (registering user)
-        tenant_id: The tenant that registered this agent. Defaults to "default".
-
-    Identity fields:
-        identity_token: Raw JWT held in memory only -- NEVER persisted to disk.
-        identity_token_hash: SHA-256 hash of the token (safe to persist).
-        suspended: Suspended agents are excluded from dispatch and listings.
-        capability: Structured AgentCapability (scopes, rate limit).
-        last_active: ISO timestamp of last dispatch (drives dormancy).
+    visibility: "public" (all tenants) / "team" (same tenant) / "private";
+    tenant_id: registering tenant (default "default");
+    identity_token: raw JWT held in memory only -- NEVER persisted to disk;
+    identity_token_hash: SHA-256 of the token (safe to persist);
+    suspended: excluded from dispatch and listings;
+    capability: structured AgentCapability (scopes, rate limit);
+    last_active: ISO timestamp of last dispatch (drives dormancy).
     """
 
     def __init__(
@@ -158,15 +149,14 @@ class AgentRegistry:
     Local agents must be re-registered on startup (they're in-process objects).
 
     Tenant isolation: entries are keyed by (tenant_id, name), so the same
-    agent name can exist independently in two tenants and every lookup can
-    be scoped to the caller's tenant. Name-based methods take an optional
-    ``tenant_id``: a given tenant resolves ONLY within that tenant (a miss
-    returns None/False -- callers surface it as 404 so tenant existence
-    never leaks); None (in-process orchestration) resolves in the "default"
-    tenant first, then falls back to a unique cross-tenant name match --
-    ambiguous names resolve to nothing rather than guessing. Single-tenant
-    deployments register everything under "default", so both paths behave
-    exactly like the historical name-keyed registry.
+    name can exist independently in two tenants. Name-based methods take
+    an optional ``tenant_id``: a given tenant resolves ONLY within that
+    tenant (a miss returns None/False -- callers surface it as 404 so
+    tenant existence never leaks); None resolves in "default" first, then
+    a unique cross-tenant match -- ambiguous names resolve to nothing
+    rather than guessing (dispatch gates use entry_for_agent instead).
+    Single-tenant deployments register everything under "default", so
+    both paths behave exactly like the historical name-keyed registry.
     """
 
     def __init__(self, persist_path: Path = DEFAULT_PERSIST_PATH):
@@ -203,8 +193,7 @@ class AgentRegistry:
             return None, None
 
     def _load_remote_agents(self) -> None:
-        """Load persisted remote agent registrations (validation and env-based
-        credential resolution live in registry_persistence)."""
+        """Load persisted remote registrations (see registry_persistence)."""
         for kwargs in load_remote_entries(self._persist_path):
             key = (kwargs.get("tenant_id", DEFAULT_TENANT), kwargs["agent"].name)
             self._agents[key] = AgentEntry(**kwargs)
@@ -244,8 +233,7 @@ class AgentRegistry:
         return self._agents[key] if key is not None else None
 
     def _save_remote_agents(self) -> None:
-        """Persist remote agent registrations to disk. The raw identity token
-        is NEVER written -- only its hash and visibility/tenant metadata."""
+        """Persist remote registrations (raw identity token NEVER written)."""
         save_remote_entries(self._persist_path, list(self._agents.values()))
 
     def register_local(
@@ -296,12 +284,11 @@ class AgentRegistry:
         """Register a remote agent, issue an identity token, and persist.
 
         Optional access_scopes / max_calls_per_hour / is_meta_agent build an
-        AgentCapability used for scope filtering and rate limiting at dispatch.
-        visibility ("public"/"team"/"private") and tenant_id control which
-        tenants can see and dispatch this agent; both survive restarts.
-        The raw identity token is held in memory only (hash persisted).
-
-        Raises ValidationError on invalid visibility or tenant_id.
+        AgentCapability used for scope filtering and rate limiting at
+        dispatch. visibility and tenant_id control which tenants can see and
+        dispatch this agent; both survive restarts. The raw identity token
+        stays in memory only (hash persisted). Raises ValidationError on
+        invalid visibility or tenant_id.
         """
         visibility = validate_in_choices(visibility, VISIBILITY_CHOICES, "visibility")
         tenant_id = validate_identifier(tenant_id, "tenant_id")
@@ -378,8 +365,7 @@ class AgentRegistry:
 
     def rotate_credentials(self, name: str, tenant_id: str | None = None) -> str | None:
         """Re-issue an agent's identity token. Returns the new raw token
-        exactly once (only the hash is retained on disk); None if the
-        agent is unknown (in the given tenant) or issuance failed."""
+        exactly once; None if unknown (in the tenant) or issuance failed."""
         entry = self._find_entry(name, tenant_id)
         if entry is None:
             return None
@@ -396,9 +382,8 @@ class AgentRegistry:
         return token
 
     def revoke_credentials(self, name: str, tenant_id: str | None = None) -> bool:
-        """Clear an agent's identity token and hash. Remote agents are
-        blocked at dispatch until credentials are rotated; local agents
-        fall back to tokenless (allowed) operation."""
+        """Clear token and hash. Remote agents are blocked at dispatch until
+        rotated; local agents fall back to tokenless (allowed) operation."""
         entry = self._find_entry(name, tenant_id)
         if entry is None:
             return False
@@ -410,8 +395,7 @@ class AgentRegistry:
         return True
 
     def touch_last_active(self, name: str, tenant_id: str | None = None) -> None:
-        """Record dispatch activity (drives dormancy). In-memory only;
-        persisted opportunistically on the next remote-registration save."""
+        """Record dispatch activity (drives dormancy). In-memory only."""
         entry = self._find_entry(name, tenant_id)
         if entry is not None:
             entry.last_active = _now_iso()
@@ -424,6 +408,23 @@ class AgentRegistry:
     def get_entry(self, name: str, tenant_id: str | None = None) -> AgentEntry | None:
         """Get full registry entry (agent + metadata) by name."""
         return self._find_entry(name, tenant_id)
+
+    def entry_for_agent(self, agent: Any) -> AgentEntry | None:
+        """Resolve the entry holding this exact agent OBJECT, so dispatch
+        gates bind to the entry the orchestrator pulled from the registry
+        even when the same name exists in other tenants. Falls back to the
+        tenant-less name lookup for agents constructed outside the registry
+        (ambiguous names resolve to None; see name_registered)."""
+        for entry in self._agents.values():
+            if entry.agent is agent:
+                return entry
+        name = getattr(agent, "name", "")
+        return self._find_entry(name) if name else None
+
+    def name_registered(self, name: str) -> bool:
+        """True when ANY tenant has this name (dispatch gates fail closed
+        on registered-but-unresolvable agents)."""
+        return any(k[1] == name for k in self._agents)
 
     def get_all(self) -> list:
         """Get all registered agents (for passing to RoundTable)."""

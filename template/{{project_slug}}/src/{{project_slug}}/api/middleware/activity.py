@@ -15,10 +15,14 @@ historical derivation: tenant "default" and a 16-hex-char SHA-256 prefix
 of the bearer token (or "anon"). The raw key is never stored.
 
 When the operator declares multi-tenant auth (MULTI_TENANT_AUTH_ENABLED
-=true) but events keep resolving to the "default" tenant, a one-time
-warning fires -- attribution is misconfigured (e.g. a custom
-verify_api_key that no longer sets request.state.auth_context). The
-warning is inert: nothing is blocked or altered.
+=true) but an AUTHENTICATED request (auth context present) still
+resolves to the "default" tenant, a one-time warning fires --
+attribution is misconfigured (e.g. a custom verify_api_key that never
+sets a real tenant_id). Unauthenticated traffic (health probes, failed
+auth) legitimately falls back to the default tenant and must NOT burn
+the one-time warning, or a real misconfiguration on authenticated
+routes would go unreported. The warning is inert: nothing is blocked
+or altered.
 
 Every Nth recorded request (ACTIVITY_CHECK_SAMPLE_N, default 25) the
 middleware also runs the detection pass for that user: the burst
@@ -74,18 +78,20 @@ def _user_id_from_request(request: Request) -> str:
     return "anon"
 
 
-def _attribution_from_request(request: Request) -> tuple[str, str]:
-    """Resolve (tenant_id, user_id) for one recorded event.
+def _attribution_from_request(request: Request) -> tuple[str, str, bool]:
+    """Resolve (tenant_id, user_id, authenticated) for one recorded event.
 
     Prefers the AuthContext the route's verify_api_key dependency mirrored
     onto request.state; falls back to the header-derived user and the
     default tenant when no context was resolved (unauthenticated routes,
     failed auth -- an unauthenticated caller can never claim a tenant).
+    The authenticated bit tells the caller whether the default tenant was
+    RESOLVED by auth (misconfiguration signal) or is just the fallback.
     """
     auth = getattr(request.state, "auth_context", None)
     if auth is not None:
-        return auth.tenant_id, auth.user_id
-    return DEFAULT_TENANT, _user_id_from_request(request)
+        return auth.tenant_id, auth.user_id, True
+    return DEFAULT_TENANT, _user_id_from_request(request), False
 
 
 def _warn_default_tenant_once() -> None:
@@ -94,8 +100,9 @@ def _warn_default_tenant_once() -> None:
         return
     _default_tenant_warned = True
     logger.warning(
-        "[ActivityMiddleware] MULTI_TENANT_AUTH_ENABLED=true but an activity "
-        "event was recorded under the 'default' tenant. Tenant attribution "
+        "[ActivityMiddleware] MULTI_TENANT_AUTH_ENABLED=true but an "
+        "authenticated request's activity event was recorded under the "
+        "'default' tenant. Tenant attribution "
         "for behavioral baselines, anomaly flags, and retention may be "
         "misconfigured -- confirm your auth integration sets "
         "request.state.auth_context with the caller's real tenant_id. "
@@ -115,8 +122,12 @@ class ActivityTrackingMiddleware(BaseHTTPMiddleware):
         try:
             tracker = getattr(request.app.state, "activity_tracker", None)
             if tracker is not None:
-                tenant_id, user_id = _attribution_from_request(request)
-                if tenant_id == DEFAULT_TENANT and multi_tenant_auth_enabled():
+                tenant_id, user_id, authenticated = _attribution_from_request(request)
+                if (
+                    authenticated
+                    and tenant_id == DEFAULT_TENANT
+                    and multi_tenant_auth_enabled()
+                ):
                     _warn_default_tenant_once()
                 # Blocking SQLite write: off the event loop.
                 await asyncio.to_thread(
