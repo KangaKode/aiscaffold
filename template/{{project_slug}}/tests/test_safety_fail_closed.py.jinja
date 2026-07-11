@@ -117,7 +117,7 @@ class TestLLMResponseErrorContract:
         client = LLMClient(provider="anthropic", api_key="test-key", max_retries=0)
         client._client = object()
 
-        async def failing_provider(prompt, temp, max_tok):
+        async def failing_provider(prompt, temp, max_tok, model=None):
             raise ValueError("bad input")
 
         client._call_provider = failing_provider
@@ -131,7 +131,7 @@ class TestLLMResponseErrorContract:
         client = LLMClient(provider="anthropic", api_key="test-key")
         client._client = object()
 
-        async def ok_provider(prompt, temp, max_tok):
+        async def ok_provider(prompt, temp, max_tok, model=None):
             return LLMResponse(content="ok", provider="anthropic", model="test")
 
         client._call_provider = ok_provider
