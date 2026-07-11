@@ -381,9 +381,9 @@ Identity tokens carry an `exp` claim set at issue time from `AGENT_DEFAULT_TTL_D
 Two things make that visible instead of silent:
 
 - **Register and rotate responses return `expires_at`** (ISO 8601 UTC), and agent listings/detail include it per agent. Schedule rotation before that timestamp passes; there is no auto-renewal.
-- **Expired or invalid tokens blocked at the dispatch gates record an `agent_identity_blocked` integrity flag** (when a learning store is available -- the API gateway threads it automatically). Repeated blocks for the same agent dedupe into one unresolved flag with a hit counter, so `GET /api/v1/integrity-flags` shows you which agents are being silently excluded and how often. Flag persistence is fire-and-forget: it never fails or slows dispatch.
+- **Agents blocked by the identity gate at dispatch record an `agent_identity_blocked` integrity flag** (when a learning store is available -- the API gateway threads it automatically). Repeated blocks for the same agent dedupe into one unresolved flag with a hit counter, so `GET /api/v1/activity/anomalies` shows you which agents are being excluded and how often. Flag persistence is fire-and-forget: it never fails or slows dispatch.
 
-Operationally: watch integrity flags for `agent_identity_blocked`, and treat any hit as "this agent's credential needs rotation now" -- the deliberations it missed are already degraded.
+Operationally: watch for `agent_identity_blocked` flags and read the `reason` field in the flag detail before acting. `invalid_or_expired_token` and `missing_token` mean "this agent's credential needs rotation now" -- the deliberations it missed are already degraded. `suspended` is expected while an agent is administratively suspended (the flag documents the exclusion; it is not a credential problem). `ambiguous_name` means the registry cannot resolve the agent to a single entry (same name in multiple tenants) and needs an operator to fix the registration.
 
 ### Scopes and rate limits
 

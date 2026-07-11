@@ -379,7 +379,7 @@ curl -X POST https://platform.example.com/api/v1/agents/incident_responder/unsus
 
 Identity tokens carry an `exp` claim set at issue time from `AGENT_DEFAULT_TTL_DAYS` (default 7 days in production/staging, 90 in dev, clamped by `AGENT_MAX_TTL_DAYS`). Expiry is enforced at every dispatch -- even with the `AGENT_IDENTITY_ENABLED=false` kill switch, which skips signature checks but keeps expiry -- so an agent whose token lapses silently drops out of deliberations.
 
-Two things make that visible instead of silent: register and rotate responses return `expires_at` (ISO 8601 UTC, also shown per agent in listings), and expired or invalid tokens blocked at the dispatch gates record an `agent_identity_blocked` integrity flag (deduped per agent into one unresolved flag with a hit counter; fire-and-forget, never slows dispatch). Schedule rotation before `expires_at` passes -- there is no auto-renewal -- and treat any `agent_identity_blocked` flag as "this agent's credential needs rotation now".
+Two things make that visible instead of silent: register and rotate responses return `expires_at` (ISO 8601 UTC, also shown per agent in listings), and agents blocked by the identity gate at dispatch record an `agent_identity_blocked` integrity flag (deduped per agent into one unresolved flag with a hit counter; fire-and-forget, never slows dispatch). Schedule rotation before `expires_at` passes -- there is no auto-renewal -- and read the flag detail's `reason` field before acting: `invalid_or_expired_token` / `missing_token` mean rotate now, `suspended` is expected while an agent is administratively suspended, and `ambiguous_name` means the registration needs an operator to resolve a cross-tenant name collision.
 
 ### Scopes and rate limits
 
