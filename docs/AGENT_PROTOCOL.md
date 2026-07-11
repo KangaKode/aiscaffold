@@ -2,7 +2,7 @@
 
 How to build an agent in **any language** (TypeScript, Go, Rust, Python, etc.) that participates in the round table and chat orchestrator.
 
-Your agent implements 3 HTTP endpoints. The platform calls them during deliberation.
+Your agent implements 3 HTTP endpoints that the platform calls during deliberation, plus a `GET /health` endpoint it probes to confirm your agent is reachable.
 
 ---
 
@@ -230,6 +230,10 @@ Authorization: Bearer <your-agent-api-key>
 
 If you didn't set an API key during registration, no Authorization header is sent.
 
+## Health Checks
+
+Implement `GET /health` and return HTTP 200 when your agent is ready. Health checks run on demand (`POST /api/v1/agents/health`, or `health_check_all` in code). A newly registered agent starts out marked healthy, but once its most recent health check has failed, chat routing skips it until a later check passes. Round-table dispatch does not filter on health; it relies on per-phase failure isolation instead.
+
 ## Timeouts
 
 The platform waits **120 seconds** for each endpoint (the default; a different timeout can be set when registering agents in code via `register_remote(..., timeout=...)`). If your agent doesn't respond in time, it's marked as failed for that phase and excluded from the round table result.
@@ -273,12 +277,13 @@ curl -X POST https://platform.example.com/api/v1/agents \
     "domain": "application security",
     "base_url": "https://your-agent.example.com",
     "api_key": "your-agent-secret",
-    "capabilities": ["security", "owasp", "code_review"],
-    "mode": "sync"
+    "capabilities": ["security", "owasp", "code_review"]
   }'
 ```
 
 After registration, your agent participates in all round tables and chat sessions where its domain is relevant.
+
+Two details worth knowing. Chat consultations call only your `/analyze` endpoint; `/challenge` and `/vote` run in round tables. And the cheapest tier, `POST /api/v1/resolve`, never calls agents directly: it answers from approved corrections and tells the caller to fall back to chat when confidence is low, which is where your agent comes in.
 
 ---
 
@@ -308,6 +313,10 @@ async def challenge(request: dict):
 @app.post("/vote")
 async def vote(request: dict):
     return {"agent_name": "my_agent", "approve": True, "conditions": []}
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 ```
 
 Run with: `uvicorn my_agent:app --port 3001`
