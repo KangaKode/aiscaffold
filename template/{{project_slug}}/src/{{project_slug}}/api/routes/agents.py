@@ -92,6 +92,7 @@ async def register_agent(
         tenant_id=auth.tenant_id,
     )
     logger.info(f"[AgentsAPI] Registered: {registration.name} at {registration.base_url}")
+    entry = registry.get_entry(registration.name, tenant_id=auth.tenant_id)
     return AgentInfo(
         name=agent.name,
         domain=agent.domain,
@@ -100,6 +101,9 @@ async def register_agent(
         capabilities=registration.capabilities,
         visibility=registration.visibility,
         tenant_id=auth.tenant_id,
+        # Identity-token expiry: rotate before this passes (expired
+        # tokens are blocked at dispatch and flagged).
+        expires_at=entry.identity_expires_at if entry else None,
     )
 
 
@@ -174,7 +178,14 @@ async def rotate_agent_credentials(
     logger.info(
         f"[AgentsAPI] Rotated credentials: {agent_id} (tenant={auth.tenant_id})"
     )
-    return {"identity_token": token, "note": "store securely; shown once"}
+    entry = registry.get_entry(agent_id, tenant_id=auth.tenant_id)
+    return {
+        "identity_token": token,
+        "note": "store securely; shown once",
+        # ISO 8601 UTC expiry of the new token -- rotate again before
+        # this passes or the agent is blocked at dispatch.
+        "expires_at": entry.identity_expires_at if entry else None,
+    }
 
 
 @router.delete("/agents/{agent_id}/credentials")

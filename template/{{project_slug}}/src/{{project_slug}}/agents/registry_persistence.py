@@ -113,6 +113,9 @@ def _entry_kwargs_from_dict(entry: dict) -> dict[str, Any]:
         "suspended": entry.get("suspended", False),
         "capability": capability,
         "last_active": entry.get("last_active"),
+        # Expiry metadata (not a secret): lets operators see when the
+        # persisted credential dies even before rotating.
+        "identity_expires_at": entry.get("identity_expires_at"),
     }
 
 
@@ -135,6 +138,7 @@ def save_remote_entries(persist_path: Path, entries: list[Any]) -> None:
             agent_data["identity_token_hash"] = entry.identity_token_hash
             agent_data["suspended"] = entry.suspended
             agent_data["last_active"] = entry.last_active
+            agent_data["identity_expires_at"] = entry.identity_expires_at
             if entry.capability is not None:
                 agent_data["capability"] = {
                     "access_scopes": entry.capability.access_scopes,
