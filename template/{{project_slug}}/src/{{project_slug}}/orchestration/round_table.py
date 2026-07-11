@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from ..observability.tracing import phase_span
+
 logger = logging.getLogger(__name__)
 
 
@@ -233,15 +235,21 @@ class RoundTable:
         checkin_manager: Any = None,
         baseline_tracker: Any = None,
         collusion_detector: Any = None,
+        learning_store: Any = None,
+        delegation_recorder: Any = None,
     ):
         self.config = config
         self.llm = llm_client
         self._registry = registry  # Optional: enables identity/rate-limit gates
         self._checkin_manager = checkin_manager  # Optional: approval check-ins
         # Opt-in detection hooks (None = off, behavior unchanged); build via
-        # the env-gated factories in learning/activity and learning/collusion.
+        # the env-gated factories in learning/activity, learning/collusion
+        # and learning/delegation. learning_store enables the
+        # agent_identity_blocked integrity flag at the dispatch gates.
         self._baseline_tracker = baseline_tracker
         self._collusion_detector = collusion_detector
+        self._learning_store = learning_store
+        self._delegation_recorder = delegation_recorder
         self._core_agent_names: set[str] = set()
 
         if config.include_core_agents:
@@ -276,10 +284,11 @@ class RoundTable:
             from .premise import phase_premise_validation
 
             logger.info("[RoundTable] Phase 0.5: Premise validation")
-            pcr = await phase_premise_validation(
-                self.agents, task, self.llm,
-                refusal_threshold=self.config.refusal_threshold,
-            )
+            with phase_span("deliberation.phase.premise", agent_count=len(self.agents)):
+                pcr = await phase_premise_validation(
+                    self.agents, task, self.llm,
+                    refusal_threshold=self.config.refusal_threshold,
+                )
             if pcr.premise_challenged:
                 result.premise_challenge = pcr
                 result.duration_seconds = (datetime.now() - start).total_seconds()
@@ -293,7 +302,8 @@ class RoundTable:
         # Phase 0: Strategy
         if self.config.enable_strategy_phase and self.llm:
             logger.info("[RoundTable] Phase 0: Strategy planning")
-            result.strategy = await self._phase_strategy(task)
+            with phase_span("deliberation.phase.strategy"):
+                result.strategy = await self._phase_strategy(task)
             self._write_artifact(task.id, "phase0_strategy", asdict(result.strategy))
 
         # Phase 1: Independent Analysis (PARALLEL -- separate context windows)
@@ -302,7 +312,8 @@ class RoundTable:
             task.context["agent_focus_areas"] = result.strategy.agent_focus_areas
 
         logger.info(f"[RoundTable] Phase 1: Independent analysis ({len(self.agents)} agents)")
-        result.analyses, result.failed_agent_count = await self._phase_independent(task)
+        with phase_span("deliberation.phase.independent", agent_count=len(self.agents)):
+            result.analyses, result.failed_agent_count = await self._phase_independent(task)
         self._write_artifact(task.id, "phase1_analyses", [asdict(a) for a in result.analyses])
 
         # Quorum: degraded when too few domain (non-core) analyses succeeded
@@ -322,24 +333,27 @@ class RoundTable:
         # Phase 2: Challenge
         if self.config.enable_challenge_phase:
             logger.info("[RoundTable] Phase 2: Cross-agent challenge")
-            result.challenges = await self._phase_challenge(task, result.analyses)
+            with phase_span("deliberation.phase.challenge", agent_count=len(self.agents)):
+                result.challenges = await self._phase_challenge(task, result.analyses)
             self._write_artifact(task.id, "phase2_challenges", [asdict(c) for c in result.challenges])
 
         # Phase 3: Synthesis + Voting
         logger.info("[RoundTable] Phase 3: Synthesis + voting")
         from .round_table_helpers import phase_synthesis
-        result.synthesis = await phase_synthesis(
-            result, self.llm, self._build_system_prompt()
-        )
+        with phase_span("deliberation.phase.synthesis"):
+            result.synthesis = await phase_synthesis(
+                result, self.llm, self._build_system_prompt()
+            )
         self._write_artifact(task.id, "phase3_synthesis", asdict(result.synthesis))
 
         # Scope the gated-out count to agents that actually analyzed:
         # a roster member excluded before Phase 1 fails the same gates
         # again here and is not a mid-run voter loss.
         analyzed_names = {a.agent_name for a in result.analyses}
-        result.votes, result.vote_gated_count = await self._phase_voting(
-            task, result.synthesis, analyzed_names
-        )
+        with phase_span("deliberation.phase.vote", agent_count=len(self.agents)):
+            result.votes, result.vote_gated_count = await self._phase_voting(
+                task, result.synthesis, analyzed_names
+            )
         if result.vote_gated_count:
             # A mid-run shrunken voter set must never present as clean.
             result.degraded = True
@@ -391,44 +405,12 @@ class RoundTable:
         )
 
     async def _phase_strategy(self, task: RoundTableTask) -> StrategyPlan:
-        """Phase 0: Orchestrator plans before dispatching."""
-        from ..llm import CacheablePrompt
+        """Phase 0 (see round_table_helpers.phase_strategy)."""
+        from .round_table_helpers import phase_strategy
 
-        prompt = CacheablePrompt(
-            system=self._build_system_prompt(),
-            user_message=(
-                f"Task: {task.content}\n\n"
-                f"Before dispatching the team, plan your strategy:\n"
-                f"1. How does this task decompose into sub-problems?\n"
-                f"2. What should each agent specifically focus on?\n"
-                f"3. What disagreements do you anticipate between agents?\n"
-                f"4. What are the success criteria?\n\n"
-                'Return JSON: {"task_decomposition": [...], "agent_focus_areas": {...}, '
-                '"anticipated_tensions": [...], "success_criteria": [...]}'
-            ),
+        return await phase_strategy(
+            task, self.llm, self._build_system_prompt(), self.agents
         )
-        try:
-            from ..llm.json_parser import extract_json
-
-            response = await self.llm.call(prompt=prompt, role="synthesis", temperature=0.3)
-            data = extract_json(response.content)
-            if data is None:
-                logger.warning("[RoundTable] Strategy phase returned unparseable JSON")
-                return StrategyPlan(reasoning=response.content)
-            return StrategyPlan(
-                task_decomposition=data.get("task_decomposition", []),
-                agent_focus_areas=data.get("agent_focus_areas", {}),
-                anticipated_tensions=data.get("anticipated_tensions", []),
-                success_criteria=data.get("success_criteria", []),
-                reasoning=response.content,
-            )
-        except Exception as e:
-            logger.warning(f"[RoundTable] Strategy phase failed: {e}")
-            return StrategyPlan(
-                task_decomposition=["Full analysis"],
-                agent_focus_areas={a.name: a.domain for a in self.agents},
-                success_criteria=["Actionable recommendations with evidence"],
-            )
 
     async def _phase_independent(
         self, task: RoundTableTask
@@ -448,6 +430,8 @@ class RoundTable:
         analyses, skipped, failed = await dispatch_with_gates(
             self.agents, task, self._registry, rate_limiter, "RoundTable",
             baseline_tracker=self._baseline_tracker,
+            store=self._learning_store,
+            delegation_recorder=self._delegation_recorder,
         )
 
         if self.config.enforce_evidence:
@@ -464,7 +448,9 @@ class RoundTable:
         from .dispatch_helpers import run_challenge_phase
 
         return await run_challenge_phase(
-            self.agents, task, analyses, self._registry
+            self.agents, task, analyses, self._registry,
+            store=self._learning_store,
+            delegation_recorder=self._delegation_recorder,
         )
 
     async def _phase_voting(
@@ -482,6 +468,8 @@ class RoundTable:
         return await run_voting_phase(
             self.agents, task, synthesis, self._registry,
             midrun_names=analyzed_names,
+            store=self._learning_store,
+            delegation_recorder=self._delegation_recorder,
         )
 
     def _write_artifact(self, task_id: str, phase: str, data: Any) -> None:

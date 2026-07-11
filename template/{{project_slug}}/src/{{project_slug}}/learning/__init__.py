@@ -40,6 +40,7 @@ from .override_detector import OverrideDetector  # noqa: F401
 from .content_policy import ContentPolicy  # noqa: F401
 from .collusion import CollusionDetector, analyze_correction_drift  # noqa: F401
 from .activity import ActivityTracker, AgentBaselineTracker  # noqa: F401
+from .delegation import DelegationRecorder, create_delegation_recorder  # noqa: F401
 from .reflector import Reflection, ReflectionType, reflect  # noqa: F401
 from .error_schemata import (  # noqa: F401
     ErrorSchema,
@@ -83,6 +84,8 @@ __all__ = [
     "analyze_correction_drift",
     "ActivityTracker",
     "AgentBaselineTracker",
+    "DelegationRecorder",
+    "create_delegation_recorder",
     "Reflection",
     "ReflectionType",
     "reflect",

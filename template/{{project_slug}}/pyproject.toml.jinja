@@ -40,6 +40,9 @@ postgres = ["psycopg[binary]>=3.1"]
 mcp = ["mcp>=1.0"]
 # Prometheus exposition at GET /metrics/prometheus (observability/metrics.py)
 metrics = ["prometheus_client>=0.20"]
+# Per-phase OTel spans (observability/tracing.py) -- you configure the
+# tracer provider/exporter yourself; no-op otherwise
+otel = ["opentelemetry-api>=1.25", "opentelemetry-sdk>=1.25"]
 {% if include_api_gateway -%}
 # Locust load harness (tests/load/locustfile.py) -- never a base dependency
 load = ["locust>=2.20"]

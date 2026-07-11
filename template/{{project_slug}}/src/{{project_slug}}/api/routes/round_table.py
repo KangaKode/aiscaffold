@@ -226,6 +226,11 @@ async def submit_task(
             collusion_detector=getattr(
                 request.app.state, "collusion_detector", None
             ),
+            # Store enables the agent_identity_blocked flag at the gates.
+            learning_store=getattr(request.app.state, "learning_store", None),
+            delegation_recorder=getattr(
+                request.app.state, "delegation_recorder", None
+            ),
         )
         auditor = getattr(request.app.state, "deliberation_auditor", None)
         if auditor is not None:
@@ -235,6 +240,7 @@ async def submit_task(
                 auditor,
                 tenant_id=auth.tenant_id,
                 correlation_id=task_id,
+                user_id=auth.user_id,
             )
         else:
             result = await rt.run(task)
@@ -257,7 +263,10 @@ async def submit_task(
             if store is not None:
                 from ...learning.reflector import reflect
 
-                reflect(result, tenant_id=auth.tenant_id, store=store)
+                reflect(
+                    result, tenant_id=auth.tenant_id, store=store,
+                    created_by=auth.user_id,
+                )
         except Exception as e:
             logger.warning(f"[RoundTableAPI] Reflection extraction failed: {e}")
 

@@ -15,6 +15,10 @@ blocked or altered):
   STARTUP_CANARY_ENABLED      -- one-shot self-check that the canary
                                  injection/detection machinery
                                  round-trips (security/injection_defense).
+  DELEGATION_RECORDS_ENABLED  -- DelegationRecorder on app.state,
+                                 threaded into round-table/chat dispatch;
+                                 records phase-derivation hops, not
+                                 agent-to-agent calls (learning/delegation.py).
 
 Everything here is fire-and-forget: failures are logged (and the canary
 failure recorded as an integrity flag) but never abort gateway startup
@@ -28,6 +32,7 @@ import os
 
 from ..learning.activity import create_baseline_tracker
 from ..learning.collusion import create_collusion_detector
+from ..learning.delegation import create_delegation_recorder
 from ..learning.flags import insert_flag_once
 from ..security import check_canary, inject_canary
 from ..security.prompt_guard import sanitize_for_prompt, wrap_user_content
@@ -40,6 +45,7 @@ _TOGGLES = (
     "BASELINE_TRACKING_ENABLED",
     "COLLUSION_DETECTION_ENABLED",
     "STARTUP_CANARY_ENABLED",
+    "DELEGATION_RECORDS_ENABLED",
 )
 
 
@@ -50,8 +56,8 @@ def _enabled(var: str) -> bool:
 def init_detection_hooks(application) -> None:
     """Initialize the opt-in detection hooks on the FastAPI app state.
 
-    With every toggle off (the default) this sets the two app.state
-    attributes to None and returns -- downstream code treats None as
+    With every toggle off (the default) this sets each app.state
+    attribute to None and returns -- downstream code treats None as
     "wiring off" and behaves exactly as before.
     """
     store = getattr(application.state, "learning_store", None)
@@ -79,6 +85,10 @@ def init_detection_hooks(application) -> None:
     )
     if application.state.collusion_detector is not None:
         logger.info("[Gateway] Collusion detection enabled (detect-only)")
+
+    application.state.delegation_recorder = create_delegation_recorder(store)
+    if application.state.delegation_recorder is not None:
+        logger.info("[Gateway] Delegation records enabled (detect-only)")
 
     run_startup_canary_check(store)
 

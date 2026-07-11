@@ -128,8 +128,12 @@ def _get_or_create_orchestrator(
         llm=llm,
         registry=registry,
         router=agent_router,
-        # Opt-in per-dispatch baseline stats (None unless enabled).
+        # Opt-in per-dispatch baseline stats and delegation records
+        # (None unless enabled); the store enables the identity-block
+        # flag at the dispatch gates.
         baseline_tracker=getattr(request.app.state, "baseline_tracker", None),
+        learning_store=getattr(request.app.state, "learning_store", None),
+        delegation_recorder=getattr(request.app.state, "delegation_recorder", None),
     )
 
     while len(_orchestrators) > MAX_SESSIONS:
