@@ -77,8 +77,7 @@ class AgentEntry:
     tenant_id: registering tenant (default "default");
     identity_token: raw JWT held in memory only -- NEVER persisted to disk;
     identity_token_hash: SHA-256 of the token (safe to persist);
-    identity_expires_at: ISO 8601 UTC expiry of the current token (from
-        its exp claim; safe to persist -- it is metadata, not a secret);
+    identity_expires_at: ISO 8601 UTC token expiry (metadata, not a secret);
     suspended: excluded from dispatch and listings;
     capability: structured AgentCapability (scopes, rate limit);
     last_active: ISO timestamp of last dispatch (drives dormancy).
@@ -183,10 +182,8 @@ class AgentRegistry:
         capability: AgentCapability | None,
         tenant_id: str = "default",
     ) -> tuple[str | None, str | None, str | None]:
-        """Issue an identity token. Returns (raw_token, token_hash,
-        expires_at) where expires_at is the token's exp claim as ISO 8601
-        UTC (surfaced so operators can rotate before expiry).
-
+        """Issue an identity token: (raw_token, token_hash, expires_at) --
+        expires_at is the exp claim (ISO 8601 UTC) so operators can rotate in time.
         Failure is non-fatal: local agents are allowed tokenless; remote
         agents are blocked at dispatch until credentials are rotated.
         """
@@ -205,9 +202,7 @@ class AgentRegistry:
             key = (kwargs.get("tenant_id", DEFAULT_TENANT), kwargs["agent"].name)
             self._agents[key] = AgentEntry(**kwargs)
 
-    def _find_key(
-        self, name: str, tenant_id: str | None = None
-    ) -> tuple[str, str] | None:
+    def _find_key(self, name: str, tenant_id: str | None = None) -> tuple[str, str] | None:
         """Resolve a (tenant_id, name) registry key (see class docstring).
         Entries whose tenant_id attribute was mutated in place after
         registration (a documented platform customization) match by
@@ -233,9 +228,7 @@ class AgentRegistry:
             )
         return None
 
-    def _find_entry(
-        self, name: str, tenant_id: str | None = None
-    ) -> AgentEntry | None:
+    def _find_entry(self, name: str, tenant_id: str | None = None) -> AgentEntry | None:
         key = self._find_key(name, tenant_id)
         return self._agents[key] if key is not None else None
 
@@ -261,9 +254,7 @@ class AgentRegistry:
         name = agent.name
         if (tenant_id, name) in self._agents:
             logger.warning(f"[AgentRegistry] Replacing existing agent '{name}'")
-        token, token_hash, expires_at = self._issue_entry_token(
-            name, capability, tenant_id
-        )
+        token, token_hash, expires_at = self._issue_entry_token(name, capability, tenant_id)
         self._agents[(tenant_id, name)] = AgentEntry(
             agent=agent,
             agent_type="local",
@@ -324,9 +315,7 @@ class AgentRegistry:
                 f"[AgentRegistry] Replacing existing agent '{name}' "
                 f"(tenant '{tenant_id}')"
             )
-        token, token_hash, expires_at = self._issue_entry_token(
-            name, capability, tenant_id
-        )
+        token, token_hash, expires_at = self._issue_entry_token(name, capability, tenant_id)
         self._agents[(tenant_id, name)] = AgentEntry(
             agent=agent,
             agent_type="remote",
@@ -382,9 +371,7 @@ class AgentRegistry:
         entry = self._find_entry(name, tenant_id)
         if entry is None:
             return None
-        token, token_hash, expires_at = self._issue_entry_token(
-            name, entry.capability, tenant_id=entry.tenant_id
-        )
+        token, token_hash, expires_at = self._issue_entry_token(name, entry.capability, tenant_id=entry.tenant_id)
         if token is None:
             return None
         entry.identity_token = token
@@ -452,9 +439,7 @@ class AgentRegistry:
     def get_by_capability(self, capability: str) -> list:
         """Get agents that have a specific capability tag."""
         return [
-            entry.agent
-            for entry in self._agents.values()
-            if capability in entry.capabilities
+            e.agent for e in self._agents.values() if capability in e.capabilities
         ]
 
     async def health_check_all(self, tenant_id: str | None = None) -> dict[str, bool]:

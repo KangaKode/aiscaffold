@@ -491,7 +491,7 @@ make validate         -- Generate test projects for all 4 profiles
                          (full / gateway-off / minimal / defaults) + full suite:
                          unrendered-template guard, ruff lint, bandit security,
                          import validation, red team, AI checks, agent review,
-                         pytest (904 tests collected, 900 passing, 87% coverage),
+                         pytest (943 tests collected, 938 passing, 87% coverage),
                          injection-defense golden set, file structure and
                          toggle-wiring verification
 make validate-matrix  -- Adds 2 more configurations (multi-agent/api-service)
@@ -525,7 +525,7 @@ template/{{project_slug}}/
   deploy/k8s/         # Kubernetes manifests
   .cursor/agents/     # Development subagent definitions
   docs/               # Progressive disclosure documentation
-  tests/              # 904 tests across 37 files: 900 pass, 3 skip without the
-                      # [metrics] extra, 1 opt-in Postgres skip (+ tests/load/ Locust harness)
+  tests/              # 943 tests across 38 files: 938 pass, 3 skip without the
+                      # [metrics] extra, 1 without [otel], 1 opt-in Postgres skip (+ tests/load/ Locust harness)
   evals/              # Eval infrastructure
 ```
