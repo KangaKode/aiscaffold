@@ -106,11 +106,13 @@ def record_dispatches(
     """
     if recorder is None or not agent_ids:
         return
+    # Snapshot the lists before crossing the thread boundary so a caller
+    # reusing/mutating them after scheduling cannot corrupt the write.
     args = (
         getattr(task, "id", "") or "",
         phase,
-        agent_ids,
-        derived_from,
+        list(agent_ids),
+        list(derived_from),
         getattr(task, "tenant_id", "default") or "default",
     )
     try:
