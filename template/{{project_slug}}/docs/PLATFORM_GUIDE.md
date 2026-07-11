@@ -553,6 +553,7 @@ Define retention policies for each data store and document them for your legal/c
 | Feedback signals | SQLite (permanent) | May contain PII; subject to GDPR/CCPA |
 | Agent trust scores | SQLite (permanent) | Audit trail for routing decisions |
 | Learned corrections | Learning store (until erased) | PII-redacted at write; hard-deletable via `DELETE /api/v1/corrections/{id}` (GDPR Art. 17) |
+| Agent dispatch stats (`agent_dispatch_stats`) | SQLite (permanent; grows one row per agent dispatch when `BASELINE_TRACKING_ENABLED`; no pruner yet) | Behavioral telemetry per agent/tenant; define a pruning policy before long-term production use |
 
 > **Note:** These are considerations for your legal and compliance team to evaluate. The scaffold provides the infrastructure hooks -- your organization defines the policies.
 
