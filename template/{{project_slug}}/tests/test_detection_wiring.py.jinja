@@ -1,0 +1,572 @@
+"""
+Opt-in detection/routing wiring -- the five env-gated hooks.
+
+Every hook defaults OFF and is detect-only: with the toggles unset the
+dispatch, voting, middleware, and LLM-call paths behave exactly as
+before (no new store rows, identical model selection, no new flags).
+With a toggle on, the hook records/flags -- and a broken store or
+detector never fails the request or deliberation (fire-and-forget).
+
+Toggles under test:
+  BASELINE_TRACKING_ENABLED   -> agent_dispatch_stats rows on dispatch
+  COLLUSION_DETECTION_ENABLED -> votes fed to the collusion detector
+  SEQUENCE_DETECTION_ENABLED  -> extraction-sequence scan on the sampled pass
+  MODEL_ROUTING_ENABLED       -> per-call model selection + one cascade step
+  STARTUP_CANARY_ENABLED      -> one-shot canary self-check at startup
+"""
+
+import asyncio
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+from {{project_slug}}.learning.activity import create_baseline_tracker
+from {{project_slug}}.learning.collusion import create_collusion_detector
+from {{project_slug}}.learning.store import SqliteLearningStore
+from {{project_slug}}.llm.client import LLMClient, LLMResponse, TokenUsage
+from {{project_slug}}.llm.model_router import ModelRouter
+from {{project_slug}}.orchestration.dispatch_helpers import dispatch_with_gates
+from {{project_slug}}.orchestration.round_table import (
+    AgentAnalysis,
+    AgentVote,
+    RoundTable,
+    RoundTableConfig,
+    RoundTableTask,
+)
+from {{project_slug}}.orchestration.round_table_helpers import record_collusion_votes
+
+ALL_TOGGLES = (
+    "BASELINE_TRACKING_ENABLED",
+    "COLLUSION_DETECTION_ENABLED",
+    "SEQUENCE_DETECTION_ENABLED",
+    "MODEL_ROUTING_ENABLED",
+    "STARTUP_CANARY_ENABLED",
+)
+
+# Deterministic tier map for the routing tests (never depends on the
+# example defaults in model_config.py).
+TIER_MAP_JSON = (
+    '{"nano": ["tier-nano"], "budget": ["tier-budget"], '
+    '"standard": ["tier-std"], "frontier": ["tier-frontier"]}'
+)
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning.db")
+
+
+@pytest.fixture(autouse=True)
+def _toggles_unset(monkeypatch):
+    """Every test starts with all five toggles unset (the shipped default)."""
+    for var in ALL_TOGGLES:
+        monkeypatch.delenv(var, raising=False)
+
+
+def _mk_client() -> LLMClient:
+    """LLM client with a fake SDK handle (same pattern as test_llm)."""
+    client = LLMClient(provider="anthropic", api_key="test-key", max_retries=0)
+    client._client = MagicMock()
+    return client
+
+
+def _capture_provider(client: LLMClient, calls: list):
+    """Replace _call_provider with a stub that records the routed model."""
+
+    async def fake_provider(prompt, temp, max_tok, model=None):
+        calls.append(model)
+        return LLMResponse(
+            content="ok",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+            provider="test",
+            model=model or "unset",
+        )
+
+    client._call_provider = fake_provider
+
+
+class RefusingAgent:
+    """Mock agent whose analysis signals a refused premise."""
+
+    name = "refuser"
+    domain = "testing"
+
+    async def analyze(self, task):
+        return AgentAnalysis(
+            agent_name=self.name,
+            domain=self.domain,
+            confidence=0.9,
+            premise_valid=False,
+            refusal_reason="flawed premise",
+        )
+
+
+# =============================================================================
+# TOGGLES OFF: behavior identical to the pre-wiring scaffold
+# =============================================================================
+
+
+class TestTogglesOffRegression:
+    def test_factories_return_none_by_default(self, store):
+        assert create_baseline_tracker(store) is None
+        assert create_collusion_detector(store) is None
+
+    @pytest.mark.asyncio
+    async def test_dispatch_writes_no_stats_rows(self, mock_agents, sample_task, store):
+        analyses, skipped, failed = await dispatch_with_gates(
+            mock_agents, sample_task, None, None, "Test"
+        )
+        assert len(analyses) == 2 and failed == 0
+        assert store.query("agent_dispatch_stats", {}) == []
+
+    @pytest.mark.asyncio
+    async def test_round_table_hooks_default_to_none(self, mock_agents):
+        rt = RoundTable(
+            agents=mock_agents,
+            config=RoundTableConfig(
+                enable_strategy_phase=False,
+                enable_challenge_phase=False,
+                include_core_agents=False,
+            ),
+        )
+        assert rt._baseline_tracker is None
+        assert rt._collusion_detector is None
+        result = await rt.run(RoundTableTask(id="off", content="test"))
+        assert result.task_id == "off"
+
+    @pytest.mark.asyncio
+    async def test_llm_call_uses_configured_model_without_router(self):
+        client = _mk_client()
+        assert client.model_router is None  # default: no router attached
+        calls: list = []
+        _capture_provider(client, calls)
+        response = await client.call("hello", role="premise_validation")
+        assert response.is_error is False
+        assert calls == [client._model]
+
+
+# =============================================================================
+# BASELINE TRACKING (BASELINE_TRACKING_ENABLED)
+# =============================================================================
+
+
+class TestBaselineTrackingWiring:
+    @pytest.fixture
+    def tracker(self, store, monkeypatch):
+        monkeypatch.setenv("BASELINE_TRACKING_ENABLED", "true")
+        tracker = create_baseline_tracker(store)
+        assert tracker is not None
+        return tracker
+
+    @pytest.mark.asyncio
+    async def test_dispatch_records_stats_under_callers_tenant(
+        self, mock_agents, tracker, store
+    ):
+        task = RoundTableTask(id="t1", content="analyze", tenant_id="acme")
+        analyses, _, failed = await dispatch_with_gates(
+            mock_agents, task, None, None, "Test", baseline_tracker=tracker
+        )
+        assert len(analyses) == 2 and failed == 0
+        rows = store.query("agent_dispatch_stats", {"tenant_id": "acme"})
+        assert {r["agent_id"] for r in rows} == {"analyst_a", "analyst_b"}
+        for row in rows:
+            assert row["refused"] == 0
+            assert row["confidence"] == pytest.approx(0.7)
+            assert row["duration_seconds"] >= 0.0
+
+    @pytest.mark.asyncio
+    async def test_refusal_derived_from_premise_valid(self, tracker, store):
+        task = RoundTableTask(id="t2", content="analyze", tenant_id="acme")
+        await dispatch_with_gates(
+            [RefusingAgent()], task, None, None, "Test", baseline_tracker=tracker
+        )
+        rows = store.query("agent_dispatch_stats", {"agent_id": "refuser"})
+        assert len(rows) == 1 and rows[0]["refused"] == 1
+
+    @pytest.mark.asyncio
+    async def test_round_table_threads_tracker_into_dispatch(
+        self, mock_agents, tracker, store
+    ):
+        """Genuine wiring regression: pre-wiring, RoundTable had no way to
+        pass a tracker into dispatch, so no stats row could ever appear."""
+        rt = RoundTable(
+            agents=mock_agents,
+            config=RoundTableConfig(
+                enable_strategy_phase=False,
+                enable_challenge_phase=False,
+                include_core_agents=False,
+            ),
+            baseline_tracker=tracker,
+        )
+        await rt.run(RoundTableTask(id="t3", content="analyze", tenant_id="acme"))
+        rows = store.query("agent_dispatch_stats", {"tenant_id": "acme"})
+        assert {r["agent_id"] for r in rows} == {"analyst_a", "analyst_b"}
+
+    @pytest.mark.asyncio
+    async def test_broken_tracker_never_fails_dispatch(self, mock_agents, sample_task):
+        class ExplodingTracker:
+            def record_dispatch(self, **kwargs):
+                raise RuntimeError("db down")
+
+        analyses, _, failed = await dispatch_with_gates(
+            mock_agents, sample_task, None, None, "Test",
+            baseline_tracker=ExplodingTracker(),
+        )
+        assert len(analyses) == 2 and failed == 0
+
+
+# =============================================================================
+# COLLUSION DETECTION (COLLUSION_DETECTION_ENABLED)
+# =============================================================================
+
+
+class TestCollusionWiring:
+    @pytest.fixture
+    def detector(self, store, monkeypatch):
+        monkeypatch.setenv("COLLUSION_DETECTION_ENABLED", "true")
+        detector = create_collusion_detector(store)
+        assert detector is not None
+        return detector
+
+    @pytest.mark.asyncio
+    async def test_round_table_feeds_votes_to_detector(self, mock_agents, detector):
+        """Genuine wiring regression: pre-wiring, no deliberation ever
+        reached the detector, so its history stayed empty forever."""
+        rt = RoundTable(
+            agents=mock_agents,
+            config=RoundTableConfig(
+                enable_strategy_phase=False,
+                enable_challenge_phase=False,
+                include_core_agents=False,
+            ),
+            collusion_detector=detector,
+        )
+        await rt.run(RoundTableTask(id="v1", content="vote on this"))
+        history = detector._vote_history["default"]
+        assert len(history) == 1
+        assert {name for name, _ in history[0]} == {"analyst_a", "analyst_b"}
+
+    @pytest.mark.asyncio
+    async def test_lockstep_flagged_under_callers_tenant(self, detector, store):
+        task = RoundTableTask(id="v2", content="vote", tenant_id="acme")
+        votes = [
+            AgentVote(agent_name="analyst_a", approve=True),
+            AgentVote(agent_name="analyst_b", approve=True),
+        ]
+        for _ in range(5):  # analyze_votes needs >= 5 shared rounds
+            await record_collusion_votes(detector, task, votes)
+        flags = store.query(
+            "integrity_flags", {"flag_type": "collusion_suspected", "tenant_id": "acme"}
+        )
+        assert len(flags) == 1
+        assert set(flags[0]["subject_id"].split(",")) == {"analyst_a", "analyst_b"}
+
+    @pytest.mark.asyncio
+    async def test_broken_detector_never_fails_deliberation(self, sample_task):
+        class ExplodingDetector:
+            def record_votes(self, *args, **kwargs):
+                raise RuntimeError("db down")
+
+        votes = [
+            AgentVote(agent_name="a", approve=True),
+            AgentVote(agent_name="b", approve=True),
+        ]
+        # Must not raise -- recording is fire-and-forget.
+        await record_collusion_votes(ExplodingDetector(), sample_task, votes)
+
+
+# =============================================================================
+# MODEL ROUTING (MODEL_ROUTING_ENABLED -- router attached to the client)
+# =============================================================================
+
+
+class TestModelRoutingWiring:
+    @pytest.fixture(autouse=True)
+    def _tier_map(self, monkeypatch):
+        monkeypatch.setenv("MODEL_TIER_MAP_JSON", TIER_MAP_JSON)
+
+    @pytest.mark.asyncio
+    async def test_router_selects_tier_by_role(self):
+        client = _mk_client()
+        client.model_router = ModelRouter()
+        calls: list = []
+        _capture_provider(client, calls)
+        response = await client.call("validate this", role="premise_validation")
+        assert response.is_error is False
+        assert calls == ["tier-nano"]  # premise_validation maps to nano
+
+    @pytest.mark.asyncio
+    async def test_budget_low_downgrades_one_tier(self):
+        client = _mk_client()
+        client.model_router = ModelRouter(
+            budget_manager=SimpleNamespace(remaining_pct=lambda tenant_id: 0.05)
+        )
+        calls: list = []
+        _capture_provider(client, calls)
+        # Unmatched role + long prompt -> DEFAULT_TIER (standard), then the
+        # near-exhausted budget downgrades one tier to budget.
+        await client.call("x" * 3000, role="unmapped_role")
+        assert calls == ["tier-budget"]
+
+    @pytest.mark.asyncio
+    async def test_cascade_one_step_up_after_final_failure(self):
+        """Genuine wiring regression: pre-wiring, a final failure returned
+        the error response immediately -- no second model was ever tried."""
+        client = _mk_client()
+        client.model_router = ModelRouter()
+        attempted: list = []
+
+        async def flaky_provider(prompt, temp, max_tok, model=None):
+            attempted.append(model)
+            if model == "tier-nano":
+                raise ValueError("nano tier down")
+            return LLMResponse(
+                content="cascade-ok",
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+                provider="test",
+                model=model,
+            )
+
+        client._call_provider = flaky_provider
+        response = await client.call("validate this", role="premise_validation")
+        assert attempted == ["tier-nano", "tier-budget"]
+        assert response.is_error is False
+        assert response.content == "cascade-ok"
+
+    @pytest.mark.asyncio
+    async def test_broken_router_falls_back_to_configured_model(self):
+        class ExplodingRouter:
+            def route(self, **kwargs):
+                raise RuntimeError("router bug")
+
+            def cascade(self, *args):
+                raise RuntimeError("router bug")
+
+        client = _mk_client()
+        client.model_router = ExplodingRouter()
+        calls: list = []
+        _capture_provider(client, calls)
+        response = await client.call("hello")
+        assert response.is_error is False
+        assert calls == [client._model]
+
+
+{% if include_api_gateway -%}
+# =============================================================================
+# SEQUENCE DETECTION (SEQUENCE_DETECTION_ENABLED -- sampled middleware pass)
+# =============================================================================
+
+
+def _insert_extraction_events(store, user_id="u1", tenant_id="default"):
+    """Synthetic credential_churn_burst: POST /credentials then POST /chat
+    within the pattern's 120s window (timestamps strictly increasing)."""
+    now = datetime.now()
+    for i, (route, ts) in enumerate(
+        [
+            ("/api/v1/credentials", now - timedelta(seconds=30)),
+            ("/api/v1/chat", now),
+        ]
+    ):
+        store.insert(
+            "activity_events",
+            {
+                "id": f"evt{i}",
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "route": route,
+                "method": "POST",
+                "status_code": 200,
+                "created_at": ts.isoformat(),
+            },
+        )
+
+
+def _run_sampled_checks(store):
+    """Invoke the middleware's sampled detection pass directly."""
+    from {{project_slug}}.api.middleware.activity import ActivityTrackingMiddleware
+    from {{project_slug}}.learning.activity import ActivityTracker
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(learning_store=store))
+    )
+    ActivityTrackingMiddleware._run_checks(
+        request, ActivityTracker(store), "u1", "default"
+    )
+
+
+def _sequence_flags(store):
+    return store.query("integrity_flags", {"flag_type": "extraction_sequence"})
+
+
+class TestSequenceDetectionWiring:
+    def test_sampled_pass_flags_extraction_pattern_when_enabled(
+        self, store, monkeypatch
+    ):
+        """Genuine wiring regression: pre-wiring, the sampled pass never
+        invoked the sequence detector, so this flag could not exist."""
+        monkeypatch.setenv("SEQUENCE_DETECTION_ENABLED", "true")
+        _insert_extraction_events(store)
+        _run_sampled_checks(store)
+        flags = _sequence_flags(store)
+        assert len(flags) == 1
+        # Dedup key includes the pattern so distinct playbooks flag
+        # separately while repeats of the same one bump a hit counter.
+        assert flags[0]["subject_id"] == "u1:credential_churn_burst"
+        assert "credential_churn_burst" in flags[0]["detail_json"]
+
+    def test_sampled_pass_skips_scan_by_default(self, store):
+        _insert_extraction_events(store)
+        _run_sampled_checks(store)
+        assert _sequence_flags(store) == []
+
+    def test_broken_store_never_fails_the_scan(self, store, monkeypatch):
+        """The detector swallows a failing activity query (fire-and-forget)."""
+        monkeypatch.setenv("SEQUENCE_DETECTION_ENABLED", "true")
+        _insert_extraction_events(store)
+        real_query = store.query
+
+        def failing_query(table, *args, **kwargs):
+            if table == "activity_events":
+                raise RuntimeError("db down")
+            return real_query(table, *args, **kwargs)
+
+        monkeypatch.setattr(store, "query", failing_query)
+        _run_sampled_checks(store)  # must not raise
+        assert _sequence_flags(store) == []
+
+
+class TestSequenceDetectionEventLoop:
+    @pytest.fixture
+    async def api(self, tmp_path, monkeypatch):
+        """Gateway with tracking + sequence detection ON, sampling every
+        request (mirrors test_async_hardening's responsiveness fixture)."""
+        from httpx import ASGITransport, AsyncClient
+
+        from {{project_slug}}.agents.registry import AgentRegistry
+        from {{project_slug}}.api.gateway import create_app
+
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.delenv("ENV", raising=False)
+        monkeypatch.setenv("ACTIVITY_TRACKING_ENABLED", "true")
+        monkeypatch.setenv("ACTIVITY_CHECK_SAMPLE_N", "1")
+        monkeypatch.setenv("SEQUENCE_DETECTION_ENABLED", "true")
+        monkeypatch.chdir(tmp_path)
+
+        app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client, app
+
+    @pytest.mark.asyncio
+    async def test_timer_ticks_while_sequence_scans_run(self, api, monkeypatch):
+        """The sequence scan reads the store on every sampled pass; with an
+        artificially slow store a concurrent timer must still tick -- the
+        scan runs off the event loop with the other sampled checks."""
+        import time
+
+        client, app = api
+        store = app.state.learning_store
+        real_query = store.query
+
+        def slow_query(*args, **kwargs):
+            time.sleep(0.1)  # simulated slow disk; must run OFF the loop
+            return real_query(*args, **kwargs)
+
+        monkeypatch.setattr(store, "query", slow_query)
+
+        loop = asyncio.get_running_loop()
+        timer_elapsed = 0.0
+
+        async def timer():
+            nonlocal timer_elapsed
+            started = loop.time()
+            for _ in range(5):
+                await asyncio.sleep(0.05)
+            timer_elapsed = loop.time() - started
+
+        timer_task = asyncio.create_task(timer())
+        responses = await asyncio.gather(*(client.get("/health") for _ in range(10)))
+        await timer_task
+
+        assert all(r.status_code == 200 for r in responses)
+        assert timer_elapsed < 0.7, (
+            f"event loop was blocked: 5x50ms timer took {timer_elapsed:.2f}s"
+        )
+
+
+# =============================================================================
+# STARTUP CANARY SELF-CHECK (STARTUP_CANARY_ENABLED)
+# =============================================================================
+
+
+def _canary_flags(store):
+    return store.query("integrity_flags", {"flag_type": "startup_canary_failed"})
+
+
+class TestStartupCanaryWiring:
+    def test_off_by_default_returns_none_and_no_flag(self, store):
+        from {{project_slug}}.api.detection_hooks import run_startup_canary_check
+
+        assert run_startup_canary_check(store) is None
+        assert _canary_flags(store) == []
+
+    def test_healthy_machinery_passes_without_flag(self, store, monkeypatch):
+        from {{project_slug}}.api.detection_hooks import run_startup_canary_check
+
+        monkeypatch.setenv("STARTUP_CANARY_ENABLED", "true")
+        assert run_startup_canary_check(store) is True
+        assert _canary_flags(store) == []
+
+    def test_induced_failure_records_error_flag(self, store, monkeypatch):
+        from {{project_slug}}.api import detection_hooks
+
+        monkeypatch.setenv("STARTUP_CANARY_ENABLED", "true")
+        # Simulate broken detection machinery: leaks are never detected.
+        monkeypatch.setattr(detection_hooks, "check_canary", lambda *a: False)
+        assert detection_hooks.run_startup_canary_check(store) is False
+        flags = _canary_flags(store)
+        assert len(flags) == 1
+        assert flags[0]["severity"] == "error"
+        assert "leak_not_detected" in flags[0]["detail_json"]
+
+    def test_crashing_self_check_never_raises(self, store, monkeypatch):
+        from {{project_slug}}.api import detection_hooks
+
+        monkeypatch.setenv("STARTUP_CANARY_ENABLED", "true")
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("canary machinery broken")
+
+        monkeypatch.setattr(detection_hooks, "wrap_user_content", boom)
+        assert detection_hooks.run_startup_canary_check(store) is False
+        assert len(_canary_flags(store)) == 1
+
+    def test_no_store_logs_only(self, monkeypatch):
+        from {{project_slug}}.api import detection_hooks
+
+        monkeypatch.setenv("STARTUP_CANARY_ENABLED", "true")
+        monkeypatch.setattr(detection_hooks, "check_canary", lambda *a: False)
+        assert detection_hooks.run_startup_canary_check(None) is False  # no crash
+
+
+class TestDetectionHooksInit:
+    def test_all_off_sets_state_to_none(self):
+        from {{project_slug}}.api.detection_hooks import init_detection_hooks
+
+        application = SimpleNamespace(state=SimpleNamespace())
+        init_detection_hooks(application)
+        assert application.state.baseline_tracker is None
+        assert application.state.collusion_detector is None
+
+    def test_enabled_hooks_land_on_app_state(self, store, monkeypatch):
+        from {{project_slug}}.api.detection_hooks import init_detection_hooks
+
+        monkeypatch.setenv("BASELINE_TRACKING_ENABLED", "true")
+        monkeypatch.setenv("COLLUSION_DETECTION_ENABLED", "true")
+        application = SimpleNamespace(state=SimpleNamespace(learning_store=store))
+        init_detection_hooks(application)
+        assert application.state.baseline_tracker is not None
+        assert application.state.collusion_detector is not None
+{% endif -%}

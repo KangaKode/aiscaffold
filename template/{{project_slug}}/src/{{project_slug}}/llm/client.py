@@ -1,7 +1,10 @@
 """
 Provider-agnostic LLM client with prompt caching and token tracking.
 
-Supports Anthropic (Claude), OpenAI (GPT), Google (Gemini).
+Supports Anthropic (Claude), OpenAI (GPT), Google (Gemini) -- the
+provider-specific call implementations live in provider_calls.py; this
+module owns the call lifecycle (sanitization, budget checks, retries,
+opt-in model routing, usage tracking).
 Uses CacheablePrompt(system, context, user_message) for automatic caching.
 """
 
@@ -16,6 +19,7 @@ from typing import Any
 from ..observability.metrics import record_llm_call
 from ..security.prompt_guard import sanitize_for_prompt
 from .budget_manager import enforce_budget, record_response_spend
+from .model_router import cascade_for_call, route_for_call
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +31,6 @@ RETRY_MAX_DELAY = 30.0
 RETRYABLE_ERRORS = {
     "RateLimitError", "APITimeoutError", "InternalServerError",
     "ServiceUnavailableError", "APIConnectionError", "Timeout", "ConnectError",
-}
-
-# Cost per 1K tokens (approximate, varies by model -- override via config)
-COST_RATES = {
-    "anthropic": {"input": 0.003, "cached": 0.0003, "output": 0.015},
-    "openai": {"input": 0.005, "cached": 0.0025, "output": 0.015},
-    "google": {"input": 0.0, "cached": 0.0, "output": 0.0},
 }
 
 
@@ -148,6 +145,9 @@ class LLMClient:
         self._max_cost_usd = max_cost_usd
         # Optional BudgetManager; None = no checks (zero-config unchanged)
         self.budget_manager = budget_manager
+        # Optional ModelRouter (MODEL_ROUTING_ENABLED); None = every call
+        # uses the single configured model, byte-identical to pre-routing.
+        self.model_router: Any = None
         self._client: Any = None
         self._total_usage = TokenUsage()
         # _track_usage runs in asyncio.to_thread workers, so concurrent
@@ -250,18 +250,26 @@ class LLMClient:
                 error_type="client_not_initialized",
             )
 
+        # Per-call model selection (opt-in): a router maps the call role to
+        # a cost tier; without one, self._model -- behavior unchanged.
+        model = self._model
+        if self.model_router is not None:
+            model = route_for_call(
+                self.model_router, role, prompt.to_flat_prompt(), self._model
+            )
+
         start = time.time()
         last_error: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
             try:
                 response = await self._call_provider(
-                    prompt, temperature, max_tokens
+                    prompt, temperature, max_tokens, model
                 )
                 response.latency_ms = (time.time() - start) * 1000
 
                 # Spend recording writes to the store -- off the loop.
-                await asyncio.to_thread(self._track_usage, response.usage)
+                await asyncio.to_thread(self._track_usage, response.usage, model)
 
                 logger.debug(
                     f"[LLM] {self._provider}/{role}: "
@@ -289,10 +297,36 @@ class LLMClient:
                     break
 
         logger.error(f"[LLM] Call failed after {self._max_retries + 1} attempts: {last_error}")
+
+        # Opt-in cascade: with a router attached, try ONE step up-tier
+        # before returning the error (the failure also feeds the router's
+        # circuit breaker). Without a router this block never runs.
+        if self.model_router is not None:
+            fallback = cascade_for_call(self.model_router, role, model)
+            if fallback:
+                try:
+                    response = await self._call_provider(
+                        prompt, temperature, max_tokens, fallback
+                    )
+                    response.latency_ms = (time.time() - start) * 1000
+                    await asyncio.to_thread(
+                        self._track_usage, response.usage, fallback
+                    )
+                    logger.info(
+                        f"[LLM] Cascade to '{fallback}' succeeded after "
+                        f"'{model}' failed"
+                    )
+                    return response
+                except Exception as e:
+                    logger.warning(
+                        f"[LLM] Cascade attempt to '{fallback}' failed: "
+                        f"{type(e).__name__}"
+                    )
+
         return LLMResponse(
             content=f"[LLM call failed: {type(last_error).__name__}]",
             provider=self._provider,
-            model=self._model,
+            model=model,
             is_error=True,
             error_type="call_failed",
         )
@@ -316,157 +350,45 @@ class LLMClient:
         prompt: CacheablePrompt,
         temperature: float,
         max_tokens: int,
+        model: str | None = None,
     ) -> LLMResponse:
-        """Dispatch to provider-specific implementation."""
+        """Dispatch to the provider implementation (llm/provider_calls.py).
+
+        model overrides the configured default for this one call (router
+        selection / cascade); None keeps the configured model. Deferred
+        import: provider_calls imports LLMResponse back from this module.
+        """
+        from .provider_calls import call_anthropic, call_google, call_openai
+
+        model = model or self._model
         if self._provider == "anthropic":
-            return await self._call_anthropic(prompt, temperature, max_tokens)
+            return await call_anthropic(
+                self._client, prompt, temperature, max_tokens, model
+            )
         elif self._provider == "openai":
-            return await self._call_openai(prompt, temperature, max_tokens)
+            return await call_openai(
+                self._client, prompt, temperature, max_tokens, model
+            )
         elif self._provider == "google":
-            return await self._call_google(prompt, temperature, max_tokens)
+            return await call_google(
+                self._client, self._model, prompt, temperature, max_tokens, model
+            )
         else:
             raise ValueError(f"Unsupported provider: {self._provider}")
-
-    async def _call_anthropic(
-        self, prompt: CacheablePrompt, temperature: float, max_tokens: int
-    ) -> LLMResponse:
-        """Anthropic Claude with explicit prompt caching (cache_control)."""
-        system_blocks = []
-        if prompt.system:
-            system_blocks.append({
-                "type": "text",
-                "text": prompt.system,
-                "cache_control": {"type": "ephemeral"},
-            })
-        if prompt.context:
-            system_blocks.append({
-                "type": "text",
-                "text": prompt.context,
-                "cache_control": {"type": "ephemeral"},
-            })
-
-        messages = [{"role": "user", "content": prompt.user_message}]
-
-        response = await self._client.messages.create(
-            model=self._model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_blocks if system_blocks else None,
-            messages=messages,
-        )
-
-        usage_data = response.usage
-        cached = getattr(usage_data, "cache_read_input_tokens", 0)
-        input_tok = getattr(usage_data, "input_tokens", 0)
-        output_tok = getattr(usage_data, "output_tokens", 0)
-
-        rates = COST_RATES.get("anthropic", {})
-        cost = (
-            (input_tok - cached) * rates.get("input", 0) / 1000
-            + cached * rates.get("cached", 0) / 1000
-            + output_tok * rates.get("output", 0) / 1000
-        )
-
-        return LLMResponse(
-            content=response.content[0].text,
-            usage=TokenUsage(
-                input_tokens=input_tok,
-                output_tokens=output_tok,
-                cached_input_tokens=cached,
-                estimated_cost_usd=round(cost, 6),
-                cache_hit=cached > 0,
-            ),
-            model=self._model,
-            provider="anthropic",
-            cached=cached > 0,
-        )
-
-    async def _call_openai(
-        self, prompt: CacheablePrompt, temperature: float, max_tokens: int
-    ) -> LLMResponse:
-        """OpenAI with automatic prefix caching."""
-        messages = []
-        if prompt.system:
-            messages.append({"role": "system", "content": prompt.system})
-        if prompt.context:
-            messages.append({"role": "system", "content": prompt.context})
-        messages.append({"role": "user", "content": prompt.user_message})
-
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-
-        usage_data = response.usage
-        input_tok = usage_data.prompt_tokens if usage_data else 0
-        output_tok = usage_data.completion_tokens if usage_data else 0
-        cached = getattr(usage_data, "prompt_tokens_details", None)
-        cached_tok = getattr(cached, "cached_tokens", 0) if cached else 0
-
-        rates = COST_RATES.get("openai", {})
-        cost = (
-            (input_tok - cached_tok) * rates.get("input", 0) / 1000
-            + cached_tok * rates.get("cached", 0) / 1000
-            + output_tok * rates.get("output", 0) / 1000
-        )
-
-        return LLMResponse(
-            content=response.choices[0].message.content or "",
-            usage=TokenUsage(
-                input_tokens=input_tok,
-                output_tokens=output_tok,
-                cached_input_tokens=cached_tok,
-                estimated_cost_usd=round(cost, 6),
-                cache_hit=cached_tok > 0,
-            ),
-            model=self._model,
-            provider="openai",
-            cached=cached_tok > 0,
-        )
-
-    async def _call_google(
-        self, prompt: CacheablePrompt, temperature: float, max_tokens: int
-    ) -> LLMResponse:
-        """Google Gemini (no explicit caching API in current SDK)."""
-        full_prompt = prompt.to_flat_prompt()
-
-        response = await asyncio.to_thread(
-            self._client.generate_content,
-            full_prompt,
-            generation_config={
-                "temperature": temperature,
-                "max_output_tokens": max_tokens,
-            },
-        )
-
-        input_tok = 0
-        output_tok = 0
-        if hasattr(response, "usage_metadata"):
-            input_tok = getattr(response.usage_metadata, "prompt_token_count", 0)
-            output_tok = getattr(response.usage_metadata, "candidates_token_count", 0)
-
-        return LLMResponse(
-            content=response.text,
-            usage=TokenUsage(
-                input_tokens=input_tok,
-                output_tokens=output_tok,
-            ),
-            model=self._model,
-            provider="google",
-        )
 
     def _is_retryable(self, error: Exception) -> bool:
         """Check if an error is transient and worth retrying."""
         return type(error).__name__ in RETRYABLE_ERRORS
 
-    def _track_usage(self, usage: TokenUsage) -> None:
+    def _track_usage(self, usage: TokenUsage, model: str | None = None) -> None:
         """Accumulate usage stats and record tenant spend when budgets are on.
 
+        model is the model actually called (router selection / cascade);
+        None keeps the configured default -- identical without a router.
         Thread-safe: called from asyncio.to_thread workers, so the shared
         accumulator is guarded (see _usage_lock).
         """
+        model = model or self._model
         with self._usage_lock:
             self._total_usage.input_tokens += usage.input_tokens
             self._total_usage.output_tokens += usage.output_tokens
@@ -474,11 +396,11 @@ class LLMClient:
             self._total_usage.total_tokens += usage.total_tokens
             self._total_usage.estimated_cost_usd += usage.estimated_cost_usd
         record_response_spend(
-            self.budget_manager, usage.estimated_cost_usd, self._model
+            self.budget_manager, usage.estimated_cost_usd, model
         )
         record_llm_call(
             self._provider,
-            self._model,
+            model,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cost_usd=usage.estimated_cost_usd,

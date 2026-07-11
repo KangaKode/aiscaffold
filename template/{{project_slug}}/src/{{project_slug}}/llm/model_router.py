@@ -209,3 +209,52 @@ def create_model_router(budget_manager: Any | None = None) -> ModelRouter | None
     if os.environ.get("MODEL_ROUTING_ENABLED", "").strip().lower() not in ("true", "1", "yes"):
         return None
     return ModelRouter(budget_manager=budget_manager)
+
+
+# =============================================================================
+# LLM CLIENT GLUE (kept here so client.py stays small)
+# =============================================================================
+
+
+def route_for_call(router: Any, role: str, prompt_text: str, default_model: str) -> str:
+    """Pick the model for one LLM call via the router (client glue).
+
+    Tenant identity reuses the same contextvar the client's budget
+    enforcement reads (set at orchestration entry points), so
+    budget-aware downgrades apply to the caller's tenant. Never raises:
+    any routing error falls back to default_model -- routing selects
+    models, it must never break a call.
+    """
+    if router is None:
+        return default_model
+    try:
+        from .budget_manager import get_tenant_context
+
+        return router.route(
+            role=role, prompt=prompt_text, tenant_id=get_tenant_context()
+        ).model
+    except Exception as exc:
+        logger.warning(
+            "[ModelRouter] route() failed (%s); using default model",
+            type(exc).__name__,
+        )
+        return default_model
+
+
+def cascade_for_call(router: Any, role: str, failed_model: str) -> str | None:
+    """One cascade step after a final call failure (client glue).
+
+    Returns the next (more capable) model, or None when there is no
+    router, no higher tier, or the cascade itself errors. Never raises.
+    """
+    if router is None:
+        return None
+    try:
+        decision = router.cascade(role, failed_model)
+        return decision.model if decision is not None else None
+    except Exception as exc:
+        logger.warning(
+            "[ModelRouter] cascade() failed (%s); no fallback attempted",
+            type(exc).__name__,
+        )
+        return None

@@ -30,6 +30,7 @@ Keep this file under 350 lines.
 """
 
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta
 
@@ -231,16 +232,21 @@ class AgentBaselineTracker:
         except Exception as exc:
             logger.warning(f"[Activity] record_dispatch() failed (ignored): {exc}")
 
-    def compute_baseline(self, agent_id: str, min_samples: int = 20) -> dict | None:
+    def compute_baseline(
+        self, agent_id: str, min_samples: int = 20, tenant_id: str = "default"
+    ) -> dict | None:
         """
-        Per-metric means over the agent's recorded history (capped at the
-        most recent WINDOW_FETCH_CAP dispatches). Returns None when fewer
-        than min_samples dispatches exist.
+        Per-metric means over the agent's recorded history IN ONE TENANT
+        (capped at the most recent WINDOW_FETCH_CAP dispatches). Returns
+        None when fewer than min_samples dispatches exist. Tenant scoping
+        matters because the same (possibly public) agent name can be
+        dispatched by several tenants -- a blended baseline would compare
+        an agent against other tenants' workloads.
 
         Keys: duration_seconds, refusal_rate, confidence, scope_violations,
         plus "samples".
         """
-        rows = self._fetch(agent_id)
+        rows = self._fetch(agent_id, tenant_id)
         if len(rows) < min_samples:
             return None
         return self._means(rows)
@@ -250,9 +256,11 @@ class AgentBaselineTracker:
         agent_id: str,
         recent_window: int = 10,
         tolerance: float = 0.5,
+        tenant_id: str = "default",
     ) -> list[str]:
         """
-        Compare recent-window means against the agent's own baseline.
+        Compare recent-window means against the agent's own baseline,
+        scoped to one tenant (see compute_baseline for why).
 
         Baseline = means over history EXCLUDING the recent window (so a
         shift isn't diluted by its own samples); requires >= 20 baseline
@@ -261,10 +269,10 @@ class AgentBaselineTracker:
         compared against tolerance directly (documented v1 behavior).
 
         Flags are persisted as integrity_flags
-        (flag_type="agent_behavior_anomaly", subject_id=agent_id) and
-        returned as human-readable strings.
+        (flag_type="agent_behavior_anomaly", subject_id=agent_id) in the
+        queried tenant and returned as human-readable strings.
         """
-        rows = self._fetch(agent_id)
+        rows = self._fetch(agent_id, tenant_id)
         recent_rows = rows[:recent_window]
         baseline_rows = rows[recent_window:]
         if len(recent_rows) < recent_window or len(baseline_rows) < 20:
@@ -292,16 +300,16 @@ class AgentBaselineTracker:
                 self._store,
                 FLAG_TYPE_AGENT_ANOMALY,
                 subject_id=agent_id,
-                tenant_id=recent_rows[0].get("tenant_id", "default"),
+                tenant_id=tenant_id,
                 detail={"flags": flags, "recent": recent, "baseline": baseline},
             )
         return flags
 
-    def _fetch(self, agent_id: str) -> list[dict]:
+    def _fetch(self, agent_id: str, tenant_id: str = "default") -> list[dict]:
         try:
             return self._store.query(
                 "agent_dispatch_stats",
-                {"agent_id": agent_id},
+                {"agent_id": agent_id, "tenant_id": tenant_id},
                 order_by="dispatched_at DESC",
                 limit=WINDOW_FETCH_CAP,
             )
@@ -319,3 +327,23 @@ class AgentBaselineTracker:
             "scope_violations": sum(r.get("scope_violations") or 0 for r in rows) / n,
             "samples": n,
         }
+
+
+def create_baseline_tracker(store) -> AgentBaselineTracker | None:
+    """Build a tracker when BASELINE_TRACKING_ENABLED is truthy, else None.
+
+    Opt-in wiring (default OFF): returning None keeps every dispatch path
+    byte-identical to the untracked behavior. Detection-only -- recorded
+    stats and deviation flags are never acted on automatically.
+    """
+    if os.environ.get("BASELINE_TRACKING_ENABLED", "").strip().lower() not in (
+        "true", "1", "yes",
+    ):
+        return None
+    if store is None:
+        logger.warning(
+            "[Activity] BASELINE_TRACKING_ENABLED=true but no learning store "
+            "is available -- baseline tracking degrades to a no-op"
+        )
+        return None
+    return AgentBaselineTracker(store)

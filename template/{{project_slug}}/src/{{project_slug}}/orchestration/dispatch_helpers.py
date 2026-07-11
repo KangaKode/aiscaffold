@@ -245,8 +245,9 @@ async def dispatch_with_gates(
 
     baseline_tracker: optional AgentBaselineTracker. When provided, each
     successful dispatch records stats (duration, refused = premise_valid
-    is False, confidence attr when present, scope violation count) --
-    best-effort, never fatal. Callers that don't pass it are unaffected.
+    is False, confidence attr when present, scope violation count) under
+    the task's tenant_id -- best-effort, never fatal, store write runs
+    off the event loop. Callers that don't pass it are unaffected.
 
     Returns (analyses, skipped_count, failed_count) where skipped_count is
     agents blocked by a gate and failed_count is agents whose analyze()
@@ -287,12 +288,17 @@ async def dispatch_with_gates(
                 )
         if baseline_tracker is not None:
             try:
-                baseline_tracker.record_dispatch(
+                # Blocking store write -- off the event loop. Tenant comes
+                # from the task (RoundTableTask.tenant_id, threaded from
+                # the caller's auth context by the API routes).
+                await asyncio.to_thread(
+                    baseline_tracker.record_dispatch,
                     agent_id=dispatched[i].name,
                     duration_seconds=duration,
                     refused=getattr(r, "premise_valid", True) is False,
                     confidence=float(getattr(r, "confidence", 0.0) or 0.0),
                     scope_violations=violation_count,
+                    tenant_id=getattr(task, "tenant_id", "default") or "default",
                 )
             except Exception as exc:
                 logger.warning(
