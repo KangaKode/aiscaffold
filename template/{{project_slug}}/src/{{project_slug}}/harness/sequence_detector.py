@@ -24,12 +24,12 @@ shipped slightly over its original budget; new detectors go in a
 sibling module.)
 """
 
-import json
 import logging
 import math
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from ..learning.flags import record_flag_hit
 
 logger = logging.getLogger(__name__)
 
@@ -213,26 +213,27 @@ class SequenceDetector:
         )
 
     def _flag(self, match: SequenceMatch, tenant_id: str) -> None:
-        """Persist a sequence match as an integrity flag (best-effort)."""
+        """Persist a sequence match as an integrity flag (best-effort).
+
+        Goes through record_flag_hit keyed on (flag_type, user:pattern,
+        tenant): the events behind a match stay in the store, so every
+        sampled pass re-detects it -- a raw insert per pass would grow
+        integrity_flags unboundedly and let one seeded benign match
+        drown the human-review queue. Repeats instead bump the
+        unresolved flag's hit counter (escalating to error severity on
+        sustained repeats); resolving the flag re-arms detection.
+        """
         try:
-            self._store.insert(
-                "integrity_flags",
-                {
-                    "id": str(uuid.uuid4())[:12],
-                    "flag_type": FLAG_TYPE_SEQUENCE,
-                    "subject_id": match.user_id,
-                    "tenant_id": tenant_id,
-                    "severity": "warning",
-                    "detail_json": json.dumps(
-                        {
-                            "pattern": match.pattern_name,
-                            "window_seconds": match.window_seconds,
-                            "step_times": match.step_times,
-                        },
-                        default=str,
-                    ),
-                    "created_at": datetime.now().isoformat(),
-                    "resolved": 0,
+            record_flag_hit(
+                self._store,
+                FLAG_TYPE_SEQUENCE,
+                subject_id=f"{match.user_id}:{match.pattern_name}",
+                tenant_id=tenant_id,
+                detail={
+                    "user_id": match.user_id,
+                    "pattern": match.pattern_name,
+                    "window_seconds": match.window_seconds,
+                    "step_times": match.step_times,
                 },
             )
             logger.warning(

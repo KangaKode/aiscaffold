@@ -37,7 +37,9 @@ import json
 import logging
 import os
 import re
+import threading
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from itertools import combinations
 
@@ -80,19 +82,30 @@ class CollusionDetector:
         detector.flag(findings)
     """
 
-    # Cap on in-memory vote history (rounds). Oldest rounds are dropped.
+    # Cap on in-memory vote history (rounds), applied PER TENANT.
+    # Oldest rounds are dropped.
     MAX_HISTORY_ROUNDS = 500
 
     def __init__(self, store, checkin_manager=None):
         self._store = store
         self._checkin_manager = checkin_manager
-        # In-memory vote history: list of rounds, each a list of
-        # (agent_name, approve) tuples. Persisting raw votes is the
-        # orchestrator's job (artifacts); we only keep a working window.
-        self._vote_history: list[list[tuple[str, bool]]] = []
-        # Pairs already flagged this process lifetime (avoid re-flagging
-        # the same pair on every subsequent round).
-        self._flagged_pairs: set[tuple[str, str]] = set()
+        # In-memory vote history keyed by tenant_id: each entry is a list
+        # of rounds, each round a list of (agent_name, approve) tuples.
+        # Tenants must never blend: the same (possibly public) agent names
+        # can vote in several tenants, and a cross-tenant window would
+        # both mis-attribute findings and dilute/inflate agreement rates.
+        # Persisting raw votes is the orchestrator's job (artifacts); we
+        # only keep a working window.
+        self._vote_history: dict[str, list[list[tuple[str, bool]]]] = defaultdict(list)
+        # Pairs already flagged this process lifetime, per tenant --
+        # flagging a pair in one tenant must not suppress detection of
+        # the same pair in another.
+        self._flagged_pairs: dict[str, set[tuple[str, str]]] = defaultdict(set)
+        # record_votes runs via asyncio.to_thread from concurrent
+        # deliberations; unsynchronized mutation of the shared history
+        # would lose rounds and double-flag (same pattern as the LLM
+        # client's _usage_lock).
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Recording (in-memory accumulation + incremental analysis)
@@ -103,8 +116,12 @@ class CollusionDetector:
         Record one round of votes and incrementally analyze the history.
 
         votes: list of AgentVote-like objects (agent_name/approve attrs)
-        or (agent_name, approve) tuples. New findings (pairs not yet
-        flagged by this instance) are persisted via flag() and returned.
+        or (agent_name, approve) tuples. History, analysis, and dedup are
+        all scoped to tenant_id (rounds from other tenants are invisible;
+        a pair flagged in one tenant stays flaggable in another). New
+        findings are persisted via flag() and returned. Thread-safe: the
+        mutation/analysis critical section is locked because concurrent
+        deliberations call this via asyncio.to_thread.
         """
         round_votes: list[tuple[str, bool]] = []
         for vote in votes:
@@ -118,19 +135,26 @@ class CollusionDetector:
         if len(round_votes) < 2:
             return []
 
-        self._vote_history.append(round_votes)
-        if len(self._vote_history) > self.MAX_HISTORY_ROUNDS:
-            self._vote_history = self._vote_history[-self.MAX_HISTORY_ROUNDS:]
+        tenant_id = tenant_id or "default"
+        with self._lock:
+            history = self._vote_history[tenant_id]
+            history.append(round_votes)
+            if len(history) > self.MAX_HISTORY_ROUNDS:
+                history = history[-self.MAX_HISTORY_ROUNDS:]
+                self._vote_history[tenant_id] = history
 
-        findings = self.analyze_votes(self._vote_history)
-        new = [
-            f for f in findings
-            if _pair_key(*f["pair"]) not in self._flagged_pairs
-        ]
-        if new:
+            findings = self.analyze_votes(history)
+            flagged = self._flagged_pairs[tenant_id]
+            new = [
+                f for f in findings
+                if _pair_key(*f["pair"]) not in flagged
+            ]
             for finding in new:
                 finding["task_id"] = task_id
-                self._flagged_pairs.add(_pair_key(*finding["pair"]))
+                flagged.add(_pair_key(*finding["pair"]))
+        # Store/check-in I/O stays outside the lock: dedup was already
+        # claimed above, so concurrent recorders cannot double-flag.
+        if new:
             self.flag(new, tenant_id=tenant_id)
         return new
 
@@ -357,9 +381,10 @@ def create_collusion_detector(store, checkin_manager=None) -> CollusionDetector 
 
     Opt-in wiring (default OFF): returning None keeps deliberations
     byte-identical to the unmonitored behavior. The instance keeps its
-    vote history in process memory, so create ONE per process (e.g. on
-    app state) and feed every round into it -- a per-run instance would
-    never accumulate the cross-round history lockstep analysis needs.
+    vote history in process memory (per tenant, thread-safe), so create
+    ONE per process (e.g. on app state) and feed every round into it --
+    a per-run instance would never accumulate the cross-round history
+    lockstep analysis needs.
     """
     if os.environ.get("COLLUSION_DETECTION_ENABLED", "").strip().lower() not in (
         "true", "1", "yes",

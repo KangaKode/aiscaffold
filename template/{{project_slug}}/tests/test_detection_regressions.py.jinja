@@ -1,0 +1,311 @@
+"""
+Post-review regressions for the opt-in detection/routing wirings.
+
+Each test here encodes a finding from the PR6 reviews and FAILS on the
+pre-fix wiring:
+
+  1. Collusion vote history/dedup must be scoped per tenant (a blended
+     window mis-attributes findings and suppresses pairs cross-tenant).
+  2. CollusionDetector.record_votes is called via asyncio.to_thread from
+     concurrent deliberations and must be thread-safe.
+  3. Sequence-detector flags must not duplicate on every sampled pass
+     (repeats bump one unresolved flag's hit counter).
+  4. Agent baseline analysis must be scoped per tenant (same-named
+     agents in different tenants must not blend).
+  5. The round-table route must set the budget/routing tenant context so
+     LLM calls route against the caller's budget, not "default".
+"""
+
+import json
+import threading
+import time
+from datetime import datetime, timedelta
+
+import pytest
+
+from {{project_slug}}.learning.activity import AgentBaselineTracker
+from {{project_slug}}.learning.collusion import CollusionDetector
+from {{project_slug}}.learning.store import SqliteLearningStore
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning.db")
+
+
+# A perfectly agreeing pair -- reaches the lockstep threshold after 5
+# shared rounds in ONE tenant's window.
+LOCKSTEP = [("agent_a", True), ("agent_b", True)]
+
+
+def _collusion_flags(store, tenant_id=None):
+    where = {"flag_type": "collusion_suspected"}
+    if tenant_id is not None:
+        where["tenant_id"] = tenant_id
+    return store.query("integrity_flags", where)
+
+
+# =============================================================================
+# Finding 1: collusion detector must not mix tenants
+# =============================================================================
+
+
+class TestCollusionTenantIsolation:
+    def test_split_rounds_do_not_blend_across_tenants(self, store):
+        """4 lockstep rounds in tenant-a + 1 in tenant-b is below the
+        5-round threshold EVERYWHERE -- a blended window would flag."""
+        detector = CollusionDetector(store)
+        for i in range(4):
+            detector.record_votes(f"a{i}", LOCKSTEP, tenant_id="tenant-a")
+        detector.record_votes("b0", LOCKSTEP, tenant_id="tenant-b")
+        assert _collusion_flags(store) == []
+
+    def test_flag_lands_only_in_the_tenant_that_crossed_threshold(self, store):
+        detector = CollusionDetector(store)
+        for i in range(4):
+            detector.record_votes(f"a{i}", LOCKSTEP, tenant_id="tenant-a")
+        detector.record_votes("b0", LOCKSTEP, tenant_id="tenant-b")
+        detector.record_votes("a4", LOCKSTEP, tenant_id="tenant-a")  # 5th in A
+
+        flags_a = _collusion_flags(store, "tenant-a")
+        assert len(flags_a) == 1
+        assert set(flags_a[0]["subject_id"].split(",")) == {"agent_a", "agent_b"}
+        assert json.loads(flags_a[0]["detail_json"])["rounds"] == 5
+        assert _collusion_flags(store, "tenant-b") == []
+
+    def test_pair_remains_flaggable_in_the_other_tenant(self, store):
+        """Per-process dedup is per tenant: a pair flagged in tenant-a
+        must still be detectable when tenant-b's own window fills up."""
+        detector = CollusionDetector(store)
+        for i in range(5):
+            detector.record_votes(f"a{i}", LOCKSTEP, tenant_id="tenant-a")
+        assert len(_collusion_flags(store, "tenant-a")) == 1
+
+        for i in range(5):
+            detector.record_votes(f"b{i}", LOCKSTEP, tenant_id="tenant-b")
+        assert len(_collusion_flags(store, "tenant-b")) == 1
+        # And tenant-a was not re-flagged by tenant-b's rounds.
+        assert len(_collusion_flags(store, "tenant-a")) == 1
+
+    def test_history_cap_applies_per_tenant(self, store):
+        detector = CollusionDetector(store)
+        detector.MAX_HISTORY_ROUNDS = 3  # instance override for the test
+        for i in range(5):
+            detector.record_votes(f"a{i}", LOCKSTEP, tenant_id="tenant-a")
+        detector.record_votes("b0", LOCKSTEP, tenant_id="tenant-b")
+        assert len(detector._vote_history["tenant-a"]) == 3
+        assert len(detector._vote_history["tenant-b"]) == 1
+
+
+# =============================================================================
+# Finding 2: collusion detector must be thread-safe
+# =============================================================================
+
+
+class TestCollusionThreadSafety:
+    def test_concurrent_record_votes_lose_no_rounds_and_flag_once(
+        self, store, monkeypatch
+    ):
+        """record_votes runs via asyncio.to_thread from concurrent
+        deliberations. The dedup check-then-claim window is widened with
+        a slow _pair_key (stand-in for thread preemption): without the
+        lock every concurrent recorder sees the pair as unflagged and
+        inserts its own duplicate finding."""
+        import {{project_slug}}.learning.collusion as collusion_module
+
+        detector = CollusionDetector(store)
+        for i in range(4):  # one round short of the lockstep threshold
+            detector.record_votes(f"warm{i}", LOCKSTEP)
+
+        real_pair_key = collusion_module._pair_key
+
+        def slow_pair_key(a, b):
+            time.sleep(0.02)
+            return real_pair_key(a, b)
+
+        monkeypatch.setattr(collusion_module, "_pair_key", slow_pair_key)
+
+        n_threads = 6
+        barrier = threading.Barrier(n_threads)
+        errors: list[Exception] = []
+
+        def worker(idx: int) -> None:
+            try:
+                barrier.wait(timeout=5)
+                detector.record_votes(f"c{idx}", LOCKSTEP)
+            except Exception as exc:  # pragma: no cover - failure detail
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=worker, args=(i,)) for i in range(n_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert errors == []
+        assert len(detector._vote_history["default"]) == 4 + n_threads
+        assert len(_collusion_flags(store)) == 1
+
+
+# =============================================================================
+# Finding 3: sequence detector must not spam duplicate flags
+# =============================================================================
+
+
+class TestSequenceFlagDedup:
+    def _event(self, store, route, method, user_id, when):
+        store.insert(
+            "activity_events",
+            {
+                "id": f"evt-{route}-{when.isoformat()}",
+                "tenant_id": "default",
+                "user_id": user_id,
+                "route": route,
+                "method": method,
+                "status_code": 200,
+                "created_at": when.isoformat(),
+            },
+        )
+
+    def test_repeat_checks_bump_one_unresolved_flag(self, store):
+        """The matched events stay in the store, so every sampled pass
+        re-detects the same sequence: repeats must update one unresolved
+        flag (hit counter), never insert duplicates."""
+        from {{project_slug}}.harness.sequence_detector import SequenceDetector
+
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        self._event(store, "/api/v1/chat", "POST", "u1", base)
+        self._event(store, "/api/v1/corrections", "GET", "u1", base + timedelta(seconds=30))
+        self._event(store, "/api/v1/sessions", "GET", "u1", base + timedelta(seconds=60))
+
+        detector = SequenceDetector(store)
+        now = base + timedelta(seconds=61)
+        first = detector.check("u1", now=now)
+        second = detector.check("u1", now=now)
+        assert first and second  # both passes detect the sequence
+
+        flags = store.query(
+            "integrity_flags", {"flag_type": "extraction_sequence", "resolved": 0}
+        )
+        assert len(flags) == 1
+        detail = json.loads(flags[0]["detail_json"])
+        assert detail["hits"] == 2
+        assert detail["pattern"] == "knowledge_extraction"
+
+
+# =============================================================================
+# Finding 4: baseline analysis must be scoped per tenant
+# =============================================================================
+
+
+def _record(tracker, tenant_id, count, duration=1.0, refused=False, confidence=0.8):
+    for _ in range(count):
+        tracker.record_dispatch(
+            "x", duration_seconds=duration, refused=refused,
+            confidence=confidence, scope_violations=0, tenant_id=tenant_id,
+        )
+
+
+class TestBaselineTenantScoping:
+    def test_baseline_reflects_only_the_queried_tenant(self, store):
+        tracker = AgentBaselineTracker(store)
+        _record(tracker, "tenant-a", 20, duration=1.0)
+        _record(tracker, "tenant-b", 20, duration=100.0, refused=True, confidence=0.1)
+
+        baseline = tracker.compute_baseline("x", tenant_id="tenant-a")
+        assert baseline is not None
+        assert baseline["samples"] == 20
+        assert baseline["duration_seconds"] == pytest.approx(1.0)
+        assert baseline["refusal_rate"] == 0.0
+
+    def test_below_min_samples_in_tenant_returns_none(self, store):
+        """19 rows in the queried tenant + plenty elsewhere: a blended
+        fetch would cross min_samples and return a poisoned baseline."""
+        tracker = AgentBaselineTracker(store)
+        _record(tracker, "tenant-a", 19)
+        _record(tracker, "tenant-b", 20)
+        assert tracker.compute_baseline("x", tenant_id="tenant-a") is None
+
+    def test_deviation_flag_lands_in_the_queried_tenant(self, store):
+        tracker = AgentBaselineTracker(store)
+        _record(tracker, "tenant-a", 25)
+        _record(tracker, "tenant-a", 10, duration=5.0, refused=True, confidence=0.2)
+        # Steady contamination in another tenant: blended, it would
+        # dilute the recent window and mask the drift.
+        _record(tracker, "tenant-b", 40)
+
+        flags = tracker.check_deviation("x", recent_window=10, tenant_id="tenant-a")
+        assert any(f.startswith("duration_seconds") for f in flags)
+
+        rows = store.query("integrity_flags", {"flag_type": "agent_behavior_anomaly"})
+        assert len(rows) == 1
+        assert rows[0]["tenant_id"] == "tenant-a"
+        assert rows[0]["subject_id"] == "x"
+
+
+{% if include_api_gateway -%}
+# =============================================================================
+# Finding 5: round-table route must set the budget tenant context
+# =============================================================================
+
+
+class TestRoundTableRouteTenantContext:
+    @pytest.mark.asyncio
+    async def test_deliberation_runs_under_callers_budget_tenant(
+        self, tmp_path, monkeypatch
+    ):
+        """With MODEL_ROUTING_ENABLED, route_for_call reads the budget
+        contextvar for tier downgrades. The round-table route must set it
+        to the caller's tenant before deliberating -- otherwise every
+        round-table LLM call budgets/routes against "default"."""
+        from fastapi import Request
+        from httpx import ASGITransport, AsyncClient
+
+        from {{project_slug}}.agents.registry import AgentRegistry
+        from {{project_slug}}.api.gateway import create_app
+        from {{project_slug}}.api.middleware.auth import AuthContext, verify_api_key
+        from {{project_slug}}.api.routes import round_table as rt_route
+        from {{project_slug}}.llm.budget_manager import get_tenant_context
+        from {{project_slug}}.orchestration.round_table import RoundTableResult
+
+        seen_tenants: list[str] = []
+
+        class StubRoundTable:
+            """Records the tenant context visible where LLM calls happen."""
+
+            def __init__(self, *args, **kwargs):
+                self.agents = kwargs.get("agents", [])
+
+            async def run(self, task):
+                seen_tenants.append(get_tenant_context())
+                return RoundTableResult(task_id=task.id)
+
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.delenv("ENV", raising=False)
+        app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
+
+        async def auth_override(request: Request) -> AuthContext:
+            context = AuthContext(api_key="k", user_id="alice", tenant_id="acme")
+            request.state.auth_context = context
+            return context
+
+        app.dependency_overrides[verify_api_key] = auth_override
+        monkeypatch.setattr(rt_route, "RoundTable", StubRoundTable)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post("/api/v1/agents", json={
+                "name": "ctx_agent", "domain": "testing",
+                "base_url": "https://example.com",
+            })
+            assert r.status_code == 200
+            r = await client.post(
+                "/api/v1/round-table/tasks", json={"content": "route me"}
+            )
+        app.dependency_overrides.clear()
+
+        assert r.status_code == 200
+        assert seen_tenants == ["acme"]
+{% endif -%}

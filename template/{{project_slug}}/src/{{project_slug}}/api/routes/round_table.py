@@ -17,7 +17,7 @@ from collections import OrderedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from ...llm import create_client
+from ...llm import create_client, set_tenant_context
 from ...observability.metrics import record_deliberation
 from ...orchestration.deliberation_audit import audited_round_table
 from ...orchestration.ingest_scan import scan_user_message
@@ -207,6 +207,12 @@ async def submit_task(
                 )
     except Exception as e:
         logger.warning(f"[RoundTableAPI] MCP enrichment failed (non-fatal): {e}")
+
+    # Budget/routing tenant context for every LLM call in this
+    # deliberation (mirrors ChatOrchestrator.chat): without it, budget
+    # checks and model-routing downgrades run against the "default"
+    # tenant instead of the caller's.
+    set_tenant_context(auth.tenant_id)
 
     try:
         llm = getattr(request.app.state, "llm_client", None) or create_client()

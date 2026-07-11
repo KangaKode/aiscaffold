@@ -244,10 +244,9 @@ class TestCollusionWiring:
             collusion_detector=detector,
         )
         await rt.run(RoundTableTask(id="v1", content="vote on this"))
-        assert len(detector._vote_history) == 1
-        assert {name for name, _ in detector._vote_history[0]} == {
-            "analyst_a", "analyst_b",
-        }
+        history = detector._vote_history["default"]
+        assert len(history) == 1
+        assert {name for name, _ in history[0]} == {"analyst_a", "analyst_b"}
 
     @pytest.mark.asyncio
     async def test_lockstep_flagged_under_callers_tenant(self, detector, store):
@@ -412,7 +411,9 @@ class TestSequenceDetectionWiring:
         _run_sampled_checks(store)
         flags = _sequence_flags(store)
         assert len(flags) == 1
-        assert flags[0]["subject_id"] == "u1"
+        # Dedup key includes the pattern so distinct playbooks flag
+        # separately while repeats of the same one bump a hit counter.
+        assert flags[0]["subject_id"] == "u1:credential_churn_burst"
         assert "credential_churn_burst" in flags[0]["detail_json"]
 
     def test_sampled_pass_skips_scan_by_default(self, store):
