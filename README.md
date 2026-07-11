@@ -5,7 +5,7 @@
 
 **A security-first scaffold for multi-agent AI systems, whatever your domain.** Multi-agent deliberation with security controls wired in on day one -- each control mapped to the code that implements it and the tests that prove it, with [documented non-claims](template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md#known-limitations--non-claims) about what it does *not* guarantee.
 
-One `copier` command generates a complete project: round-table deliberation with six adversarial safety agents, evidence-graded claims, 3-layer prompt-injection defense, tenant-aware isolation, audit trails, human approval gates, and Docker/Kubernetes deployment -- validated by 945 generated tests at 87% coverage.
+One `copier` command generates a complete project: round-table deliberation with six adversarial safety agents, evidence-graded claims, 3-layer prompt-injection defense, tenant-aware isolation, audit trails, human approval gates, and Docker/Kubernetes deployment -- validated by [945 generated tests at 87% coverage](docs/FEATURES.md#test-counts).
 
 The scaffold red-teams itself: its own review process caught a tenant-isolation bug where remote agents silently reverted to public visibility after a restart -- [here is the fix](https://github.com/KangaKode/roundtable/commit/9168334ac050e22022ab2787b7b3ff3ce06796cc), tests included. An [adversarial harness](template/%7B%7Bproject_slug%7D%7D/tests/adversarial_agents.py.jinja) of six hostile agents attacks every generated project in CI.
 
@@ -90,6 +90,37 @@ Ready for regulated contexts (finance, healthcare, legal) without being limited 
 
 ## What's Inside
 
+### How a Round Table Runs
+
+Every deliberation follows the same phased protocol. Before any expensive phase, agents get one cheap premise check and may collectively refuse a flawed task. After independent analysis, the evidence enforcement pipeline validates each analysis: rejected analyses are dropped, corrected observations replace the originals, and violations are logged -- only what survives enters the challenge phase:
+
+```mermaid
+flowchart LR
+    subgraph gate [Premise Gate]
+        PG["Cheap premise check by every agent"]
+    end
+    subgraph phase1 [Independent Analysis]
+        AG["Domain agents + six safety agents, no cross-talk"]
+    end
+    subgraph enforce [Evidence Enforcement]
+        EF["FactChecker + EvidenceLevelEnforcer"]
+    end
+    subgraph phase2 [Challenge]
+        CH["Cross-agent challenge with counter-evidence"]
+    end
+    subgraph phase3 [Synthesis + Voting]
+        SY["Synthesized recommendation, voted on"]
+    end
+    gate -->|"premise sound"| phase1
+    gate -->|"refused"| Refuse["Short-circuit: what is wrong + a better question"]
+    phase1 --> enforce
+    enforce -->|"rejected analyses dropped, corrections applied, findings logged"| phase2
+    phase2 --> phase3
+    phase3 --> Result["Consensus or preserved dissent"]
+```
+
+The full architecture -- chat orchestrator, three-tier resolution, learning system, API surface -- is diagrammed in [docs/FEATURES.md](docs/FEATURES.md).
+
 - **Safety-first deliberation** -- every round table includes six adversarial safety agents by default: Skeptic, Quality, Evidence, FactChecker, Citation, and Sentinel (semantic injection guard, fails closed).
 - **Evidence discipline** -- claims carry explicit evidence levels (VERIFIED / CORROBORATED / INDICATED / POSSIBLE); a hallucination-resistance pipeline rejects unsupported confidence, phantom citations, and speculation-as-fact before synthesis.
 - **Security controls** -- agents are authenticated, least-privileged, monitored, and removable, like any other insider: per-agent JWT identity (hashed at rest) with rate limits and scope filtering, activity and extraction monitoring, plus 3-layer prompt-injection defense, SSRF protection, and tenant-scoped isolation. What runs by default vs. what ships as a wire-it-yourself detector is stated explicitly in the [security model](docs/SECURITY_MODEL.md).
@@ -124,6 +155,8 @@ The complete feature reference, API listing, architecture diagrams, and configur
 | Deploying as a multi-team platform | [PLATFORM_GUIDE.md](docs/PLATFORM_GUIDE.md) -- RBAC, tenant isolation, team onboarding |
 | Connecting an external agent (any language) | [AGENT_PROTOCOL.md](docs/AGENT_PROTOCOL.md) -- HTTP contract, JSON schemas, examples |
 | A manager or stakeholder | [TEAM_OVERVIEW.md](docs/TEAM_OVERVIEW.md) -- 5-minute plain-language overview |
+
+The complete index, organized by category with an evaluator fast path: [docs/INDEX.md](docs/INDEX.md).
 
 ---
 
