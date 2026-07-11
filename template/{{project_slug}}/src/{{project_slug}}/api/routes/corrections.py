@@ -188,6 +188,7 @@ async def propose_correction(
             tenant_id=auth.tenant_id,
             session_id=proposal.session_id,
             created_by=auth.user_id,
+            source_surface="api",
         )
     except ValueError as e:
         # Content-policy rejection: refuse the write, tell the caller why.

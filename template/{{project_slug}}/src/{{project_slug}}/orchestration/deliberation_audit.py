@@ -98,12 +98,17 @@ class DeliberationAuditor:
         agent_count: int = 0,
         duration_seconds: float = 0.0,
         outcome: str = "",
+        user_id: str = "",
         **detail,
     ) -> None:
         """
         Record one audit event. Fire-and-forget: exceptions are logged,
         never raised. Extra keyword arguments become detail_json after
         filtering (see _clean_detail -- no free text).
+
+        user_id is the acting user (from the API auth context); library
+        callers without a user identity leave it "" -- same as every
+        historical row.
 
         Events carrying a phase and a duration also feed the optional
         phase_duration_seconds Prometheus histogram (no-op without the
@@ -128,6 +133,7 @@ class DeliberationAuditor:
                     "outcome": outcome[:MAX_DETAIL_STR_CHARS],
                     "detail_json": json.dumps(_clean_detail(detail), default=str),
                     "created_at": datetime.now().isoformat(),
+                    "user_id": str(user_id or ""),
                 },
             )
         except Exception as exc:
@@ -191,6 +197,7 @@ async def audited_round_table(
     auditor: DeliberationAuditor,
     tenant_id: str = "default",
     correlation_id: str = "",
+    user_id: str = "",
 ):
     """
     Run a RoundTable deliberation with start/completion audit events.
@@ -204,7 +211,9 @@ async def audited_round_table(
 
     Pass a correlation_id to control the timeline key (e.g. so an API
     layer can hand it back to the caller); otherwise a fresh one is
-    generated. Returns whatever round_table.run() returns.
+    generated. user_id attributes the run's audit events to the acting
+    user (default "" keeps library callers unchanged). Returns whatever
+    round_table.run() returns.
     """
     correlation_id = correlation_id or new_correlation_id()
     agent_count = len(getattr(round_table, "agents", []) or [])
@@ -213,6 +222,7 @@ async def audited_round_table(
         EVENT_STARTED,
         tenant_id=tenant_id,
         agent_count=agent_count,
+        user_id=user_id,
     )
 
     started = time.monotonic()
@@ -226,6 +236,7 @@ async def audited_round_table(
             agent_count=agent_count,
             duration_seconds=time.monotonic() - started,
             outcome="failed",
+            user_id=user_id,
         )
         raise
 
@@ -243,6 +254,7 @@ async def audited_round_table(
             result, "duration_seconds", time.monotonic() - started
         ),
         outcome=outcome,
+        user_id=user_id,
         approval_rate=getattr(result, "approval_rate", None),
         degraded=getattr(result, "degraded", None),
         failed_agent_count=getattr(result, "failed_agent_count", None),

@@ -244,8 +244,11 @@ def _record_erasure_event(
                 "event_type": ERASURE_EVENT_TYPE,
                 "tenant_id": tenant_id,
                 "outcome": "erased",
+                # detail_json actor kept for compatibility; user_id is the
+                # queryable column (added in migration v8).
                 "detail_json": json.dumps({"actor": actor[:64]}),
                 "created_at": datetime.now().isoformat(),
+                "user_id": actor[:64],
             },
         )
     except Exception as exc:

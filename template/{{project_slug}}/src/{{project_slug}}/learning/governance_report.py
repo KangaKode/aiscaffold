@@ -128,8 +128,11 @@ def record_report_event(
                 "event_type": REPORT_EVENT_TYPE,
                 "tenant_id": tenant_id,
                 "outcome": "generated",
+                # detail_json actor kept for compatibility; user_id is the
+                # queryable column (added in migration v8).
                 "detail_json": json.dumps({"actor": user_id[:64]}),
                 "created_at": datetime.now().isoformat(),
+                "user_id": user_id[:64],
             },
         )
     except Exception as exc:
