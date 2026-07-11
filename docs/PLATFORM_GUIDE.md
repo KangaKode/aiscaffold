@@ -458,6 +458,17 @@ The learning layer reshapes agent behavior, so it gets its own integrity control
 - **Agent behavioral baselines** (opt-in, default off): each agent's refusal rate, confidence, latency, and scope discipline are compared against its own history -- an agent with valid credentials that stops behaving like itself still gets flagged. Set `BASELINE_TRACKING_ENABLED=true` and every round-table/chat dispatch records its stats under the caller's tenant; the deviation analysis itself (`check_deviation`) remains operator-invoked.
 - **Extraction sequences** (opt-in, default off): set `SEQUENCE_DETECTION_ENABLED=true` and the multi-step extraction-playbook scan (`harness/sequence_detector.py`) runs on the activity middleware's sampled pass (`ACTIVITY_CHECK_SAMPLE_N`, default every 25th request), writing integrity flags for matched playbooks.
 
+#### Which detection toggles to enable, and when
+
+Every opt-in hook defaults off so a fresh scaffold has no surprises, and every one is detect-only: findings land as integrity flags in `GET /api/v1/activity/anomalies`, and a human closes each flag. Recommended posture by deployment scenario:
+
+- **Every deployment**: `STARTUP_CANARY_ENABLED=true`. It is a one-shot self-check at boot with no per-request cost, and a failure means the injection-defense machinery itself is broken -- something you want flagged before the first real request, not discovered during an incident.
+- **You connect external or third-party agents**: `BASELINE_TRACKING_ENABLED=true` and `COLLUSION_DETECTION_ENABLED=true`. These are the two hooks built for agents you do not fully control: baselines catch a credentialed agent that stops behaving like itself, and collusion analysis catches pairs that stop checking each other. Both need a learning store. Two operational notes: `agent_dispatch_stats` grows one row per dispatch with no pruner yet (see the data-retention table), and the deviation analysis itself (`check_deviation`) is operator-invoked -- recording alone flags nothing.
+- **Many users can read knowledge endpoints** (corrections, reflections, search): `SEQUENCE_DETECTION_ENABLED=true`, alongside the default-on volume and timing checks it complements. It catches multi-step extraction playbooks that stay under per-endpoint thresholds. Requires activity tracking (`ACTIVITY_TRACKING_ENABLED`, on by default) and a learning store.
+- **Internal-only deployment, built-in agents, trusted users**: the defaults are a reasonable floor -- identity checks, rate limits, activity thresholds, and corrections governance are always on. Enable the startup canary anyway; skip the rest until your exposure changes.
+
+`MODEL_ROUTING_ENABLED` is deliberately not in this list: it is a cost feature, not a detector. Enable it only after setting `MODEL_TIER_MAP_JSON` to models your configured provider actually serves (see `.env.example`).
+
 ---
 
 ## Compliance Considerations for Regulated Industries

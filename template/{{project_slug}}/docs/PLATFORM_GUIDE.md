@@ -478,6 +478,17 @@ The learning layer reshapes agent behavior, so it gets its own integrity control
 - **Extraction guard**: `learning/extraction_guard.py` counts knowledge-endpoint reads (GET /corrections and friends) per user and tenant-wide over a rolling window (`EXTRACTION_USER_THRESHOLD` / `EXTRACTION_TENANT_THRESHOLD` / `EXTRACTION_WINDOW_MINUTES`) and maps them to normal/elevated/capped. Detection-only by default; the single opt-in enforcement point (`EXTRACTION_GUARD_ENFORCE=true`) is a 429 + Retry-After on `GET /corrections` while capped.
 - **Approval-pair escalation**: `learning/approval_patterns.py` counts directed proposer->approver pairs over recently approved corrections (`PAIR_APPROVAL_THRESHOLD` / `PAIR_WINDOW_DAYS`); a pair that dominates approvals -- four-eyes satisfied, but always by the same two accounts -- is flagged, with severity escalating on sustained volume. Auto-runs on each approval. Rings of 3+ users evade pair counting (stated non-claim).
 
+#### Which detection toggles to enable, and when
+
+Every opt-in hook defaults off so a fresh scaffold has no surprises, and every one is detect-only: findings land as integrity flags in `GET /api/v1/activity/anomalies`, and a human closes each flag. Recommended posture by deployment scenario:
+
+- **Every deployment**: `STARTUP_CANARY_ENABLED=true`. It is a one-shot self-check at boot with no per-request cost, and a failure means the injection-defense machinery itself is broken -- something you want flagged before the first real request, not discovered during an incident.
+- **You connect external or third-party agents** (Step 5): `BASELINE_TRACKING_ENABLED=true` and `COLLUSION_DETECTION_ENABLED=true`. These are the two hooks built for agents you do not fully control: baselines catch a credentialed agent that stops behaving like itself, and collusion analysis catches pairs that stop checking each other. Both need a learning store. Two operational notes: `agent_dispatch_stats` grows one row per dispatch with no pruner yet (see the data-retention table), and the deviation analysis itself (`check_deviation`) is operator-invoked -- recording alone flags nothing.
+- **Many users can read knowledge endpoints** (corrections, reflections, search): `SEQUENCE_DETECTION_ENABLED=true`, alongside the default-on volume and timing checks it complements. It catches multi-step extraction playbooks that stay under per-endpoint thresholds. Requires activity tracking (`ACTIVITY_TRACKING_ENABLED`, on by default) and a learning store.
+- **Internal-only deployment, built-in agents, trusted users**: the defaults are a reasonable floor -- identity checks, rate limits, activity thresholds, and corrections governance are always on. Enable the startup canary anyway; skip the rest until your exposure changes.
+
+`MODEL_ROUTING_ENABLED` is deliberately not in this list: it is a cost feature, not a detector. Enable it only after setting `MODEL_TIER_MAP_JSON` to models your configured provider actually serves (see `.env.example`).
+
 #### Heavier extraction enforcement (recipes)
 
 The shipped default is detect-and-flag; the only built-in enforcement is the opt-in 429 above. If your threat model justifies acting on these signals automatically, these are the recommended shapes -- each is a small, local change, and each trades availability or answer quality for containment, so gate them on a human decision:
