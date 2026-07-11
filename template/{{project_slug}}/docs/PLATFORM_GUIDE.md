@@ -372,7 +372,18 @@ curl -X POST https://platform.example.com/api/v1/agents/incident_responder/unsus
   -H "Authorization: Bearer $ADMIN_JWT"
 ```
 
-`GET /api/v1/agents` reports `suspended`, `credential_status` (`active`/`none`), `last_active`, and `dormant` per agent, so an audit of stale or de-credentialed agents is one API call. Restrict rotate/revoke/suspend to admins in your `require_role` matrix.
+`GET /api/v1/agents` reports `suspended`, `credential_status` (`active`/`none`), `expires_at`, `last_active`, and `dormant` per agent, so an audit of stale or de-credentialed agents is one API call. Restrict rotate/revoke/suspend to admins in your `require_role` matrix.
+
+### Rotate before expiry
+
+Identity tokens carry an `exp` claim set at issue time from `AGENT_DEFAULT_TTL_DAYS` (default 7 days in production/staging, 90 in dev, clamped by `AGENT_MAX_TTL_DAYS`). Expiry is enforced at every dispatch -- even with the `AGENT_IDENTITY_ENABLED=false` kill switch, which skips signature checks but keeps expiry -- so an agent whose token lapses silently drops out of deliberations.
+
+Two things make that visible instead of silent:
+
+- **Register and rotate responses return `expires_at`** (ISO 8601 UTC), and agent listings/detail include it per agent. Schedule rotation before that timestamp passes; there is no auto-renewal.
+- **Expired or invalid tokens blocked at the dispatch gates record an `agent_identity_blocked` integrity flag** (when a learning store is available -- the API gateway threads it automatically). Repeated blocks for the same agent dedupe into one unresolved flag with a hit counter, so `GET /api/v1/integrity-flags` shows you which agents are being silently excluded and how often. Flag persistence is fire-and-forget: it never fails or slows dispatch.
+
+Operationally: watch integrity flags for `agent_identity_blocked`, and treat any hit as "this agent's credential needs rotation now" -- the deliberations it missed are already degraded.
 
 ### Scopes and rate limits
 
@@ -473,6 +484,7 @@ The learning layer reshapes agent behavior, so it gets its own integrity control
 - **Correction drift** (shipped, you wire): a rising share of "softening" language in recent approved corrections flags a possible slow-poisoning campaign. `analyze_correction_drift` is a tested library function the default runtime does not schedule -- run it from a periodic job or post-approval hook.
 - **User activity anomalies**: per-user request bursts, repeated auth failures, and agent-registration sprees trip configurable thresholds (`ACTIVITY_TRACKING_ENABLED` to opt out).
 - **Agent behavioral baselines** (opt-in, default off): each agent's refusal rate, confidence, latency, and scope discipline are compared against its own history -- an agent with valid credentials that stops behaving like itself still gets flagged. Set `BASELINE_TRACKING_ENABLED=true` and every round-table/chat dispatch records its stats (duration, refusal, confidence, scope violations) under the caller's tenant; `resolve`/single-shot dispatches are not covered. Recording is wired; run `AgentBaselineTracker.check_deviation` (or `compute_baseline`) from your review tooling to analyze drift.
+- **Delegation records** (opt-in, default off): set `DELEGATION_RECORDS_ENABLED=true` and every gated dispatch writes one `delegation_records` row -- task id, tenant, phase (`analyze`/`challenge`/`vote`), agent, and `derived_from_json` naming the upstream artifacts that fed that dispatch (analyze: nothing; challenge: the agents whose Phase-1 analyses were consumed; vote: the synthesis). **Be clear about what these document: phase-derivation hops in the hub-and-spoke orchestration.** Agents never call each other in this architecture, so there are no agent-to-agent calls to record -- the rows answer "whose output influenced this dispatch", which is what incident reconstruction actually needs. Writes are fire-and-forget off the event loop (a failing store never fails or slows a dispatch), and nothing analyzes the rows automatically -- they are query material for your review tooling (`learning/delegation.py`).
 - **Extraction sequences** (opt-in, default off): `harness/sequence_detector.py` backward-chains over recent activity to catch multi-step playbooks (query -> pull backing corrections -> export) that individually stay under the volume thresholds above. Patterns are expressed against your own routes; matches persist as integrity flags. Set `SEQUENCE_DETECTION_ENABLED=true` and the scan runs on the activity middleware's sampled pass (`ACTIVITY_CHECK_SAMPLE_N`, default every 25th request) -- it needs activity tracking and a learning store.
 - **Timing regularity**: `learning/timing_analysis.py` computes the coefficient of variation over a user's inter-request intervals; a suspiciously LOW CV (machine-like cadence, e.g. a scraper on a fixed timer) is flagged. Runs on a sampled schedule from the activity middleware (`ACTIVITY_CHECK_SAMPLE_N`, default every 25th request -- the same sampling also runs the burst-threshold check). Tune `TIMING_MIN_SAMPLES` / `TIMING_CV_THRESHOLD`; expect false positives from cron jobs and monitors.
 - **Extraction guard**: `learning/extraction_guard.py` counts knowledge-endpoint reads (GET /corrections and friends) per user and tenant-wide over a rolling window (`EXTRACTION_USER_THRESHOLD` / `EXTRACTION_TENANT_THRESHOLD` / `EXTRACTION_WINDOW_MINUTES`) and maps them to normal/elevated/capped. Detection-only by default; the single opt-in enforcement point (`EXTRACTION_GUARD_ENFORCE=true`) is a 429 + Retry-After on `GET /corrections` while capped.
@@ -484,6 +496,7 @@ Every opt-in hook defaults off so a fresh scaffold has no surprises, and every o
 
 - **Every deployment**: `STARTUP_CANARY_ENABLED=true`. It is a one-shot self-check at boot with no per-request cost, and a failure means the injection-defense machinery itself is broken -- something you want flagged before the first real request, not discovered during an incident.
 - **You connect external or third-party agents** (Step 5): `BASELINE_TRACKING_ENABLED=true` and `COLLUSION_DETECTION_ENABLED=true`. These are the two hooks built for agents you do not fully control: baselines catch a credentialed agent that stops behaving like itself, and collusion analysis catches pairs that stop checking each other. Both need a learning store. Two operational notes: `agent_dispatch_stats` grows one row per dispatch with no pruner yet (see the data-retention table), and the deviation analysis itself (`check_deviation`) is operator-invoked -- recording alone flags nothing.
+- **You need per-dispatch accountability or incident reconstruction** (audits, regulated deployments, "which agents touched this decision" questions): `DELEGATION_RECORDS_ENABLED=true`. Every gated dispatch leaves a queryable row tying agent, phase, and upstream derivation to the task id, so reconstructing a deliberation after the fact is SQL instead of log archaeology. Needs a learning store; same no-pruner caveat as dispatch stats (one row per agent per phase).
 - **Many users can read knowledge endpoints** (corrections, reflections, search): `SEQUENCE_DETECTION_ENABLED=true`, alongside the default-on volume and timing checks it complements. It catches multi-step extraction playbooks that stay under per-endpoint thresholds. Requires activity tracking (`ACTIVITY_TRACKING_ENABLED`, on by default) and a learning store.
 - **Internal-only deployment, built-in agents, trusted users**: the defaults are a reasonable floor -- identity checks, rate limits, activity thresholds, and corrections governance are always on. Enable the startup canary anyway; skip the rest until your exposure changes.
 
@@ -508,6 +521,18 @@ Beyond individual corrections, the learning layer compounds knowledge in two det
 ### Adversarial verification
 
 Shipping defenses is not the same as proving they hold. The generated project includes a red-team harness -- `tests/adversarial_payloads.py` (a payload library by attack vector) and `tests/adversarial_agents.py` (6 deterministic hostile agents implementing the agent protocol) -- exercised by `tests/test_adversarial_defense.py`. The hostile agents attack a full round table with injection payloads in every field they can populate; the tests assert no payload survives into the synthesis and that every attack vector is detected. No LLM calls, so the suite is deterministic and free. Extend the payloads and agents with attacks specific to your deployment and it becomes your standing red-team gate.
+
+### Tracing (optional)
+
+Per-phase OpenTelemetry spans are available behind the `[otel]` extra:
+
+```bash
+pip install '.[otel]'
+```
+
+With the extra installed AND a tracer provider configured (the standard `OTEL_*` environment variables with the SDK's autoconfiguration, or an explicit `set_tracer_provider` in your startup code -- the scaffold never configures one for you), every round-table phase (`deliberation.phase.premise` / `.strategy` / `.independent` / `.challenge` / `.synthesis` / `.vote`) and every chat stage (`chat.phase.route` / `.consult` / `.cross_check` / `.synthesize` / `.enforce`) appears as a span with attributes like `agent_count`. Span naming follows the spirit of the OTel GenAI semantic conventions; no formal convention compliance is claimed.
+
+Without the extra, the span helper is a plain `nullcontext`; with the extra but no provider, spans are non-recording (the OTel API default). Either way the wrapped code runs unchanged -- there is no toggle to set and nothing to configure to keep it off (`observability/tracing.py`).
 
 ---
 
@@ -565,6 +590,7 @@ Define retention policies for each data store and document them for your legal/c
 | Agent trust scores | SQLite (permanent) | Audit trail for routing decisions |
 | Learned corrections | Learning store (until erased) | PII-redacted at write; hard-deletable via `DELETE /api/v1/corrections/{id}` (GDPR Art. 17) |
 | Agent dispatch stats (`agent_dispatch_stats`) | SQLite (permanent; grows one row per agent dispatch when `BASELINE_TRACKING_ENABLED`; no pruner yet) | Behavioral telemetry per agent/tenant; define a pruning policy before long-term production use |
+| Delegation records (`delegation_records`) | SQLite (permanent; grows one row per agent per phase when `DELEGATION_RECORDS_ENABLED`; no pruner yet) | Phase-derivation audit trail per task/tenant; define a pruning policy before long-term production use |
 
 > **Note:** These are considerations for your legal and compliance team to evaluate. The scaffold provides the infrastructure hooks -- your organization defines the policies.
 
@@ -585,6 +611,8 @@ Define retention policies for each data store and document them for your legal/c
 | Learning persistence (SQLite default, Postgres opt-in) | **Built** | `LearningStore` protocol -- bring your own backend via 5 methods |
 | Learning integrity (corrections four-eyes, override screening, activity thresholds, timing/extraction/approval-pair detection) | **Built** | Findings surface at `GET /api/v1/activity/anomalies`; humans resolve |
 | Collusion / behavioral-baseline / sequence detectors | **Opt-in wiring provided (default off)** | `COLLUSION_DETECTION_ENABLED` / `BASELINE_TRACKING_ENABLED` / `SEQUENCE_DETECTION_ENABLED`; detect-only, fire-and-forget (see Learning integrity above) |
+| Delegation records (phase-derivation audit trail) | **Opt-in wiring provided (default off)** | `DELEGATION_RECORDS_ENABLED`; one row per gated dispatch, fire-and-forget; documents phase derivation, not agent-to-agent calls (see Learning integrity above) |
+| Per-phase OTel tracing | **Opt-in via `[otel]` extra** | No env toggle: inert without the extra and a user-configured tracer provider (see Tracing above) |
 | Correction-drift detector | **Shipped, you wire** | `analyze_correction_drift` is a tested library the default runtime does not schedule; run from a periodic job or post-approval hook |
 | Model routing (tiers, cascade, budget downgrades) | **Opt-in wiring provided (default off)** | `MODEL_ROUTING_ENABLED=true` makes the gateway's LLM client route per call role and try one cascade step up-tier on final failure |
 | Startup canary self-check | **Opt-in wiring provided (default off)** | `STARTUP_CANARY_ENABLED=true` self-tests the canary machinery once at boot; failure logs + flags, never blocks startup |
