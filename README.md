@@ -92,7 +92,7 @@ Ready for regulated contexts (finance, healthcare, legal) without being limited 
 
 ### How a Round Table Runs
 
-Every deliberation follows the same phased protocol. Before any expensive phase, agents get one cheap premise check and may collectively refuse a flawed task; after independent analysis, the enforcement pipeline validates claims and logs findings so the challenge phase sees them:
+Every deliberation follows the same phased protocol. Before any expensive phase, agents get one cheap premise check and may collectively refuse a flawed task. After independent analysis, the evidence enforcement pipeline validates each analysis: rejected analyses are dropped, corrected observations replace the originals, and violations are logged -- only what survives enters the challenge phase:
 
 ```mermaid
 flowchart LR
@@ -114,7 +114,7 @@ flowchart LR
     gate -->|"premise sound"| phase1
     gate -->|"refused"| Refuse["Short-circuit: what is wrong + a better question"]
     phase1 --> enforce
-    enforce -->|"validation findings logged"| phase2
+    enforce -->|"rejected analyses dropped, corrections applied, findings logged"| phase2
     phase2 --> phase3
     phase3 --> Result["Consensus or preserved dissent"]
 ```
