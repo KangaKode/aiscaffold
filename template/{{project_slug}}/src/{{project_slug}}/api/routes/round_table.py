@@ -155,6 +155,9 @@ async def submit_task(
         content=task_request.content,
         context=task_request.context,
         constraints=task_request.constraints,
+        # Tenant attribution for the opt-in detection hooks (baseline
+        # stats, collusion flags) -- findings land in the caller's tenant.
+        tenant_id=auth.tenant_id,
     )
 
     # Institutional knowledge (best-effort): the same approved corrections
@@ -207,7 +210,17 @@ async def submit_task(
 
     try:
         llm = getattr(request.app.state, "llm_client", None) or create_client()
-        rt = RoundTable(agents=agents, config=config, llm_client=llm, registry=registry)
+        rt = RoundTable(
+            agents=agents,
+            config=config,
+            llm_client=llm,
+            registry=registry,
+            # Opt-in detection hooks (None unless enabled at the gateway).
+            baseline_tracker=getattr(request.app.state, "baseline_tracker", None),
+            collusion_detector=getattr(
+                request.app.state, "collusion_detector", None
+            ),
+        )
         auditor = getattr(request.app.state, "deliberation_auditor", None)
         if auditor is not None:
             result = await audited_round_table(

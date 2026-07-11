@@ -194,7 +194,9 @@ def create_app(
         logger.warning(f"[Gateway] Governance init failed (non-fatal): {e}")
 
     # Model routing (opt-in via MODEL_ROUTING_ENABLED). When off, this is
-    # None and the single-model path is unchanged.
+    # None and the single-model path is unchanged. When on, the router is
+    # attached to the LLM client (mirroring budget_manager) so call roles
+    # actually select models per tier, with one cascade step on failure.
     try:
         from ..llm.model_router import create_model_router
 
@@ -202,10 +204,21 @@ def create_app(
             budget_manager=getattr(application.state, "budget_manager", None)
         )
         if application.state.model_router is not None:
+            if llm_client is not None:
+                llm_client.model_router = application.state.model_router
             logger.info("[Gateway] Model router enabled")
     except Exception as e:
         logger.warning(f"[Gateway] Model router init failed (non-fatal): {e}")
         application.state.model_router = None
+
+    # Opt-in detection hooks (baseline tracking, collusion detection,
+    # startup canary self-check) -- all default OFF, all detect-only.
+    try:
+        from .detection_hooks import init_detection_hooks
+
+        init_detection_hooks(application)
+    except Exception as e:
+        logger.warning(f"[Gateway] Detection hooks init failed (non-fatal): {e}")
 
     # Corrections lifecycle over HTTP (API-first): manager + override
     # detector on app.state. Reuses the learning store; degrades to 503

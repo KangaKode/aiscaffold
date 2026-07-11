@@ -2,23 +2,16 @@
 ChatOrchestrator -- Lightweight multi-agent chat with hallucination resistance.
 
 Implements the Orchestrator-Worker pattern (2026 best practices Section 4.1):
-  - A lead agent drives the conversation and selects which specialists to consult
-  - 1-3 specialists provide evidence-backed responses (same evidence requirement as round table)
-  - The orchestrator cross-checks specialist responses for agreement/disagreement
-  - If specialists disagree, both views are surfaced to the user with evidence
-  - If the query is too complex, escalation to the full round table is suggested
+a lead agent drives the conversation, selects 1-3 specialists who provide
+evidence-backed responses (same evidence requirement as the round table),
+cross-checks them for agreement, surfaces disagreements with evidence, and
+suggests escalation to the round table for complex queries.
 
-Token efficiency:
-  - Uses CacheablePrompt so system instructions are cached across messages
-  - Only consults relevant specialists (not all agents)
-  - Single synthesis pass (vs round table's phased protocol)
-
-Security:
-  - All specialist responses sanitized before synthesis
-  - Input validated and size-limited
-  - Same prompt injection defense as round table
-  - Safety agents (evidence, skeptic, sentinel) join every consultation
-  - Synthesis output checked by FactChecker before returning to the user
+Token efficiency: CacheablePrompt caches the system prompt across messages;
+only relevant specialists are consulted; single synthesis pass.
+Security: specialist responses sanitized before synthesis; input validated
+and size-limited; same injection defense as the round table; safety agents
+join every consultation; synthesis FactChecked before returning to the user.
 
 Keep this file under 500 lines (helpers live in chat_helpers.py).
 """
@@ -128,11 +121,15 @@ class ChatOrchestrator:
         registry: Any = None,
         router: AgentRouter | None = None,
         config: ChatConfig | None = None,
+        baseline_tracker: Any = None,
     ):
         self._llm = llm
         self._registry = registry
         self._router = router or AgentRouter(registry=registry)
         self._config = config or ChatConfig()
+        # Opt-in per-dispatch baseline stats via the env-gated factory
+        # learning.activity.create_baseline_tracker (None = off, unchanged).
+        self._baseline_tracker = baseline_tracker
         self._conversation_history: list[dict] = []
 
     def _system_prompt(self, tenant_id: str = "default") -> str:
@@ -214,7 +211,7 @@ class ChatOrchestrator:
         consultations = []
         if consultation_agents:
             consultations = await self._consult_specialists(
-                message, consultation_agents
+                message, consultation_agents, tenant_id=tenant_id
             )
 
         cross_check = None
@@ -308,12 +305,14 @@ class ChatOrchestrator:
         self,
         message: str,
         agents: list,
+        tenant_id: str = "default",
     ) -> list[ConsultationResult]:
         """Consult selected specialists in parallel.
 
-        Each specialist passes identity and rate-limit gates before the
-        consultation; gated specialists just aren't consulted (the gate
-        logs why). Scope filtering applies to the task context.
+        Each specialist passes identity, rate-limit, and scope gates before
+        the consultation (gated specialists just aren't consulted). A wired
+        baseline tracker records per-dispatch stats in the caller's tenant
+        (detect-only, fire-and-forget).
         """
         from ..orchestration.round_table import RoundTableTask
         from .dispatch_helpers import dispatch_with_gates
@@ -321,11 +320,13 @@ class ChatOrchestrator:
         task = RoundTableTask(
             id=f"chat_{datetime.now().strftime('%H%M%S')}",
             content=message,
+            tenant_id=tenant_id,
         )
 
         rate_limiter = getattr(self._registry, "rate_limiter", None)
         analyses, _skipped, _failed = await dispatch_with_gates(
-            agents, task, self._registry, rate_limiter, "ChatOrchestrator"
+            agents, task, self._registry, rate_limiter, "ChatOrchestrator",
+            baseline_tracker=self._baseline_tracker,
         )
 
         consultations = []

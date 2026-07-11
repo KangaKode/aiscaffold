@@ -26,10 +26,13 @@ or altered.
 
 Every Nth recorded request (ACTIVITY_CHECK_SAMPLE_N, default 25) the
 middleware also runs the detection pass for that user: the burst
-thresholds (ActivityTracker.check_thresholds) and the timing-regularity
-CV check (learning/timing_analysis.py). Sampling keeps the per-request
-cost at zero for the other N-1 requests while anomalies still surface
-within one sampling period.
+thresholds (ActivityTracker.check_thresholds), the timing-regularity
+CV check (learning/timing_analysis.py), and -- opt-in via
+SEQUENCE_DETECTION_ENABLED (default off) -- the multi-step
+extraction-playbook scan (harness/sequence_detector.py), which reads
+the same activity_events and writes its own integrity flags. Sampling
+keeps the per-request cost at zero for the other N-1 requests while
+anomalies still surface within one sampling period.
 
 Recording is fire-and-forget: ActivityTracker.record() swallows storage
 errors, and this middleware additionally guards the whole hook so
@@ -66,6 +69,13 @@ def _check_sample_n() -> int:
     raw = os.environ.get("ACTIVITY_CHECK_SAMPLE_N", "").strip()
     n = int(raw) if raw.isdigit() else DEFAULT_CHECK_SAMPLE_N
     return max(1, n)
+
+
+def _sequence_detection_enabled() -> bool:
+    """Opt-in toggle for the extraction-sequence scan (default off)."""
+    return os.environ.get("SEQUENCE_DETECTION_ENABLED", "").strip().lower() in (
+        "true", "1", "yes",
+    )
 
 
 def _user_id_from_request(request: Request) -> str:
@@ -151,11 +161,13 @@ class ActivityTrackingMiddleware(BaseHTTPMiddleware):
     @staticmethod
     def _run_checks(request: Request, tracker, user_id: str, tenant_id: str) -> None:
         """Sampled detection pass: burst thresholds + timing regularity,
-        plus the opt-in retention prune (ACTIVITY_RETENTION_DAYS -- a
-        no-op unless the operator sets it). Best-effort -- findings
-        persist as integrity flags; failures are logged and can never
-        fail the request. Runs in the caller's tenant so flags land
-        where the events did."""
+        the opt-in extraction-sequence scan (SEQUENCE_DETECTION_ENABLED,
+        default off -- detect-only, flags multi-step playbooks that stay
+        under the volume thresholds), plus the opt-in retention prune
+        (ACTIVITY_RETENTION_DAYS -- a no-op unless the operator sets
+        it). Best-effort -- findings persist as integrity flags;
+        failures are logged and can never fail the request. Runs in the
+        caller's tenant so flags land where the events did."""
         tracker.check_thresholds(user_id, tenant_id=tenant_id)
         store = getattr(request.app.state, "learning_store", None)
         if store is not None:
@@ -163,4 +175,8 @@ class ActivityTrackingMiddleware(BaseHTTPMiddleware):
             from ...learning.timing_analysis import check_timing_regularity
 
             check_timing_regularity(store, user_id=user_id, tenant_id=tenant_id)
+            if _sequence_detection_enabled():
+                from ...harness.sequence_detector import SequenceDetector
+
+                SequenceDetector(store).check(user_id, tenant_id=tenant_id)
             prune_activity_events(store)

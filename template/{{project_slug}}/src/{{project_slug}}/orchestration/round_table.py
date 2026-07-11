@@ -70,12 +70,16 @@ class AgentProtocol(Protocol):
 
 @dataclass
 class RoundTableTask:
-    """Input to a round table session."""
+    """Input to a round table session.
+
+    tenant_id: tenant attribution for the opt-in detection hooks. Additive.
+    """
 
     id: str
     content: str
     context: dict[str, Any] = field(default_factory=dict)
     constraints: list[str] = field(default_factory=list)
+    tenant_id: str = "default"
 
 
 @dataclass
@@ -227,11 +231,17 @@ class RoundTable:
         llm_client: Any = None,
         registry: Any = None,
         checkin_manager: Any = None,
+        baseline_tracker: Any = None,
+        collusion_detector: Any = None,
     ):
         self.config = config
         self.llm = llm_client
         self._registry = registry  # Optional: enables identity/rate-limit gates
         self._checkin_manager = checkin_manager  # Optional: approval check-ins
+        # Opt-in detection hooks (None = off, behavior unchanged); build via
+        # the env-gated factories in learning/activity and learning/collusion.
+        self._baseline_tracker = baseline_tracker
+        self._collusion_detector = collusion_detector
         self._core_agent_names: set[str] = set()
 
         if config.include_core_agents:
@@ -340,6 +350,12 @@ class RoundTable:
             )
         self._write_artifact(task.id, "phase3_votes", [asdict(v) for v in result.votes])
 
+        # Collusion detection (opt-in, detect-only, fire-and-forget):
+        # record this round's votes for lockstep analysis.
+        if self._collusion_detector is not None and result.votes:
+            from .round_table_helpers import record_collusion_votes
+            await record_collusion_votes(self._collusion_detector, task, result.votes)
+
         result.consensus_reached = result.approval_rate >= self.config.consensus_threshold
         result.duration_seconds = (datetime.now() - start).total_seconds()
 
@@ -430,7 +446,8 @@ class RoundTable:
 
         rate_limiter = getattr(self._registry, "rate_limiter", None)
         analyses, skipped, failed = await dispatch_with_gates(
-            self.agents, task, self._registry, rate_limiter, "RoundTable"
+            self.agents, task, self._registry, rate_limiter, "RoundTable",
+            baseline_tracker=self._baseline_tracker,
         )
 
         if self.config.enforce_evidence:

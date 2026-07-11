@@ -128,6 +128,8 @@ def _get_or_create_orchestrator(
         llm=llm,
         registry=registry,
         router=agent_router,
+        # Opt-in per-dispatch baseline stats (None unless enabled).
+        baseline_tracker=getattr(request.app.state, "baseline_tracker", None),
     )
 
     while len(_orchestrators) > MAX_SESSIONS:

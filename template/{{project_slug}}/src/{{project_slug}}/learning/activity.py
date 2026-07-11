@@ -30,6 +30,7 @@ Keep this file under 350 lines.
 """
 
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta
 
@@ -319,3 +320,23 @@ class AgentBaselineTracker:
             "scope_violations": sum(r.get("scope_violations") or 0 for r in rows) / n,
             "samples": n,
         }
+
+
+def create_baseline_tracker(store) -> AgentBaselineTracker | None:
+    """Build a tracker when BASELINE_TRACKING_ENABLED is truthy, else None.
+
+    Opt-in wiring (default OFF): returning None keeps every dispatch path
+    byte-identical to the untracked behavior. Detection-only -- recorded
+    stats and deviation flags are never acted on automatically.
+    """
+    if os.environ.get("BASELINE_TRACKING_ENABLED", "").strip().lower() not in (
+        "true", "1", "yes",
+    ):
+        return None
+    if store is None:
+        logger.warning(
+            "[Activity] BASELINE_TRACKING_ENABLED=true but no learning store "
+            "is available -- baseline tracking degrades to a no-op"
+        )
+        return None
+    return AgentBaselineTracker(store)

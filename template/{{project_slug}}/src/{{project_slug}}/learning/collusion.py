@@ -35,6 +35,7 @@ Keep this file under 400 lines.
 
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime
@@ -349,3 +350,25 @@ def analyze_correction_drift(
     except Exception as exc:
         logger.error(f"[Collusion] Failed to persist drift flag: {exc}")
     return finding
+
+
+def create_collusion_detector(store, checkin_manager=None) -> CollusionDetector | None:
+    """Build a detector when COLLUSION_DETECTION_ENABLED is truthy, else None.
+
+    Opt-in wiring (default OFF): returning None keeps deliberations
+    byte-identical to the unmonitored behavior. The instance keeps its
+    vote history in process memory, so create ONE per process (e.g. on
+    app state) and feed every round into it -- a per-run instance would
+    never accumulate the cross-round history lockstep analysis needs.
+    """
+    if os.environ.get("COLLUSION_DETECTION_ENABLED", "").strip().lower() not in (
+        "true", "1", "yes",
+    ):
+        return None
+    if store is None:
+        logger.warning(
+            "[Collusion] COLLUSION_DETECTION_ENABLED=true but no learning "
+            "store is available -- collusion detection degrades to a no-op"
+        )
+        return None
+    return CollusionDetector(store, checkin_manager=checkin_manager)

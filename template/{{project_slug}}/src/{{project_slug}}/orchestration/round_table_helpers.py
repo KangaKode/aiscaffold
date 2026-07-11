@@ -3,6 +3,7 @@
 Extracted from round_table.py to keep that file under 500 lines.
 """
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -143,6 +144,31 @@ def apply_approval_gate(
     except Exception as e:
         logger.warning(
             f"[RoundTable] Could not create approval check-in: {type(e).__name__}"
+        )
+
+
+async def record_collusion_votes(
+    detector: object,
+    task: "RoundTableTask",
+    votes: list,
+) -> None:
+    """Feed one round of votes into the collusion detector (opt-in hook).
+
+    Detect-only and fire-and-forget: findings persist as integrity flags
+    inside the detector; any failure (detector bug, broken store) is
+    logged and swallowed so vote recording can never fail a deliberation.
+    The store I/O is blocking, so the call runs off the event loop.
+    """
+    try:
+        await asyncio.to_thread(
+            detector.record_votes,
+            task.id,
+            votes,
+            getattr(task, "tenant_id", "default") or "default",
+        )
+    except Exception as e:
+        logger.warning(
+            f"[RoundTable] Collusion vote recording failed (ignored): {e}"
         )
 
 
