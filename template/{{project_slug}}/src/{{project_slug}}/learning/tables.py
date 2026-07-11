@@ -20,7 +20,9 @@ TABLE ADD COLUMN migration. If the baseline created the new column on
 fresh installs, the version-guarded ALTER would then fail with a
 duplicate-column error (SQLite has no ADD COLUMN IF NOT EXISTS).
 
-Keep this file under 300 lines.
+Keep this file under 350 lines. (Raised from 300: migration v8 froze
+two more pre-change table snapshots -- freeze snapshots must live here
+by design, the module is never split.)
 """
 
 TABLE_COLUMNS: dict[str, dict[str, str]] = {
@@ -42,6 +44,9 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
         # Knowledge aging (added in migration v5 -- NOT in the v1 baseline)
         "last_validated_at": "TEXT DEFAULT ''",
         "last_validated_by": "TEXT DEFAULT ''",
+        # Write provenance (added in migration v8): "api" for the
+        # corrections API route, "library" for direct manager calls.
+        "source_surface": "TEXT DEFAULT ''",
     },
     "activity_events": {
         "id": "TEXT PRIMARY KEY",
@@ -83,6 +88,10 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
         "outcome": "TEXT DEFAULT ''",
         "detail_json": "TEXT DEFAULT '{}'",
         "created_at": "TEXT NOT NULL",
+        # Acting user (added in migration v8 -- NOT in the v1 baseline).
+        # Populated on API-driven writes going forward; historical rows
+        # and library callers without a user identity leave it ''.
+        "user_id": "TEXT DEFAULT ''",
     },
     "budget_spend": {
         "id": "TEXT PRIMARY KEY",
@@ -109,6 +118,25 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
         "detail": "TEXT DEFAULT ''",
         "quality_metrics_json": "TEXT DEFAULT '{}'",
         "status": "TEXT DEFAULT 'recorded'",
+        "created_at": "TEXT NOT NULL",
+        # Acting user whose deliberation produced the reflection (added
+        # in migration v8 -- NOT in the pre-v8 shape the v4 migration
+        # creates). '' for library callers without a user identity.
+        "created_by": "TEXT DEFAULT ''",
+    },
+    # Phase-derivation records (added in migration v8, opt-in via
+    # DELEGATION_RECORDS_ENABLED). One row per gated dispatch:
+    # derived_from_json names the upstream artifacts the dispatch
+    # consumed (analyze: []; challenge: contributing analysts' names;
+    # vote: ["synthesis"]). NOT agent-to-agent calls -- those do not
+    # exist in this hub-and-spoke architecture.
+    "delegation_records": {
+        "id": "TEXT PRIMARY KEY",
+        "correlation_id": "TEXT NOT NULL",
+        "tenant_id": "TEXT NOT NULL DEFAULT 'default'",
+        "phase": "TEXT NOT NULL",
+        "agent_id": "TEXT NOT NULL",
+        "derived_from_json": "TEXT DEFAULT '[]'",
         "created_at": "TEXT NOT NULL",
     },
     "error_schemas": {
@@ -143,6 +171,8 @@ INDEX_STATEMENTS = [
     " ON reflections(tenant_id, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_error_schemas_tenant"
     " ON error_schemas(tenant_id, status, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_delegation_tenant"
+    " ON delegation_records(tenant_id, created_at)",
 ]
 
 SCHEMA_VERSION_DDL = (
@@ -171,6 +201,32 @@ _BASELINE_COLUMN_FREEZE: dict[str, dict[str, str]] = {
         "created_at": "TEXT NOT NULL",
         "updated_at": "TEXT NOT NULL",
         "metadata_json": "TEXT DEFAULT '{}'",
+    },
+    # Pre-v8 shapes: the baseline must keep creating audit_events and
+    # reflections WITHOUT the v8 identity columns so the v8 ALTERs
+    # apply cleanly on fresh installs too.
+    "audit_events": {
+        "id": "TEXT PRIMARY KEY",
+        "correlation_id": "TEXT NOT NULL",
+        "event_type": "TEXT NOT NULL",
+        "tenant_id": "TEXT NOT NULL DEFAULT 'default'",
+        "phase": "TEXT DEFAULT ''",
+        "agent_count": "INTEGER DEFAULT 0",
+        "duration_seconds": "REAL DEFAULT 0",
+        "outcome": "TEXT DEFAULT ''",
+        "detail_json": "TEXT DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL",
+    },
+    "reflections": {
+        "id": "TEXT PRIMARY KEY",
+        "tenant_id": "TEXT NOT NULL DEFAULT 'default'",
+        "source_task_id": "TEXT DEFAULT ''",
+        "reflection_type": "TEXT NOT NULL",
+        "title": "TEXT DEFAULT ''",
+        "detail": "TEXT DEFAULT ''",
+        "quality_metrics_json": "TEXT DEFAULT '{}'",
+        "status": "TEXT DEFAULT 'recorded'",
+        "created_at": "TEXT NOT NULL",
     },
 }
 
@@ -248,5 +304,22 @@ MIGRATIONS: list[list[str]] = [
     [
         "CREATE INDEX IF NOT EXISTS idx_activity_created"
         " ON activity_events(created_at)",
+    ],
+    # v8 -- identity/provenance columns + delegation records.
+    # ALTERs: the pre-v8 shapes of audit_events and reflections are
+    # frozen in _BASELINE_COLUMN_FREEZE (and corrections was frozen at
+    # v1), so each ALTER runs exactly once on fresh installs and
+    # upgraded databases alike. delegation_records is a new table
+    # (budget_configs/v6 precedent): the baseline already creates it on
+    # fresh installs; this creates it on upgraded DBs.
+    [
+        "ALTER TABLE audit_events ADD COLUMN user_id TEXT DEFAULT ''",
+        "ALTER TABLE corrections ADD COLUMN source_surface TEXT DEFAULT ''",
+        "ALTER TABLE reflections ADD COLUMN created_by TEXT DEFAULT ''",
+    ]
+    + _table_statements("delegation_records")
+    + [
+        "CREATE INDEX IF NOT EXISTS idx_delegation_tenant"
+        " ON delegation_records(tenant_id, created_at)",
     ],
 ]
