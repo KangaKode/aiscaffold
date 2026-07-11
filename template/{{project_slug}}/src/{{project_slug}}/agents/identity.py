@@ -173,6 +173,29 @@ def issue_token(
     return pyjwt.encode(claims, key, algorithm="HS256"), effective_ttl
 
 
+def token_expires_at(token: str) -> str:
+    """ISO 8601 UTC expiry of an issued token, or "" if unreadable.
+
+    Reads the exp claim WITHOUT verifying the signature: this is a
+    display helper for the issuing side (register/rotate responses
+    surface when the credential dies), never an authorization check --
+    verification stays in verify_token.
+    """
+    try:
+        claims = pyjwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_exp": False,
+                "verify_aud": False,
+            },
+        )
+        return datetime.fromtimestamp(int(claims["exp"]), tz=UTC).isoformat()
+    except Exception as exc:
+        logger.warning(f"[AgentIdentity] Could not read token expiry: {exc}")
+        return ""
+
+
 def _check_expiry_warning(claims: AgentIdentityClaims) -> None:
     """Log a warning if the token is nearing expiry."""
     remaining = (claims.expires_at - datetime.now(UTC)).total_seconds() / 86400

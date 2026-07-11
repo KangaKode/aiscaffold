@@ -20,7 +20,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from ..security import validate_identifier, validate_in_choices
 from .capability import AgentCapability
-from .identity import hash_token, issue_token
+from .identity import hash_token, issue_token, token_expires_at
 from .rate_limiter import AgentRateLimiter
 from .registry_persistence import (
     VISIBILITY_CHOICES,
@@ -77,6 +77,7 @@ class AgentEntry:
     tenant_id: registering tenant (default "default");
     identity_token: raw JWT held in memory only -- NEVER persisted to disk;
     identity_token_hash: SHA-256 of the token (safe to persist);
+    identity_expires_at: ISO 8601 UTC token expiry (metadata, not a secret);
     suspended: excluded from dispatch and listings;
     capability: structured AgentCapability (scopes, rate limit);
     last_active: ISO timestamp of last dispatch (drives dormancy).
@@ -94,6 +95,7 @@ class AgentEntry:
         suspended: bool = False,
         capability: AgentCapability | None = None,
         last_active: str | None = None,
+        identity_expires_at: str | None = None,
     ):
         self.agent = agent
         self.agent_type = agent_type
@@ -106,6 +108,7 @@ class AgentEntry:
         self.suspended = suspended
         self.capability = capability
         self.last_active = last_active
+        self.identity_expires_at = identity_expires_at
 
     @property
     def is_dormant(self) -> bool:
@@ -131,6 +134,7 @@ class AgentEntry:
             "tenant_id": self.tenant_id,
             "suspended": self.suspended,
             "credential_status": "active" if self.identity_token_hash else "none",
+            "expires_at": self.identity_expires_at,
             "last_active": self.last_active,
             "dormant": self.is_dormant,
         }
@@ -177,9 +181,9 @@ class AgentRegistry:
         name: str,
         capability: AgentCapability | None,
         tenant_id: str = "default",
-    ) -> tuple[str | None, str | None]:
-        """Issue an identity token. Returns (raw_token, token_hash).
-
+    ) -> tuple[str | None, str | None, str | None]:
+        """Issue an identity token: (raw_token, token_hash, expires_at) --
+        expires_at is the exp claim (ISO 8601 UTC) so operators can rotate in time.
         Failure is non-fatal: local agents are allowed tokenless; remote
         agents are blocked at dispatch until credentials are rotated.
         """
@@ -187,10 +191,10 @@ class AgentRegistry:
             scopes = list(capability.access_scopes) if capability else []
             is_meta = capability.is_meta_agent if capability else False
             token, _ttl = issue_token(name, tenant_id, scopes, is_meta_agent=is_meta)
-            return token, hash_token(token)
+            return token, hash_token(token), token_expires_at(token) or None
         except Exception as e:
             logger.warning(f"[AgentRegistry] Token issuance failed for '{name}': {e}")
-            return None, None
+            return None, None, None
 
     def _load_remote_agents(self) -> None:
         """Load persisted remote registrations (see registry_persistence)."""
@@ -198,9 +202,7 @@ class AgentRegistry:
             key = (kwargs.get("tenant_id", DEFAULT_TENANT), kwargs["agent"].name)
             self._agents[key] = AgentEntry(**kwargs)
 
-    def _find_key(
-        self, name: str, tenant_id: str | None = None
-    ) -> tuple[str, str] | None:
+    def _find_key(self, name: str, tenant_id: str | None = None) -> tuple[str, str] | None:
         """Resolve a (tenant_id, name) registry key (see class docstring).
         Entries whose tenant_id attribute was mutated in place after
         registration (a documented platform customization) match by
@@ -226,9 +228,7 @@ class AgentRegistry:
             )
         return None
 
-    def _find_entry(
-        self, name: str, tenant_id: str | None = None
-    ) -> AgentEntry | None:
+    def _find_entry(self, name: str, tenant_id: str | None = None) -> AgentEntry | None:
         key = self._find_key(name, tenant_id)
         return self._agents[key] if key is not None else None
 
@@ -254,7 +254,7 @@ class AgentRegistry:
         name = agent.name
         if (tenant_id, name) in self._agents:
             logger.warning(f"[AgentRegistry] Replacing existing agent '{name}'")
-        token, token_hash = self._issue_entry_token(name, capability, tenant_id)
+        token, token_hash, expires_at = self._issue_entry_token(name, capability, tenant_id)
         self._agents[(tenant_id, name)] = AgentEntry(
             agent=agent,
             agent_type="local",
@@ -264,6 +264,7 @@ class AgentRegistry:
             identity_token_hash=token_hash,
             capability=capability,
             last_active=_now_iso(),
+            identity_expires_at=expires_at,
         )
         logger.info(f"[AgentRegistry] Registered local agent: {name}")
 
@@ -314,7 +315,7 @@ class AgentRegistry:
                 f"[AgentRegistry] Replacing existing agent '{name}' "
                 f"(tenant '{tenant_id}')"
             )
-        token, token_hash = self._issue_entry_token(name, capability, tenant_id)
+        token, token_hash, expires_at = self._issue_entry_token(name, capability, tenant_id)
         self._agents[(tenant_id, name)] = AgentEntry(
             agent=agent,
             agent_type="remote",
@@ -325,6 +326,7 @@ class AgentRegistry:
             identity_token_hash=token_hash,
             capability=capability,
             last_active=_now_iso(),
+            identity_expires_at=expires_at,
         )
         self._save_remote_agents()
         logger.info(f"[AgentRegistry] Registered remote agent: {name} at {base_url}")
@@ -369,13 +371,12 @@ class AgentRegistry:
         entry = self._find_entry(name, tenant_id)
         if entry is None:
             return None
-        token, token_hash = self._issue_entry_token(
-            name, entry.capability, tenant_id=entry.tenant_id
-        )
+        token, token_hash, expires_at = self._issue_entry_token(name, entry.capability, tenant_id=entry.tenant_id)
         if token is None:
             return None
         entry.identity_token = token
         entry.identity_token_hash = token_hash
+        entry.identity_expires_at = expires_at
         if entry.agent_type == "remote":
             self._save_remote_agents()
         logger.info(f"[AgentRegistry] Rotated credentials for '{name}'")
@@ -389,6 +390,7 @@ class AgentRegistry:
             return False
         entry.identity_token = None
         entry.identity_token_hash = None
+        entry.identity_expires_at = None
         if entry.agent_type == "remote":
             self._save_remote_agents()
         logger.warning(f"[AgentRegistry] Revoked credentials for '{name}'")
@@ -437,9 +439,7 @@ class AgentRegistry:
     def get_by_capability(self, capability: str) -> list:
         """Get agents that have a specific capability tag."""
         return [
-            entry.agent
-            for entry in self._agents.values()
-            if capability in entry.capabilities
+            e.agent for e in self._agents.values() if capability in e.capabilities
         ]
 
     async def health_check_all(self, tenant_id: str | None = None) -> dict[str, bool]:

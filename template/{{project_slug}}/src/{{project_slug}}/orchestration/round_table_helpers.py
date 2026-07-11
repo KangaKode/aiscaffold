@@ -14,10 +14,58 @@ if TYPE_CHECKING:
         RoundTableConfig,
         RoundTableResult,
         RoundTableTask,
+        StrategyPlan,
         SynthesisResult,
     )
 
 logger = logging.getLogger(__name__)
+
+
+async def phase_strategy(
+    task: "RoundTableTask",
+    llm: object,
+    system_prompt: str,
+    agents: list,
+) -> "StrategyPlan":
+    """Phase 0: Orchestrator plans before dispatching."""
+    from ..llm import CacheablePrompt
+    from .round_table import StrategyPlan
+
+    prompt = CacheablePrompt(
+        system=system_prompt,
+        user_message=(
+            f"Task: {task.content}\n\n"
+            f"Before dispatching the team, plan your strategy:\n"
+            f"1. How does this task decompose into sub-problems?\n"
+            f"2. What should each agent specifically focus on?\n"
+            f"3. What disagreements do you anticipate between agents?\n"
+            f"4. What are the success criteria?\n\n"
+            'Return JSON: {"task_decomposition": [...], "agent_focus_areas": {...}, '
+            '"anticipated_tensions": [...], "success_criteria": [...]}'
+        ),
+    )
+    try:
+        from ..llm.json_parser import extract_json
+
+        response = await llm.call(prompt=prompt, role="synthesis", temperature=0.3)
+        data = extract_json(response.content)
+        if data is None:
+            logger.warning("[RoundTable] Strategy phase returned unparseable JSON")
+            return StrategyPlan(reasoning=response.content)
+        return StrategyPlan(
+            task_decomposition=data.get("task_decomposition", []),
+            agent_focus_areas=data.get("agent_focus_areas", {}),
+            anticipated_tensions=data.get("anticipated_tensions", []),
+            success_criteria=data.get("success_criteria", []),
+            reasoning=response.content,
+        )
+    except Exception as e:
+        logger.warning(f"[RoundTable] Strategy phase failed: {e}")
+        return StrategyPlan(
+            task_decomposition=["Full analysis"],
+            agent_focus_areas={a.name: a.domain for a in agents},
+            success_criteria=["Actionable recommendations with evidence"],
+        )
 
 
 async def phase_synthesis(

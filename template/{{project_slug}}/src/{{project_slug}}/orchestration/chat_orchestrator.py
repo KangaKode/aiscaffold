@@ -18,13 +18,15 @@ Keep this file under 500 lines (helpers live in chat_helpers.py).
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from ..llm import CacheablePrompt, LLMClient
 from ..llm.budget_manager import set_tenant_context
-from ..security.prompt_guard import sanitize_for_prompt, wrap_user_content
+from ..observability.tracing import phase_span
+from ..security.prompt_guard import sanitize_for_prompt
 from .agent_router import AgentRouter, RoutingDecision
 from .autonomy import resolve_policy
 
@@ -122,14 +124,19 @@ class ChatOrchestrator:
         router: AgentRouter | None = None,
         config: ChatConfig | None = None,
         baseline_tracker: Any = None,
+        learning_store: Any = None,
+        delegation_recorder: Any = None,
     ):
         self._llm = llm
         self._registry = registry
         self._router = router or AgentRouter(registry=registry)
         self._config = config or ChatConfig()
-        # Opt-in per-dispatch baseline stats via the env-gated factory
-        # learning.activity.create_baseline_tracker (None = off, unchanged).
+        # Opt-in hooks (None = off, unchanged): baseline stats and
+        # delegation records via the env-gated learning/* factories;
+        # learning_store enables the identity-block flag at the gates.
         self._baseline_tracker = baseline_tracker
+        self._learning_store = learning_store
+        self._delegation_recorder = delegation_recorder
         self._conversation_history: list[dict] = []
 
     def _system_prompt(self, tenant_id: str = "default") -> str:
@@ -187,9 +194,10 @@ class ChatOrchestrator:
         if policy is not None:
             effective_max_agents = min(effective_max_agents, policy.max_specialists)
 
-        routing = self._router.route(
-            message, trust_scores=trust_scores, tenant_id=tenant_id
-        )
+        with phase_span("chat.phase.route"):
+            routing = self._router.route(
+                message, trust_scores=trust_scores, tenant_id=tenant_id
+            )
 
         if routing.should_escalate and not routing.selected_agents:
             return ChatResponse(
@@ -210,29 +218,33 @@ class ChatOrchestrator:
 
         consultations = []
         if consultation_agents:
-            consultations = await self._consult_specialists(
-                message, consultation_agents, tenant_id=tenant_id
-            )
+            with phase_span("chat.phase.consult", agent_count=len(consultation_agents)):
+                consultations = await self._consult_specialists(
+                    message, consultation_agents, tenant_id=tenant_id
+                )
 
         cross_check = None
         if self._config.enable_cross_check and len(consultations) > 1:
-            cross_check = await self._cross_check(consultations)
+            with phase_span("chat.phase.cross_check"):
+                cross_check = await self._cross_check(consultations)
 
-        response_content = await self._synthesize(
-            message, consultations, cross_check, context, tenant_id
-        )
+        with phase_span("chat.phase.synthesize"):
+            response_content = await self._synthesize(
+                message, consultations, cross_check, context, tenant_id
+            )
 
         enforcement_result = "accepted"
         enforcement_violations: list[str] = []
         if consultations:
-            (
-                response_content,
-                enforcement_result,
-                enforcement_violations,
-            ) = await self._enforce_synthesis(
-                response_content, message, consultations,
-                cross_check, context, tenant_id,
-            )
+            with phase_span("chat.phase.enforce"):
+                (
+                    response_content,
+                    enforcement_result,
+                    enforcement_violations,
+                ) = await self._enforce_synthesis(
+                    response_content, message, consultations,
+                    cross_check, context, tenant_id,
+                )
 
         escalation_suggested = False
         escalation_reason = ""
@@ -317,8 +329,10 @@ class ChatOrchestrator:
         from ..orchestration.round_table import RoundTableTask
         from .dispatch_helpers import dispatch_with_gates
 
+        # uuid suffix keeps the id unique across sessions/days/tenants --
+        # it doubles as the correlation id for delegation records.
         task = RoundTableTask(
-            id=f"chat_{datetime.now().strftime('%H%M%S')}",
+            id=f"chat_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:8]}",
             content=message,
             tenant_id=tenant_id,
         )
@@ -327,6 +341,8 @@ class ChatOrchestrator:
         analyses, _skipped, _failed = await dispatch_with_gates(
             agents, task, self._registry, rate_limiter, "ChatOrchestrator",
             baseline_tracker=self._baseline_tracker,
+            store=self._learning_store,
+            delegation_recorder=self._delegation_recorder,
         )
 
         consultations = []
@@ -355,60 +371,12 @@ class ChatOrchestrator:
         self,
         consultations: list[ConsultationResult],
     ) -> CrossCheckResult:
-        """Cross-check specialist responses for agreement/disagreement."""
-        consultation_summary = json.dumps(
-            [
-                {
-                    "agent": c.agent_name,
-                    "domain": c.domain,
-                    "response": c.response[:2000],
-                    "confidence": c.confidence,
-                }
-                for c in consultations
-            ],
-            indent=2,
+        """Cross-check specialist responses (see chat_helpers)."""
+        from .chat_helpers import cross_check_consultations
+
+        return await cross_check_consultations(
+            self._llm, consultations, self._config.escalation_threshold
         )
-
-        prompt = CacheablePrompt(
-            system=(
-                "You are a cross-checker. Compare specialist responses and identify:\n"
-                "1. Points where specialists AGREE (consensus)\n"
-                "2. Points where specialists DISAGREE (conflicts)\n"
-                "3. An agreement_level from 0.0 (total conflict) to 1.0 (full agreement)\n\n"
-                "Return JSON: {\"agreement_level\": float, \"consensus_points\": [...], "
-                "\"conflicts\": [{\"point\": str, \"views\": [...]}]}"
-            ),
-            user_message=wrap_user_content(
-                consultation_summary, label="SPECIALIST_RESPONSES"
-            ),
-        )
-
-        response = await self._llm.call(
-            prompt=prompt, role="cross_check", temperature=0.1
-        )
-
-        try:
-            from ..llm.json_parser import extract_json
-
-            data = extract_json(response.content)
-            if data is None:
-                return CrossCheckResult(agreement_level=0.5)
-            agreement = float(data.get("agreement_level", 1.0))
-            should_escalate = agreement < self._config.escalation_threshold
-
-            return CrossCheckResult(
-                agreement_level=agreement,
-                conflicts=data.get("conflicts", []),
-                consensus_points=data.get("consensus_points", []),
-                should_escalate=should_escalate,
-                escalation_reason=(
-                    f"Significant specialist disagreement (agreement: {agreement:.0%})"
-                    if should_escalate
-                    else ""
-                ),
-            )
-        except (json.JSONDecodeError, ValueError):
-            return CrossCheckResult(agreement_level=0.5)
 
     async def _enforce_synthesis(
         self,

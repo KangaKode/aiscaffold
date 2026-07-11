@@ -57,6 +57,9 @@ class Reflection:
     detail: str = ""
     quality_metrics: dict[str, Any] = field(default_factory=dict)
     status: str = "recorded"
+    # Acting user whose deliberation produced this reflection ("" for
+    # library callers without a user identity).
+    created_by: str = ""
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -72,6 +75,7 @@ def _to_row(r: Reflection) -> dict:
         "quality_metrics_json": json.dumps(r.quality_metrics, default=str),
         "status": r.status,
         "created_at": r.created_at,
+        "created_by": r.created_by,
     }
 
 
@@ -87,12 +91,18 @@ def _count_today(store: LearningStore, tenant_id: str) -> int:
     return sum(1 for row in rows if str(row.get("created_at", "")).startswith(today))
 
 
-def reflect(result: Any, tenant_id: str, store: LearningStore) -> list[Reflection]:
+def reflect(
+    result: Any, tenant_id: str, store: LearningStore, created_by: str = ""
+) -> list[Reflection]:
     """Extract 0-3 process reflections from a round table result.
 
     Best-effort by design: storage failures are logged and skipped, and a
     daily per-tenant cap bounds table growth. `result` is duck-typed
     (RoundTableResult-shaped); missing fields simply produce no reflections.
+
+    created_by attributes stored reflections to the acting user whose
+    deliberation produced them (the API passes auth.user_id; the default
+    "" keeps direct library callers unchanged).
     """
     try:
         today_count = _count_today(store, tenant_id)
@@ -129,6 +139,7 @@ def reflect(result: Any, tenant_id: str, store: LearningStore) -> list[Reflectio
     for _score, reflection in candidates[:MAX_REFLECTIONS_PER_SESSION]:
         if DAILY_CAP - today_count - len(stored) <= 0:
             break
+        reflection.created_by = created_by or ""
         try:
             store.insert("reflections", _to_row(reflection))
             stored.append(reflection)

@@ -8,24 +8,23 @@ original claim.
 
 Lifecycle: PROPOSED -> APPROVED -> RETIRED (REJECTED is a terminal branch).
 APPROVED corrections can additionally be REVALIDATED in place: a human
-confirms the knowledge is still true, refreshing last_validated_at/by
-without changing status (learning/aging.py derives staleness from them).
+confirms the knowledge still holds, refreshing last_validated_at/by without
+changing status (learning/aging.py derives staleness from them).
 
-Four-eyes rule: the approver should differ from the proposer. Policy
-lives in learning/four_eyes.py: require_four_eyes=None (the default)
-defers to CORRECTIONS_FOUR_EYES ("strict" rejects self-approval; "warn",
-the default, allows it but logs loudly and records an integrity flag
-once). True/False pin the historical strict/off semantics.
+Four-eyes rule: the approver should differ from the proposer (policy in
+learning/four_eyes.py): require_four_eyes=None (the default) defers to
+CORRECTIONS_FOUR_EYES ("strict" rejects self-approval; "warn", the
+default, allows it but logs loudly and flags once). True/False pin the
+historical strict/off semantics.
 
-Security: PII is redacted from correction text before it is persisted
-(security.pii), and rendered correction text passes through
-sanitize_for_prompt so stored content cannot inject into prompts.
-Rendering respects a character budget (CORRECTION_CONTEXT_BUDGET env
+Security: PII is redacted before persistence (security.pii); rendered
+text passes through sanitize_for_prompt so stored content cannot inject
+into prompts, within a character budget (CORRECTION_CONTEXT_BUDGET env
 override). An optional ContentPolicy can gate propose().
 
 Concurrency: status transitions (approve/reject/retire) are conditional
-writes (learning/lifecycle.py): they only land while the row still holds
-the expected prior status; a lost race raises ValueError (409 at the API).
+writes (learning/lifecycle.py) that only land while the row still holds
+the expected prior status; a lost race raises ValueError (409 at API).
 
 Keep this file under 500 lines.
 """
@@ -96,6 +95,9 @@ class Correction:
                     "verified").
     status: One of the STATUS_* constants.
     created_by / approved_by: User identifiers for the four-eyes check.
+    source_surface: Which surface the write came through -- "api" for the
+                    corrections API route, "library" for direct manager
+                    calls ("" on pre-migration rows).
     """
 
     agent_id: str = ""
@@ -110,6 +112,7 @@ class Correction:
     approved_by: str = ""
     last_validated_at: str = ""
     last_validated_by: str = ""
+    source_surface: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:12])
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -121,31 +124,24 @@ class CorrectionsManager:
     Manages the correction lifecycle on top of a LearningStore.
 
     Usage:
-        store = get_learning_store()
-        mgr = CorrectionsManager(store, checkin_manager=CheckInManager())
-
-        c = mgr.propose(
-            agent_id="analyst",
-            original_claim="The API rate limit is 100/min",
-            corrected_claim="The API rate limit is 60/min",
-            reason="Confirmed in vendor docs",
-            evidence_level="documented",
-            created_by="alice",
-        )
+        mgr = CorrectionsManager(get_learning_store(),
+                                 checkin_manager=CheckInManager())
+        c = mgr.propose(agent_id="analyst",
+                        original_claim="The API rate limit is 100/min",
+                        corrected_claim="The API rate limit is 60/min",
+                        reason="Confirmed in vendor docs",
+                        evidence_level="documented", created_by="alice")
         mgr.approve(c.id, approved_by="bob")  # four-eyes: bob != alice
-
         block = mgr.get_approved_for_context(agent_id="analyst")
         # -> prompt-injectable text, capped at the character budget
 
     on_approve: optional callback invoked (best-effort) with the approved
-    Correction. Use it to feed downstream systems -- e.g., wire an
-    AgentTrustManager by building a FeedbackSignal(signal_type=
-    SignalType.MODIFY, agent_id=correction.agent_id) and calling
-    update_from_signal.
+    Correction -- e.g., feed an AgentTrustManager by building a
+    FeedbackSignal(SignalType.MODIFY) and calling update_from_signal.
 
-    content_policy: optional ContentPolicy instance. When set, propose()
-    screens the correction text: "rejected" raises ValueError, "flagged"
-    is recorded in metadata but still routes to the normal check-in flow.
+    content_policy: optional ContentPolicy. When set, propose() screens
+    the correction text: "rejected" raises ValueError, "flagged" is
+    recorded in metadata but still routes to the normal check-in flow.
     """
 
     def __init__(
@@ -174,14 +170,15 @@ class CorrectionsManager:
         tenant_id: str = "default",
         session_id: str = "",
         created_by: str = "",
+        source_surface: str = "library",
     ) -> Correction:
         """
         Persist a PROPOSED correction and (if configured) open a check-in.
 
-        PII in original_claim / corrected_claim / reason is redacted
-        before anything is persisted (counts land in metadata). When a
-        content policy is configured, "rejected" text raises ValueError;
-        "flagged" text is recorded in metadata and still proposed.
+        PII in the claim/reason text is redacted before persistence
+        (counts land in metadata). A content policy may reject the text
+        (ValueError) or flag it (recorded, still proposed). source_surface
+        records provenance: "library" (default) or "api" (the API route).
         """
         metadata: dict[str, Any] = {}
 
@@ -221,6 +218,7 @@ class CorrectionsManager:
             tenant_id=tenant_id,
             session_id=session_id,
             created_by=created_by,
+            source_surface=source_surface,
             metadata=metadata,
         )
         self._store.insert("corrections", self._to_row(correction))
@@ -325,11 +323,10 @@ class CorrectionsManager:
         """
         Re-validate an APPROVED correction: a human confirms it is still
         true, refreshing its staleness clock (last_validated_at/by) while
-        leaving status AND updated_at untouched. updated_at must stay a
-        pure lifecycle-change timestamp: bumping it here would zero the
-        governance report's fresh_only_via_revalidation metric and drag
-        old approvals back into updated_at-windowed pattern checks
-        (approval_patterns).
+        leaving status AND updated_at untouched -- updated_at must stay a
+        pure lifecycle-change timestamp or it would zero the governance
+        report's fresh_only_via_revalidation metric and drag old approvals
+        back into updated_at-windowed pattern checks (approval_patterns).
 
         Raises ValueError if the correction is missing or not APPROVED.
         """
@@ -467,6 +464,7 @@ class CorrectionsManager:
             "approved_by": correction.approved_by,
             "last_validated_at": correction.last_validated_at,
             "last_validated_by": correction.last_validated_by,
+            "source_surface": correction.source_surface,
             "created_at": correction.created_at,
             "updated_at": correction.updated_at,
             "metadata_json": json.dumps(correction.metadata, default=str),
@@ -493,6 +491,7 @@ class CorrectionsManager:
             approved_by=row.get("approved_by", ""),
             last_validated_at=row.get("last_validated_at") or "",
             last_validated_by=row.get("last_validated_by") or "",
+            source_surface=row.get("source_surface") or "",
             metadata=metadata,
             created_at=row.get("created_at", ""),
             updated_at=row.get("updated_at", ""),

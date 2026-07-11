@@ -106,6 +106,9 @@ class AgentInfo(BaseModel):
     interaction_count: int = 0
     suspended: bool = False
     credential_status: str = "none"  # "active" if a token hash is stored
+    # Identity-token expiry (ISO 8601 UTC); rotate before this passes or
+    # the agent is blocked at dispatch. None when no token is held.
+    expires_at: str | None = None
     last_active: str | None = None
     dormant: bool = False
 

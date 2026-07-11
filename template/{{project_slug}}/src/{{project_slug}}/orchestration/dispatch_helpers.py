@@ -16,10 +16,64 @@ from typing import Any
 
 from ..agents.capability import AgentCapability
 from ..agents.rate_limiter import DEFAULT_MAX_CALLS_PER_HOUR, AgentRateLimiter
+from ..learning.delegation import PHASE_ANALYZE, PHASE_CHALLENGE, PHASE_VOTE, record_dispatches
+from ..learning.flags import record_flag_hit
 from .identity_check import resolve_registry_entry, verify_agent_identity
 from .scope_filter import ScopeFilter
 
 logger = logging.getLogger(__name__)
+
+FLAG_TYPE_IDENTITY_BLOCKED = "agent_identity_blocked"
+
+# Strong references to in-flight identity-flag writes: a bare
+# loop.create_task result can be garbage-collected before it runs.
+_pending_flag_writes: set = set()
+
+
+def _record_identity_block(
+    store, agent_name: str, task: Any, component: str, reason: str
+) -> None:
+    """Fire-and-forget agent_identity_blocked integrity flag.
+
+    reason is the identity gate's block reason (a REASON_* constant
+    from identity_check.py: suspended / missing_token / ambiguous_name
+    / invalid_or_expired_token), recorded in the flag detail so
+    operators can tell an administrative suspension from a credential
+    problem. record_flag_hit (learning/flags.py) dedupes repeats of
+    the same agent+tenant into one unresolved flag with a hit counter
+    and escalates sustained hits -- and it never raises. Inside a
+    running event loop the blocking store I/O is scheduled off-loop
+    (asyncio.to_thread) WITHOUT being awaited, so the gate is never
+    slowed; sync library callers write inline. No store: silent no-op.
+    Any scheduling failure is logged and swallowed -- flag persistence
+    can never fail or slow dispatch.
+    """
+    if store is None:
+        return
+    tenant_id = getattr(task, "tenant_id", "default") or "default"
+    detail = {"component": component, "reason": reason}
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    try:
+        if loop is None:
+            record_flag_hit(
+                store, FLAG_TYPE_IDENTITY_BLOCKED, agent_name, tenant_id, detail
+            )
+            return
+        pending = loop.create_task(
+            asyncio.to_thread(
+                record_flag_hit,
+                store, FLAG_TYPE_IDENTITY_BLOCKED, agent_name, tenant_id, detail,
+            )
+        )
+        _pending_flag_writes.add(pending)
+        pending.add_done_callback(_pending_flag_writes.discard)
+    except Exception as exc:
+        logger.warning(
+            "[%s] identity-block flag not recorded (ignored): %s", component, exc
+        )
 
 
 def get_capability(registry: Any, agent: Any) -> AgentCapability | None:
@@ -91,13 +145,17 @@ def gate_agents(
     registry: Any,
     rate_limiter: AgentRateLimiter | None,
     component: str,
+    store: Any = None,
 ) -> tuple[list[tuple[Any, Any, AgentCapability | None]], int]:
     """Run the per-agent dispatch gates and scope-filter the task.
 
     The single gate sequence shared by every deliberation phase
     (analyze, challenge, vote):
       1. Identity verification (suspended / tokenless-remote / invalid
-         token agents are skipped, never fatal).
+         token agents are skipped, never fatal). With a store, each
+         block also records an ``agent_identity_blocked`` integrity
+         flag carrying the block reason (fire-and-forget -- see
+         _record_identity_block).
       2. Rate limit check against the agent's capability.
       3. Scope filtering of the task's ``context`` dict (agents with a
          capability declaring non-empty access_scopes see only those
@@ -106,14 +164,20 @@ def gate_agents(
 
     Returns ([(agent, scope_filtered_task, capability), ...], skipped)
     where skipped counts agents blocked by a gate. Works with
-    registry=None (all gates pass; no capability filtering).
+    registry=None (all gates pass; no capability filtering) and
+    store=None (blocks are logged only, as before).
     """
     scope_filter = ScopeFilter()
     gated: list[tuple[Any, Any, AgentCapability | None]] = []
     skipped = 0
     for agent in agents:
-        if not verify_agent_identity(agent, registry, component):
+        block_reason: list = []
+        if not verify_agent_identity(agent, registry, component, reason_out=block_reason):
             skipped += 1
+            _record_identity_block(
+                store, agent.name, task, component,
+                block_reason[0] if block_reason else "unknown",
+            )
             continue
         if not check_rate_limit(registry, agent, rate_limiter, component):
             skipped += 1
@@ -145,20 +209,31 @@ async def run_challenge_phase(
     analyses: list,
     registry: Any,
     component: str = "RoundTable",
+    store: Any = None,
+    delegation_recorder: Any = None,
 ) -> list:
     """Phase 2: agents challenge each other (mediated hub-and-spoke).
 
     Dispatch passes the same gates as Phase 1 (identity/suspension,
     rate limit, scope-filtered task) -- gates are re-checked, so an
-    agent suspended mid-run is excluded here.
+    agent suspended mid-run is excluded here. store enables the
+    identity-block flag; delegation_recorder (opt-in) records each
+    challenger with the names of the analysts it consumed.
     """
     rate_limiter = getattr(registry, "rate_limiter", None)
-    gated, skipped = gate_agents(agents, task, registry, rate_limiter, component)
+    gated, skipped = gate_agents(
+        agents, task, registry, rate_limiter, component, store=store
+    )
     if skipped:
         logger.warning(
             "[%s] %d agent(s) blocked by dispatch gates at challenge phase",
             component, skipped,
         )
+    record_dispatches(
+        delegation_recorder, task, PHASE_CHALLENGE,
+        [agent.name for agent, _, _ in gated],
+        [n for n in (getattr(a, "agent_name", "") for a in analyses) if n],
+    )
     results = await asyncio.gather(
         *[agent.challenge(agent_task, analyses) for agent, agent_task, _ in gated],
         return_exceptions=True,
@@ -179,6 +254,8 @@ async def run_voting_phase(
     registry: Any,
     component: str = "RoundTable",
     midrun_names: set[str] | None = None,
+    store: Any = None,
+    delegation_recorder: Any = None,
 ) -> tuple[list, int]:
     """Phase 3b: agents vote on the synthesis. Dissent is valuable.
 
@@ -201,7 +278,14 @@ async def run_voting_phase(
     from .round_table import AgentVote  # deferred: avoids an import cycle
 
     rate_limiter = getattr(registry, "rate_limiter", None)
-    gated, skipped = gate_agents(agents, task, registry, rate_limiter, component)
+    gated, skipped = gate_agents(
+        agents, task, registry, rate_limiter, component, store=store
+    )
+    record_dispatches(
+        delegation_recorder, task, PHASE_VOTE,
+        [agent.name for agent, _, _ in gated],
+        ["synthesis"],
+    )
     if midrun_names is not None:
         gated_names = {agent.name for agent, _, _ in gated}
         skipped = sum(
@@ -234,6 +318,8 @@ async def dispatch_with_gates(
     rate_limiter: AgentRateLimiter | None,
     component: str,
     baseline_tracker: Any = None,
+    store: Any = None,
+    delegation_recorder: Any = None,
 ) -> tuple[list[Any], int, int]:
     """Run analyze() on all agents in parallel with per-agent dispatch gates.
 
@@ -249,13 +335,23 @@ async def dispatch_with_gates(
     the task's tenant_id -- best-effort, never fatal, store write runs
     off the event loop. Callers that don't pass it are unaffected.
 
+    store: optional LearningStore enabling the identity-block integrity
+    flag (see gate_agents). delegation_recorder: opt-in phase-derivation
+    recorder; analyze dispatches derive from nothing upstream ([]).
+
     Returns (analyses, skipped_count, failed_count) where skipped_count is
     agents blocked by a gate and failed_count is agents whose analyze()
     raised. Works with registry=None (all gates pass; no filtering by
     registry capability).
     """
     scope_filter = ScopeFilter()
-    gated, skipped = gate_agents(agents, task, registry, rate_limiter, component)
+    gated, skipped = gate_agents(
+        agents, task, registry, rate_limiter, component, store=store
+    )
+    record_dispatches(
+        delegation_recorder, task, PHASE_ANALYZE,
+        [agent.name for agent, _, _ in gated], [],
+    )
     dispatched = [agent for agent, _, _ in gated]
     capabilities = [capability for _, _, capability in gated]
     coros = [
