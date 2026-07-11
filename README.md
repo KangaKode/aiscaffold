@@ -5,7 +5,7 @@
 
 **A security-first scaffold for multi-agent AI systems, whatever your domain.** Multi-agent deliberation with security controls wired in on day one -- each control mapped to the code that implements it and the tests that prove it, with [documented non-claims](template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md#known-limitations--non-claims) about what it does *not* guarantee.
 
-One `copier` command generates a complete project: round-table deliberation with six adversarial safety agents, evidence-graded claims, 3-layer prompt-injection defense, tenant-aware isolation, audit trails, human approval gates, and Docker/Kubernetes deployment -- validated by 868 generated tests at 87% coverage.
+One `copier` command generates a complete project: round-table deliberation with six adversarial safety agents, evidence-graded claims, 3-layer prompt-injection defense, tenant-aware isolation, audit trails, human approval gates, and Docker/Kubernetes deployment -- validated by 894 generated tests at 87% coverage.
 
 The scaffold red-teams itself: its own review process caught a tenant-isolation bug where remote agents silently reverted to public visibility after a restart -- [here is the fix](https://github.com/KangaKode/roundtable/commit/9168334ac050e22022ab2787b7b3ff3ce06796cc), tests included. An [adversarial harness](template/%7B%7Bproject_slug%7D%7D/tests/adversarial_agents.py.jinja) of six hostile agents attacks every generated project in CI.
 
@@ -60,7 +60,7 @@ cd my-project   # the destination directory IS the project root
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
-make test    # 864 tests pass from day 1 (868 total; 4 opt-in skips)
+make test    # 890 tests pass from day 1 (894 total; 4 opt-in skips)
 make demo    # the round table above, on your machine (no API keys)
 make serve   # start the API gateway
 ```
@@ -95,7 +95,7 @@ Ready for regulated contexts (finance, healthcare, legal) without being limited 
 - **Security controls** -- agents are authenticated, least-privileged, monitored, and removable, like any other insider: per-agent JWT identity (hashed at rest) with rate limits and scope filtering, activity and extraction monitoring, plus 3-layer prompt-injection defense, SSRF protection, and tenant-scoped isolation. What runs by default vs. what ships as a wire-it-yourself detector is stated explicitly in the [security model](docs/SECURITY_MODEL.md).
 - **Governance** -- graduated autonomy with approval gates, per-tenant cost budgets, PII redaction, tamper-evident audit trails, GDPR-style erasure, four-eyes correction approval. Full capability matrix with implementation and test mapping: [GOVERNANCE.md](template/%7B%7Bproject_slug%7D%7D/docs/GOVERNANCE.md).
 - **Compounding knowledge** -- feedback becomes trust scores that steer agent routing; rejected answers become four-eyes-approved corrections that ground every resolution tier (single-shot, chat, and round table); each approval auto-distills recurring corrections into reusable error schemas and scans for contradictions. The platform gets more accurate with use, and never adapts without asking first.
-- **Cost control** -- provider prompt caching (up to ~90% savings on cached content), per-call token tracking, budget enforcement, plus a tiered model router shipped as a component you wire into your client factory.
+- **Cost control** -- provider prompt caching (up to ~90% savings on cached content), per-call token tracking, budget enforcement, plus opt-in tiered model routing (`MODEL_ROUTING_ENABLED`): per-role tier selection with budget-aware downgrades and one cascade step up-tier on final failure.
 - **Deployment** -- Dockerfile, docker-compose, Kubernetes manifests (HPA, security context, secrets).
 - **Operations** -- optional Prometheus metrics (`[metrics]` extra), a Locust load harness (`[load]` extra) with a mock-LLM compose override, and an operations runbook covering per-component failure postures, recovery, and backups.
 
