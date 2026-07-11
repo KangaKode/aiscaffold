@@ -12,9 +12,11 @@ downstream dispatch. One row per gated dispatch, keyed by the task id:
   vote      -- derived_from ["synthesis"] (voters consume the synthesis)
 
 Detect-only, default OFF (DELEGATION_RECORDS_ENABLED, lenient parse),
-never enforced, never auto-analyzed. Writes are fire-and-forget: the
-async helper runs the blocking store I/O off the event loop and
-swallows every error, so recording can never fail or slow a dispatch.
+never enforced, never auto-analyzed. Writes are fire-and-forget:
+record_dispatches schedules the blocking store I/O off the event loop
+WITHOUT awaiting it and swallows every error, so recording can never
+fail or slow a dispatch -- even a hung store only stalls the write
+task, never the phase.
 
 Keep this file under 200 lines.
 """
@@ -79,32 +81,62 @@ class DelegationRecorder:
             self.record(correlation_id, phase, agent_id, derived_from, tenant_id)
 
 
-async def record_dispatches(
+# Strong references to in-flight delegation writes: a bare
+# loop.create_task result can be garbage-collected before it runs.
+_pending_writes: set = set()
+
+
+def record_dispatches(
     recorder,
     task,
     phase: str,
     agent_ids: list[str],
     derived_from: list[str],
 ) -> None:
-    """Record a phase's gated dispatches off the event loop.
+    """Schedule a phase's dispatch records without blocking the phase.
 
     No-op when the recorder is None (toggle off / no store) or nothing
-    was dispatched. Fire-and-forget: any failure is logged and
-    swallowed so dispatch is never broken by record-keeping.
+    was dispatched. Fire-and-forget, mirroring the identity-flag
+    pattern in orchestration/dispatch_helpers.py: inside a running
+    event loop the blocking store I/O is scheduled off-loop
+    (asyncio.to_thread) WITHOUT being awaited, so even a slow or hung
+    store never delays the phase; sync library callers write inline.
+    Store errors are swallowed inside record_many, and any scheduling
+    failure is logged and swallowed here.
     """
     if recorder is None or not agent_ids:
         return
+    args = (
+        getattr(task, "id", "") or "",
+        phase,
+        agent_ids,
+        derived_from,
+        getattr(task, "tenant_id", "default") or "default",
+    )
     try:
-        await asyncio.to_thread(
-            recorder.record_many,
-            getattr(task, "id", "") or "",
-            phase,
-            agent_ids,
-            derived_from,
-            getattr(task, "tenant_id", "default") or "default",
-        )
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    try:
+        if loop is None:
+            recorder.record_many(*args)
+            return
+        pending = loop.create_task(asyncio.to_thread(recorder.record_many, *args))
+        _pending_writes.add(pending)
+        pending.add_done_callback(_pending_writes.discard)
     except Exception as exc:
-        logger.warning(f"[Delegation] dispatch recording failed (ignored): {exc}")
+        logger.warning(f"[Delegation] dispatch recording not scheduled (ignored): {exc}")
+
+
+async def flush_pending_writes() -> None:
+    """Await any scheduled delegation writes still in flight.
+
+    Determinism helper for tests and graceful shutdown -- the runtime
+    dispatch path never calls it.
+    """
+    pending = list(_pending_writes)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 def create_delegation_recorder(store) -> DelegationRecorder | None:

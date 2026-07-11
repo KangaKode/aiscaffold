@@ -9,6 +9,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Block reasons exposed via verify_agent_identity's reason_out parameter.
+# (Names put TOKEN first so secret scanners don't mistake the reason
+# strings for credential literals.)
+REASON_AMBIGUOUS_NAME = "ambiguous_name"
+REASON_SUSPENDED = "suspended"
+REASON_TOKEN_MISSING = "missing_token"
+REASON_TOKEN_INVALID_OR_EXPIRED = "invalid_or_expired_token"
+
 
 def resolve_registry_entry(registry: Any, agent: Any) -> Any | None:
     """Resolve the registry entry for an agent by OBJECT identity.
@@ -28,10 +36,15 @@ def verify_agent_identity(
     agent: Any,
     registry: Any | None,
     caller: str = "Orchestrator",
+    reason_out: list | None = None,
 ) -> bool:
     """Verify agent identity token before dispatch.
 
-    Returns True if the agent is allowed to participate.
+    Returns True if the agent is allowed to participate. When blocked
+    and reason_out (a list) is given, one REASON_* string is appended
+    so callers can distinguish an administrative suspension from a
+    credential problem -- the bool contract is unchanged for callers
+    that ignore it.
 
     Policy:
     - No registry, or agent not in registry: allowed (backward compatible).
@@ -44,6 +57,12 @@ def verify_agent_identity(
     - Remote agents without tokens: blocked.
     - Invalid/expired tokens: blocked.
     """
+
+    def _blocked(reason: str) -> bool:
+        if reason_out is not None:
+            reason_out.append(reason)
+        return False
+
     if registry is None:
         return True
 
@@ -58,7 +77,7 @@ def verify_agent_identity(
                 caller,
                 agent.name,
             )
-            return False
+            return _blocked(REASON_AMBIGUOUS_NAME)
         return True
 
     if getattr(entry, "suspended", False):
@@ -67,7 +86,7 @@ def verify_agent_identity(
             caller,
             agent.name,
         )
-        return False
+        return _blocked(REASON_SUSPENDED)
 
     identity_token = getattr(entry, "identity_token", None)
     if identity_token is None:
@@ -77,7 +96,7 @@ def verify_agent_identity(
                 caller,
                 agent.name,
             )
-            return False
+            return _blocked(REASON_TOKEN_MISSING)
         return True
 
     from ..agents.identity import verify_token
@@ -89,5 +108,5 @@ def verify_agent_identity(
             caller,
             agent.name,
         )
-        return False
+        return _blocked(REASON_TOKEN_INVALID_OR_EXPIRED)
     return True

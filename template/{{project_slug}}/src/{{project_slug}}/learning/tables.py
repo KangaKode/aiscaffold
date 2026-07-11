@@ -308,10 +308,13 @@ MIGRATIONS: list[list[str]] = [
     # v8 -- identity/provenance columns + delegation records.
     # ALTERs: the pre-v8 shapes of audit_events and reflections are
     # frozen in _BASELINE_COLUMN_FREEZE (and corrections was frozen at
-    # v1), so each ALTER runs exactly once on fresh installs and
-    # upgraded databases alike. delegation_records is a new table
-    # (budget_configs/v6 precedent): the baseline already creates it on
-    # fresh installs; this creates it on upgraded DBs.
+    # v1), so these ALTERs are convergent rather than exactly-once: on
+    # fresh installs and freeze-respecting upgrades they add the column;
+    # on old v1-stamped DBs whose v2/v4 replays created the tables at
+    # live shape, they land on the duplicate-column tolerance path and
+    # are skipped. delegation_records is a new table (budget_configs/v6
+    # precedent): the baseline already creates it on fresh installs;
+    # this creates it on upgraded DBs.
     [
         "ALTER TABLE audit_events ADD COLUMN user_id TEXT DEFAULT ''",
         "ALTER TABLE corrections ADD COLUMN source_surface TEXT DEFAULT ''",

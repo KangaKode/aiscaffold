@@ -133,7 +133,7 @@ class DeliberationAuditor:
                     "outcome": outcome[:MAX_DETAIL_STR_CHARS],
                     "detail_json": json.dumps(_clean_detail(detail), default=str),
                     "created_at": datetime.now().isoformat(),
-                    "user_id": str(user_id or ""),
+                    "user_id": str(user_id or "")[:64],
                 },
             )
         except Exception as exc:

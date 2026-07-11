@@ -18,6 +18,7 @@ Keep this file under 500 lines (helpers live in chat_helpers.py).
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -328,8 +329,10 @@ class ChatOrchestrator:
         from ..orchestration.round_table import RoundTableTask
         from .dispatch_helpers import dispatch_with_gates
 
+        # uuid suffix keeps the id unique across sessions/days/tenants --
+        # it doubles as the correlation id for delegation records.
         task = RoundTableTask(
-            id=f"chat_{datetime.now().strftime('%H%M%S')}",
+            id=f"chat_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:8]}",
             content=message,
             tenant_id=tenant_id,
         )

@@ -30,13 +30,19 @@ FLAG_TYPE_IDENTITY_BLOCKED = "agent_identity_blocked"
 _pending_flag_writes: set = set()
 
 
-def _record_identity_block(store, agent_name: str, task: Any, component: str) -> None:
+def _record_identity_block(
+    store, agent_name: str, task: Any, component: str, reason: str
+) -> None:
     """Fire-and-forget agent_identity_blocked integrity flag.
 
-    record_flag_hit (learning/flags.py) dedupes repeats of the same
-    agent+tenant into one unresolved flag with a hit counter and
-    escalates sustained hits -- and it never raises. Inside a running
-    event loop the blocking store I/O is scheduled off-loop
+    reason is the identity gate's block reason (a REASON_* constant
+    from identity_check.py: suspended / missing_token / ambiguous_name
+    / invalid_or_expired_token), recorded in the flag detail so
+    operators can tell an administrative suspension from a credential
+    problem. record_flag_hit (learning/flags.py) dedupes repeats of
+    the same agent+tenant into one unresolved flag with a hit counter
+    and escalates sustained hits -- and it never raises. Inside a
+    running event loop the blocking store I/O is scheduled off-loop
     (asyncio.to_thread) WITHOUT being awaited, so the gate is never
     slowed; sync library callers write inline. No store: silent no-op.
     Any scheduling failure is logged and swallowed -- flag persistence
@@ -45,7 +51,7 @@ def _record_identity_block(store, agent_name: str, task: Any, component: str) ->
     if store is None:
         return
     tenant_id = getattr(task, "tenant_id", "default") or "default"
-    detail = {"component": component, "reason": "dispatch_gate_identity_block"}
+    detail = {"component": component, "reason": reason}
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -148,7 +154,8 @@ def gate_agents(
       1. Identity verification (suspended / tokenless-remote / invalid
          token agents are skipped, never fatal). With a store, each
          block also records an ``agent_identity_blocked`` integrity
-         flag (fire-and-forget -- see _record_identity_block).
+         flag carrying the block reason (fire-and-forget -- see
+         _record_identity_block).
       2. Rate limit check against the agent's capability.
       3. Scope filtering of the task's ``context`` dict (agents with a
          capability declaring non-empty access_scopes see only those
@@ -164,9 +171,13 @@ def gate_agents(
     gated: list[tuple[Any, Any, AgentCapability | None]] = []
     skipped = 0
     for agent in agents:
-        if not verify_agent_identity(agent, registry, component):
+        block_reason: list = []
+        if not verify_agent_identity(agent, registry, component, reason_out=block_reason):
             skipped += 1
-            _record_identity_block(store, agent.name, task, component)
+            _record_identity_block(
+                store, agent.name, task, component,
+                block_reason[0] if block_reason else "unknown",
+            )
             continue
         if not check_rate_limit(registry, agent, rate_limiter, component):
             skipped += 1
@@ -218,7 +229,7 @@ async def run_challenge_phase(
             "[%s] %d agent(s) blocked by dispatch gates at challenge phase",
             component, skipped,
         )
-    await record_dispatches(
+    record_dispatches(
         delegation_recorder, task, PHASE_CHALLENGE,
         [agent.name for agent, _, _ in gated],
         [n for n in (getattr(a, "agent_name", "") for a in analyses) if n],
@@ -270,7 +281,7 @@ async def run_voting_phase(
     gated, skipped = gate_agents(
         agents, task, registry, rate_limiter, component, store=store
     )
-    await record_dispatches(
+    record_dispatches(
         delegation_recorder, task, PHASE_VOTE,
         [agent.name for agent, _, _ in gated],
         ["synthesis"],
@@ -337,7 +348,7 @@ async def dispatch_with_gates(
     gated, skipped = gate_agents(
         agents, task, registry, rate_limiter, component, store=store
     )
-    await record_dispatches(
+    record_dispatches(
         delegation_recorder, task, PHASE_ANALYZE,
         [agent.name for agent, _, _ in gated], [],
     )
