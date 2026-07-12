@@ -320,13 +320,15 @@ class TestBurstDetection:
         monkeypatch.setenv(TRUST_BURST_ENV, "true")
         now = datetime.now()
         for i in range(BURST_POSITIVE_THRESHOLD):
-            sig = _signal("agent_c", SignalType.ACCEPT, f"s{i}", at=now)
+            sig = _signal("agent_c", SignalType.ACCEPT, f"SESSION-TOKEN-{i}", at=now)
             sig.content = "SECRET-USER-TEXT"
             tracker.record(sig)
         check_feedback_burst(store, tracker, "agent_c")
         flags = _flags(store, "trust_positive_burst")
         assert len(flags) == 1
-        assert "SECRET-USER-TEXT" not in (flags[0].get("detail_json") or "")
+        detail = flags[0].get("detail_json") or ""
+        assert "SECRET-USER-TEXT" not in detail
+        assert "SESSION-TOKEN" not in detail  # session ids are caller text too
 
 
 class TestBurstFailureModes:

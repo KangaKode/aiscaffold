@@ -107,15 +107,18 @@ async def record_feedback(
     # for the legacy-stack read; the flag lands in the caller's RESOLVED
     # tenant so tenant-scoped anomaly listing surfaces it.
     if signal.agent_id and resolve_trust_flags().burst_enabled:
-        await asyncio.to_thread(
-            check_feedback_burst,
-            getattr(request.app.state, "learning_store", None),
-            tracker,
-            signal.agent_id,
-            signal.project_id,
-            tenant_id=auth.tenant_id,
-            checkin_manager=getattr(request.app.state, "checkin_manager", None),
-        )
+        try:
+            await asyncio.to_thread(
+                check_feedback_burst,
+                getattr(request.app.state, "learning_store", None),
+                tracker,
+                signal.agent_id,
+                signal.project_id,
+                tenant_id=auth.tenant_id,
+                checkin_manager=getattr(request.app.state, "checkin_manager", None),
+            )
+        except Exception as exc:  # belt over the guard's own handler
+            logger.warning(f"[Feedback] trust burst check failed (non-fatal): {exc}")
 
     return FeedbackResponse(
         id=recorded.id,
