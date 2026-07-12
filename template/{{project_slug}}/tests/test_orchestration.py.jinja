@@ -282,6 +282,37 @@ class TestSentinelEnforcement:
         assert result.consensus_reached is False
 
     @pytest.mark.asyncio
+    async def test_enforced_halt_audited_as_sentinel_refused(self, mock_agents):
+        """Regression: the audit trail must record a Sentinel-enforced halt
+        as its own outcome, not mislabel it no_consensus (which would make
+        intentional blocks look like failed deliberations in the audit log
+        and governance reports)."""
+        from {{project_slug}}.orchestration.deliberation_audit import (
+            DeliberationAuditor,
+            audited_round_table,
+        )
+
+        events = []
+
+        class RecordingStore:
+            def insert(self, table, row):
+                events.append(row)
+
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_HIGH_VERDICT})
+        rt = RoundTable(
+            agents=mock_agents,
+            config=_enforcement_config(sentinel_enforcement=True),
+            llm_client=llm,
+        )
+        auditor = DeliberationAuditor(store=RecordingStore())
+        result = await audited_round_table(
+            rt, RoundTableTask(id="t_audit", content="task"), auditor
+        )
+        assert result.sentinel_refusal is not None
+        completed = [e for e in events if e["event_type"] == "deliberation_completed"]
+        assert completed and completed[0]["outcome"] == "sentinel_refused"
+
+    @pytest.mark.asyncio
     async def test_flag_on_safe_verdict_matches_flag_off(self, mock_agents):
         """Enforcement on + SAFE verdict completes exactly like flag off."""
         for enforcement in (True, None):
