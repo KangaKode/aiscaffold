@@ -253,6 +253,7 @@ class RoundTable:
         self._learning_store = learning_store
         self._delegation_recorder = delegation_recorder
         self._core_agent_names: set[str] = set()
+        self._sentinel_agent: Any = None
 
         if config.include_core_agents:
             try:
@@ -260,6 +261,7 @@ class RoundTable:
                 core = get_core_agents(llm_client=llm_client)
                 core_names = {a.name for a in core}
                 self._core_agent_names = core_names
+                self._sentinel_agent = next((a for a in core if a.name == "sentinel"), None)
                 user_agents = [a for a in agents if a.name not in core_names]
                 self.agents = core + user_agents
                 logger.info(
@@ -274,11 +276,11 @@ class RoundTable:
             self.agents = agents
             logger.info(f"[RoundTable] Initialized with {len(agents)} agents (core agents disabled)")
 
-        # Opt-in Sentinel enforcement (default off; keys on the CORE Sentinel
-        # only -- see round_table_helpers.init_sentinel_enforcement).
+        # Opt-in Sentinel enforcement (default off; binds to the CORE Sentinel
+        # OBJECT -- see round_table_helpers.init_sentinel_enforcement).
         from .round_table_helpers import init_sentinel_enforcement
-        (self._sentinel_enforcement, self._sentinel_name,
-         self._rate_limit_exempt) = init_sentinel_enforcement(config, self._core_agent_names)
+        (self._sentinel_enforcement,
+         self._rate_limit_exempt) = init_sentinel_enforcement(config, self._sentinel_agent)
 
     async def run(self, task: RoundTableTask) -> RoundTableResult:
         """Execute the full phased round table protocol."""
@@ -432,12 +434,13 @@ class RoundTable:
 
         Returns (analyses, failed_agent_count, sentinel_analysis):
         failed_agent_count is agents skipped by a gate plus agents whose
-        analyze() raised; sentinel_analysis is the core Sentinel's analysis
-        captured BEFORE the evidence pipeline (see
-        round_table_helpers.capture_sentinel_analysis).
+        analyze() raised; sentinel_analysis is the core Sentinel OBJECT's
+        analysis, captured at dispatch (identity-bound, immune to
+        agent_name spoofing) and BEFORE the evidence pipeline.
         """
         from .dispatch_helpers import dispatch_with_gates
 
+        capture = {"agent": self._sentinel_agent} if self._sentinel_enforcement else None
         rate_limiter = getattr(self._registry, "rate_limiter", None)
         analyses, skipped, failed = await dispatch_with_gates(
             self.agents, task, self._registry, rate_limiter, "RoundTable",
@@ -445,11 +448,9 @@ class RoundTable:
             store=self._learning_store,
             delegation_recorder=self._delegation_recorder,
             rate_limit_exempt=self._rate_limit_exempt,
+            capture_sink=capture,
         )
-
-        from .round_table_helpers import capture_sentinel_analysis
-        sentinel_analysis = capture_sentinel_analysis(
-            analyses, self._sentinel_name if self._sentinel_enforcement else None)
+        sentinel_analysis = capture.get("analysis") if capture else None
 
         if self.config.enforce_evidence:
             from .round_table_helpers import enforce_evidence

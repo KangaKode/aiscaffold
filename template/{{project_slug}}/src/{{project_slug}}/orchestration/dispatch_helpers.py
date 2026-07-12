@@ -334,6 +334,7 @@ async def dispatch_with_gates(
     store: Any = None,
     delegation_recorder: Any = None,
     rate_limit_exempt: frozenset = frozenset(),
+    capture_sink: dict | None = None,
 ) -> tuple[list[Any], int, int]:
     """Run analyze() on all agents in parallel with per-agent dispatch gates.
 
@@ -353,6 +354,12 @@ async def dispatch_with_gates(
     flag (see gate_agents). delegation_recorder: opt-in phase-derivation
     recorder; analyze dispatches derive from nothing upstream ([]).
     rate_limit_exempt skips only the rate gate (see gate_agents).
+
+    capture_sink: optional {"agent": obj} dict. When the dispatched agent
+    IS that exact object (identity, not name -- an analysis whose
+    agent_name lies cannot satisfy it), its analysis is also stored under
+    capture_sink["analysis"]. Used by Sentinel enforcement to bind the
+    trigger to the core Sentinel object.
 
     Returns (analyses, skipped_count, failed_count) where skipped_count is
     agents blocked by a gate and failed_count is agents whose analyze()
@@ -384,6 +391,8 @@ async def dispatch_with_gates(
             failed += 1
             continue
         r, duration = item
+        if capture_sink is not None and dispatched[i] is capture_sink.get("agent"):
+            capture_sink["analysis"] = r
         capability = capabilities[i]
         violation_count = 0
         observations = getattr(r, "observations", None)

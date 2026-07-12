@@ -187,6 +187,11 @@ _SENTINEL_SAFE_VERDICT = (
     '{"risk_level": "SAFE", "reasoning": "No risk indicators", '
     '"indicators": [], "recommended_action": "proceed"}'
 )
+_SENTINEL_PREMISE_VERDICT = (
+    '{"risk_level": "ELEVATED", "reasoning": "Task asserts a false premise", '
+    '"indicators": [], "recommended_action": "flag_for_review", '
+    '"premise_valid": false, "refusal_reason": "false_premise"}'
+)
 _GENERIC_AGENT_JSON = (
     '{"observations": [{"finding": "generic finding", "evidence": "generic evidence", '
     '"severity": "info", "confidence": 0.8}], "recommendations": []}'
@@ -311,6 +316,36 @@ class TestSentinelEnforcement:
         assert result.sentinel_refusal is not None
         completed = [e for e in events if e["event_type"] == "deliberation_completed"]
         assert completed and completed[0]["outcome"] == "sentinel_refused"
+
+    @pytest.mark.asyncio
+    async def test_flag_on_premise_refusal_maps_to_sentinel_premise(
+        self, mock_agents
+    ):
+        """The real screening path can also refuse the premise: a live
+        Sentinel verdict with premise_valid=false and a policy reason
+        (false_premise / out_of_scope / ...) must map to the
+        sentinel_premise refusal, not sentinel_unavailable."""
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_PREMISE_VERDICT})
+        rt = RoundTable(
+            agents=mock_agents,
+            config=_enforcement_config(sentinel_enforcement=True),
+            llm_client=llm,
+        )
+        result = await rt.run(RoundTableTask(id="t_premise", content="task"))
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_premise"
+        assert result.sentinel_refusal.detail == "false_premise"
+        assert result.synthesis is None
+
+    @pytest.mark.asyncio
+    async def test_flag_off_premise_verdict_stays_advisory(self, mock_agents):
+        """The premise-verdict pair: flag off, the same Sentinel premise
+        refusal stays advisory and the run completes."""
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_PREMISE_VERDICT})
+        rt = RoundTable(agents=mock_agents, config=_enforcement_config(), llm_client=llm)
+        result = await rt.run(RoundTableTask(id="t_premise_off", content="task"))
+        assert result.sentinel_refusal is None
+        assert result.synthesis is not None
 
     @pytest.mark.asyncio
     async def test_flag_on_safe_verdict_matches_flag_off(self, mock_agents):

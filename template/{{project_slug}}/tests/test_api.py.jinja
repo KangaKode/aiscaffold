@@ -324,6 +324,30 @@ class TestSentinelEnforcementAPI:
         assert outcomes == ["refused_sentinel_missing"]
 
     @pytest.mark.asyncio
+    async def test_sentinel_premise_maps_distinct_metric_outcome(
+        self, enforcement_client, monkeypatch
+    ):
+        from {{ project_slug }}.orchestration.round_table import RoundTableResult
+        from {{ project_slug }}.orchestration.round_table_helpers import SentinelRefusal
+
+        client, _ = enforcement_client
+        outcomes = []
+        monkeypatch.setattr(
+            round_table, "record_deliberation",
+            lambda outcome, duration: outcomes.append(outcome),
+        )
+        _FakeRoundTable.canned_result = RoundTableResult(
+            task_id="pending",
+            sentinel_refusal=SentinelRefusal(
+                reason="sentinel_premise", detail="false_premise",
+            ),
+        )
+        r = await client.post("/api/v1/round-table/tasks", json={"content": "task"})
+        assert r.status_code == 200
+        assert r.json()["refusal_reason"] == "sentinel_premise"
+        assert outcomes == ["refused_sentinel_premise"]
+
+    @pytest.mark.asyncio
     async def test_premise_refusal_keeps_premise_gate_source_and_metric(
         self, enforcement_client, monkeypatch
     ):

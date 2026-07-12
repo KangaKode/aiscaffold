@@ -41,41 +41,31 @@ def resolve_sentinel_enforcement(configured: bool | None) -> bool:
 
 
 def init_sentinel_enforcement(
-    config: "RoundTableConfig", core_agent_names: set
-) -> tuple[bool, str | None, frozenset]:
+    config: "RoundTableConfig", sentinel_agent: Any
+) -> tuple[bool, frozenset]:
     """Resolve the enforcement state once, at RoundTable init.
 
-    Returns (enabled, sentinel_name, rate_limit_exempt). Enforcement
-    keys on the CORE Sentinel only: an agent merely named "sentinel"
-    outside the core roster never satisfies it and never earns the
-    rate-limit exemption (sentinel_name is None unless the core roster
-    contains Sentinel).
+    sentinel_agent is the core roster's Sentinel OBJECT (None when the
+    roster is off or failed to load). Enforcement binds to that exact
+    object -- its analysis is captured at dispatch by object identity
+    (see dispatch_helpers.dispatch_with_gates capture_sink), so neither
+    an agent merely named "sentinel" nor an analysis whose agent_name
+    lies can satisfy it or earn the rate-limit exemption.
+    Returns (enabled, rate_limit_exempt).
     """
     enabled = resolve_sentinel_enforcement(config.sentinel_enforcement)
-    sentinel_name = "sentinel" if "sentinel" in core_agent_names else None
-    if enabled and sentinel_name is None:
+    if enabled and sentinel_agent is None:
         logger.warning(
             "[RoundTable] Sentinel enforcement is ON but the core Sentinel "
             "is not on the roster -- every run will refuse with "
             "sentinel_missing"
         )
-    exempt = frozenset({sentinel_name}) if enabled and sentinel_name else frozenset()
-    return enabled, sentinel_name, exempt
-
-
-def capture_sentinel_analysis(
-    analyses: list, sentinel_name: str | None
-) -> "AgentAnalysis | None":
-    """Pre-pipeline capture of the core Sentinel's Phase 1 analysis.
-
-    Called on the raw dispatch output, BEFORE enforce_evidence runs, so
-    the enforcement trigger survives any pipeline drop or rewrite.
-    Returns None when enforcement is off (sentinel_name None) or the
-    Sentinel produced no analysis.
-    """
-    if sentinel_name is None:
-        return None
-    return next((a for a in analyses if a.agent_name == sentinel_name), None)
+    exempt = (
+        frozenset({sentinel_agent.name})
+        if enabled and sentinel_agent is not None
+        else frozenset()
+    )
+    return enabled, exempt
 
 
 @dataclass
@@ -93,8 +83,10 @@ class SentinelRefusal:
                               off, core load failure, dispatch gate,
                               analyze() crash)
 
-    detail and observation are sanitized before they land here -- they
-    flow into artifacts and API responses.
+    detail and observation flow into local artifacts only; the API
+    response surfaces just the bounded reason enum. Surfaced strings are
+    length-capped and null-stripped (sanitize_for_prompt), NOT
+    injection-neutralized -- treat artifact contents as untrusted.
     """
 
     reason: str
