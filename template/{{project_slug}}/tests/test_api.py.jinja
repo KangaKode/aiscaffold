@@ -1,6 +1,8 @@
 {% if include_api_gateway -%}
 """API integration tests using FastAPI TestClient."""
 
+import uuid
+
 import pytest
 from fastapi import Request
 from httpx import AsyncClient, ASGITransport
@@ -9,6 +11,8 @@ from {{ project_slug }}.api.gateway import create_app
 from {{ project_slug }}.api.middleware.auth import AuthContext, verify_api_key
 from {{ project_slug }}.api.models.responses import RoundTableResultResponse
 from {{ project_slug }}.api.routes import round_table
+from {{ project_slug }}.learning.store import SqliteLearningStore
+from {{ project_slug }}.learning.trust_guard import TRUST_BURST_ENV
 
 
 @pytest.fixture
@@ -625,8 +629,7 @@ class TestFeedbackAPI:
 
 
 class _RaisingStore:
-    """Every operation raises: AssertionError = flag-off leak canary,
-    RuntimeError = store down."""
+    """Raises on every op: AssertionError = leak canary, RuntimeError = down."""
 
     def __init__(self, exc):
         self._exc = exc
@@ -659,8 +662,6 @@ class TestTrustGuardFeedbackRoute:
     async def test_feedback_route_unchanged_flag_off(self, feedback_app, monkeypatch):
         """T3: with TRUST_* unset the route behaves exactly as before --
         the burst path is never entered and the store is never touched."""
-        from {{ project_slug }}.learning.trust_guard import TRUST_BURST_ENV
-
         monkeypatch.delenv(TRUST_BURST_ENV, raising=False)
         app, client = feedback_app
         app.state.learning_store = _RaisingStore(
@@ -680,8 +681,6 @@ class TestTrustGuardFeedbackRoute:
     ):
         """T10 (route variant): burst enabled + broken portable store ->
         feedback recording still succeeds (fire-and-forget seam)."""
-        from {{ project_slug }}.learning.trust_guard import TRUST_BURST_ENV
-
         monkeypatch.setenv(TRUST_BURST_ENV, "true")
         app, client = feedback_app
         app.state.learning_store = _RaisingStore(RuntimeError("store down"))
@@ -699,10 +698,6 @@ class TestTrustGuardFeedbackRoute:
         """Bugbot regression: the flag row is keyed to the caller's
         RESOLVED tenant (auth), not the signal's default project, so
         tenant-scoped anomaly listing surfaces it."""
-        import uuid
-        from {{ project_slug }}.learning.store import SqliteLearningStore
-        from {{ project_slug }}.learning.trust_guard import TRUST_BURST_ENV
-
         monkeypatch.setenv(TRUST_BURST_ENV, "true")
         app, client = feedback_app
         store = SqliteLearningStore(db_path=tmp_path / "flags.db")
@@ -734,14 +729,10 @@ class TestTrustGuardFeedbackRoute:
     async def test_burst_falls_back_to_shared_store(
         self, feedback_app, tmp_path, monkeypatch
     ):
-        """Bugbot regression: with activity tracking off the gateway never
-        sets app.state.learning_store -- the route falls back to the
-        shared store factory instead of degrading to a warning no-op."""
-        import uuid
+        """Bugbot regressions: with activity tracking off (no
+        app.state.learning_store) the route falls back to the shared store
+        factory instead of no-opping, and PINS the result once."""
         from {{ project_slug }}.api.routes import feedback as fb_mod
-        from {{ project_slug }}.learning.store import SqliteLearningStore
-        from {{ project_slug }}.learning.trust_guard import TRUST_BURST_ENV
-
         monkeypatch.setenv(TRUST_BURST_ENV, "true")
         app, client = feedback_app
         try:
@@ -749,7 +740,13 @@ class TestTrustGuardFeedbackRoute:
         except AttributeError:
             pass
         store = SqliteLearningStore(db_path=tmp_path / "shared.db")
-        monkeypatch.setattr(fb_mod, "get_learning_store", lambda: store)
+        factory_calls = []
+
+        def factory():
+            factory_calls.append(1)
+            return store
+
+        monkeypatch.setattr(fb_mod, "get_learning_store", factory)
         agent = f"lazy_store_{uuid.uuid4().hex[:8]}"
         for i in range(10):
             r = await client.post("/api/v1/feedback", json={
@@ -762,6 +759,8 @@ class TestTrustGuardFeedbackRoute:
             "integrity_flags", {"flag_type": "trust_positive_burst"}
         )
         assert [f for f in flags if f["subject_id"] == agent]
+        assert len(factory_calls) == 1  # pinned, not rebuilt per request
+        assert app.state.learning_store is store
 
 
 # =============================================================================

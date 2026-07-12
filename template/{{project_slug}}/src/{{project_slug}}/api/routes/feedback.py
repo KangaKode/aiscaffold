@@ -110,12 +110,14 @@ async def record_feedback(
     if signal.agent_id and resolve_trust_flags().burst_enabled:
         try:
             # app.state.learning_store is only set when activity-tracking
-            # init succeeded; fall back to the shared store factory (same
-            # pattern as the corrections init) so burst detection works
-            # in deployments with activity tracking off.
+            # init succeeded; fall back to the shared store factory and PIN
+            # it (same pattern as the anomalies route's _get_store) so
+            # burst detection works with activity tracking off without
+            # rebuilding the store per request.
             store = getattr(request.app.state, "learning_store", None)
             if store is None:
                 store = get_learning_store()
+                request.app.state.learning_store = store
             await asyncio.to_thread(
                 check_feedback_burst,
                 store,
