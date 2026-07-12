@@ -670,10 +670,14 @@ exists "open corpus: provenance manifest ships in all profiles" tests/fixtures/p
 exists "open corpus: tests/fixtures ATTRIBUTION ships in all profiles" tests/fixtures/ATTRIBUTION.md
 lacks "open corpus: fixture has no raw jinja expression braces" '\{\{' tests/adversarial_payloads_open.py
 lacks "open corpus: fixture has no raw jinja statement braces" '\{%' tests/adversarial_payloads_open.py
-if LC_ALL=C grep -qP '[^\x00-\x7F]' "$GEN_ROOT/tests/adversarial_payloads_open.py" 2>/dev/null; then
-    fail "open corpus: fixture source is not pure ASCII (non-ASCII must be \\uXXXX-escaped)"
-else
+# Portable ASCII check: BSD grep has no -P (it exits 2, which a naive
+# grep -qP pipeline silently mistakes for "no match"), so decode with
+# python3 -- already a hard dependency of this script.
+if python3 -c "import sys; open(sys.argv[1], encoding='ascii').read()" \
+        "$GEN_ROOT/tests/adversarial_payloads_open.py" 2>/dev/null; then
     pass "open corpus: fixture source is pure ASCII"
+else
+    fail "open corpus: fixture source is not pure ASCII (non-ASCII must be \\uXXXX-escaped)"
 fi
 # OWASP mapping is an unconditional doc; evals-gated artifacts it cites carry a
 # static "(requires include_evals)" annotation rather than being omitted.

@@ -37,8 +37,9 @@ providers: []
   #     body: { "message": {% raw %}"{{prompt}}"{% endraw %} }
 
 # ---------------------------------------------------------------------------
-# 2. Prompt template -- the corpus payload is injected as promptfoo's {{prompt}}
-#    variable (raw-wrapped so the literal braces survive copier rendering).
+# 2. Prompt template -- the corpus payload is injected as promptfoo's
+#    {% raw %}{{prompt}}{% endraw %} variable (raw-wrapped so the literal
+#    braces survive copier rendering).
 # ---------------------------------------------------------------------------
 prompts:
   - {% raw %}"{{prompt}}"{% endraw %}
@@ -46,7 +47,7 @@ prompts:
 # ---------------------------------------------------------------------------
 # 3. Test cases -- generate a CSV from the shared corpus, then point promptfoo
 #    at it (keeps ONE payload source; see README for the one-liner). Each row's
-#    `prompt` column becomes the {{prompt}} variable above.
+#    `prompt` column becomes the {% raw %}{{prompt}}{% endraw %} variable above.
 # ---------------------------------------------------------------------------
 tests: file://redteam_cases.csv
 
