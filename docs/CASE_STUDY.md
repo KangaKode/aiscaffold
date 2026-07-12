@@ -1,6 +1,6 @@
 # Case Study: A Manuscript Editing Platform
 
-The most useful test of a scaffold is whether it survives a domain it was never designed for. roundtable's deliberation, defense, and governance patterns grew out of security and compliance work. This page is about what happened when I used them to build a manuscript editing platform for fiction authors.
+The most useful test of a scaffold is whether it survives a domain it was never designed for. roundtable's deliberation, defense, and governance patterns grew out of my background in insider risk investigations and detection engineering. This page is about what happened when I used them to build a manuscript editing platform for fiction authors.
 
 The product is private while in active development, so this page reports what happened rather than linking to code. Numbers are self-reported as of July 2026 and stated conservatively.
 
