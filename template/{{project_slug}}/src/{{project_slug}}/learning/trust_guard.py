@@ -5,7 +5,6 @@ Hardens the template's only closed learning loop (feedback -> trust EMA
 -> routing weight) against trust/reputation poisoning. Three opt-in
 mechanisms, all default OFF, none ever mutating the stored trust_score
 (rollback = unset the flag; nothing is persisted):
-
   TRUST_DECAY_ENABLED           -- read-time decay toward neutral 0.5 from
     now - last_updated (half-life TRUST_DECAY_HALF_LIFE_DAYS, default 30).
     Double-edged by design: justified distrust is rehabilitated at the
@@ -18,21 +17,19 @@ mechanisms, all default OFF, none ever mutating the stored trust_score
     check-in). Routing is NEVER altered.
 
 POSITIVE SIGNAL: the EMA treats a rate signal's caller-supplied
-confidence as an EMA target up to 1.0 -- stronger than accept's 0.9
+confidence as a target up to 1.0 -- stronger than accept's 0.9
 (agent_trust.py) -- so counting only accepts is bypassed by a rate-only
-campaign. Burst and domination count accept + rate at confidence >=
+campaign; burst and domination count accept + rate at confidence >=
 POSITIVE_RATE_CONFIDENCE.
 
 Cross-stack seam: burst detection READS the legacy SQLite stack (the
 tracker passed in) and WRITES flags to the portable store; the flag
 row's tenant_id defaults to project_id (the legacy stack has no tenant
-concept). No cross-store atomicity -- the flag is detect-only; a lost
-flag degrades observability, never correctness. The whole burst path is
-fire-and-forget in both directions: a failure on either stack is a
-logged no-op, never a request failure.
-
-Gateway auto-wiring lives on the feedback route; library users call
-check_feedback_burst / effective_trust_scores directly.
+concept). No cross-store atomicity -- detect-only, so a lost flag
+degrades observability, never correctness; the whole path is fire-and-
+forget (a failure on either stack is a logged no-op, never a request
+failure). Gateway auto-wiring lives on the feedback route; library
+users call check_feedback_burst / effective_trust_scores directly.
 
 Keep this file under 250 lines.
 """
@@ -120,6 +117,9 @@ def decayed_score(
     if updated is None:
         return raw
     now = now or datetime.now()
+    if (updated.tzinfo is None) != (now.tzinfo is None):
+        # Mixed naive/aware raises on subtraction; treat naive as local.
+        updated, now = updated.astimezone(), now.astimezone()
     age_days = max(0.0, (now - updated).total_seconds() / 86400.0)
     return 0.5 + (raw - 0.5) * 2 ** (-age_days / half_life_days)
 

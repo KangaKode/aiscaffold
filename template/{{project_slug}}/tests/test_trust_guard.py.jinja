@@ -170,6 +170,25 @@ class TestDecayAndGate:
         assert decayed_score(0.9, "not-a-timestamp", 30.0, now=now) == 0.9
         assert decayed_score(0.9, "", 30.0, now=now) == 0.9
 
+    def test_decay_handles_aware_timestamps(self):
+        """Bugbot regression: a tz-aware last_updated (e.g. rows written
+        with an ISO offset) must decay correctly, not raise TypeError --
+        in both mixed naive/aware directions."""
+        from datetime import timezone
+
+        aware_now = datetime.now(timezone.utc)
+        one_hl = (aware_now - timedelta(days=30)).isoformat()  # +00:00 offset
+        assert decayed_score(0.9, one_hl, 30.0, now=aware_now) == pytest.approx(0.7)
+        # Aware stored row read with the default naive now.
+        assert decayed_score(0.9, one_hl, 30.0, now=datetime.now()) == pytest.approx(
+            0.7, abs=0.01
+        )
+        # Naive stored row read with an aware now.
+        naive_old = (datetime.now() - timedelta(days=30)).isoformat()
+        assert decayed_score(0.9, naive_old, 30.0, now=aware_now) == pytest.approx(
+            0.7, abs=0.01
+        )
+
     def test_decay_double_edge_documented_rate(self):
         """T5: decay rehabilitates JUSTIFIED distrust at the documented
         rate -- 0.15 reports 0.325 after one half-life. Pins the trade-off
