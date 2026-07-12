@@ -203,7 +203,7 @@ FastAPI application with route modules:
 
 ### Security (`security/`)
 - `prompt_guard.py` -- XML delimiter wrapping, injection pattern detection, content sanitization
-- `injection_defense.py` -- Homoglyph normalization, invisible-character stripping, encoding-attack detection, canary tokens, output drift and multi-turn poisoning detection (the response-side helpers -- `check_canary`, `detect_output_drift`, `detect_multi_turn_poisoning` -- are caller-invoked utilities, not wired into the default pipeline)
+- `injection_defense.py` -- Homoglyph normalization, invisible-character stripping, encoding-attack detection, canary tokens, output drift and multi-turn poisoning detection (`check_canary` and `detect_output_drift` are caller-invoked utilities, not wired into the default pipeline; `detect_multi_turn_poisoning` gains an opt-in per-chat-turn call site via `LOOP_INTEGRITY_DETECTION_ENABLED` -- see `learning/loop_integrity.py`)
 - `validators.py` -- Input length, URL (anti-SSRF), identifier, list/dict size validation
 - `pii.py` -- Pattern-based PII redaction (emails, SSNs, Luhn-verified cards, IPs, phones, names-in-context) with Unicode normalization; idempotent `[REDACTED:CATEGORY]` tokens
 
@@ -222,7 +222,8 @@ Prompt injection is defended in 3 layers: static pattern matching in `prompt_gua
 - `store.py` -- Pluggable `LearningStore` protocol (6 methods) with SQLite (default) and Postgres reference backends (`LEARNING_BACKEND`); table definitions in `tables.py`
 - `corrections.py` -- Correction lifecycle (proposed -> approved -> retired) with four-eyes approval and budgeted, sanitized prompt rendering
 - `override_detector.py` -- Screens proposed corrections for injection, safety-agent targeting, and evidence-level inflation
-- `collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection over round-table history (tested detector library; the default runtime does not record votes into it -- see GOVERNANCE.md Non-Claims)
+- `collusion.py` -- Vote-lockstep, challenge-softness, and correction-drift detection over round-table history (tested detector library; the default runtime does not record votes into it -- see GOVERNANCE.md Non-Claims; correction drift gains an opt-in approve-path call site via `loop_integrity.py`)
+- `loop_integrity.py` -- Opt-in, detect-only activation (`LOOP_INTEGRITY_DETECTION_ENABLED`, default off) for two formerly dormant detectors: correction drift (run on each corrections approval, cooldown-gated) and multi-turn poisoning (last-N-user-messages scan after each chat turn, session-keyed integrity flags). Activation/wiring only -- the detector implementations stay in `collusion.py` and `security/injection_defense.py`
 - `activity.py` -- User activity thresholds (wired into the sampled activity middleware) and per-agent behavioral baselines over dispatch stats (baseline deviation checks are a library the default dispatch does not invoke -- see GOVERNANCE.md Non-Claims)
 - `content_policy.py` -- Heuristic classifier for knowledge writes (approved/flagged/rejected); blocks standing-rule manipulation and persists integrity flags
 - `reflector.py` -- Deterministic process-level lessons after each round table (agent effectiveness, evidence patterns, challenge impact, dissent value); capped, structured-fields-only, read via `GET /api/v1/reflections`

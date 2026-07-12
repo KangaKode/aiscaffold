@@ -472,6 +472,21 @@ Because every caller goes through the protocol, enterprise deployments extend wi
 - **Alembic migrations**: the built-in forward-only `MIGRATIONS` list is fine for a handful of schema changes; swap in Alembic when schema churn justifies it.
 - **Bring your own store**: implement the six methods against anything (MySQL, DynamoDB, an internal storage service).
 
+### Learning loops, honestly framed
+
+Every learning surface answers three questions -- what evolves, what feedback drives it, and where the loop closes. None of them closes on model-generated signal:
+
+| Surface | What evolves | Feedback signal | Where the loop closes |
+|---------|-------------|-----------------|----------------------|
+| Corrections | Prompt-grounded knowledge | Human propose -> approve (four-eyes posture) | At human approval, never before -- unapproved text never reaches a prompt |
+| Error schemas | Generalized schemas served alongside corrections | Clusters of >= 3 approved corrections from >= 2 proposers | Auto-extracted on approval, but derived only from human-approved inputs |
+| Trust scores | Per-agent EMA feeding routing (bounded: at most +0.19 of a routing score) | **External** human accept/reject/modify signals via the feedback surface | On each human signal write; the trust-guard defenses (decay, min-interaction gate, burst flags) are read-time and detect-only |
+| Preferences / graduation | Cross-project global profile | Stable observed preference patterns | Only through an explicitly approved graduation check-in |
+| Reflections | Nothing at runtime | Structured deliberation fields (deterministic, no LLM) | Deliberately OPEN -- reflections are a read-only report surface |
+| Detection layer (baselines, collusion, drift, poisoning, bursts) | Nothing | Integrity flags for humans | A human resolving the flag -- detect, never act |
+
+The consistency rule behind the table: loops close on EXTERNAL human signal or stay open. Trust hardening is driven by human accept/reject feedback; routing decisions derived from the system's own reflections were considered and REJECTED as a self-consuming loop (the system grading its own homework and then acting on the grade). Reflections therefore stay a report surface, and every detector flags for a human instead of feeding anything back into behavior.
+
 ### Learning integrity
 
 The learning layer reshapes agent behavior, so it gets its own integrity controls. All findings are persisted as integrity flags and surfaced through `GET /api/v1/activity/anomalies` (resolve via `POST /api/v1/activity/anomalies/{flag_id}/resolve`) -- nothing is auto-rejected or auto-suspended; a human closes every flag:
@@ -481,7 +496,18 @@ The learning layer reshapes agent behavior, so it gets its own integrity control
 - **Context budget**: approved corrections render into prompts under a character budget (`CORRECTION_CONTEXT_BUDGET`, default 4000) with sanitized fields.
 - **Override screening**: each proposed correction is screened for prompt injection, safety-agent targeting ("ignore the skeptic"), and evidence-level inflation before it reaches a reviewer.
 - **Collusion detection** (opt-in, default off): pairwise vote-lockstep and reciprocal never-challenge analysis flags agent pairs that stop checking each other. Set `COLLUSION_DETECTION_ENABLED=true` and the gateway feeds every round-table deliberation's votes into one per-process detector -- detect-only (integrity flags + an optional check-in per finding), fire-and-forget. Note the vote window lives in process memory: lockstep findings need >= 5 rounds within one process lifetime, and a restart resets the window (see GOVERNANCE.md Non-Claims).
-- **Correction drift** (shipped, you wire): a rising share of "softening" language in recent approved corrections flags a possible slow-poisoning campaign. `analyze_correction_drift` is a tested library function the default runtime does not schedule -- run it from a periodic job or post-approval hook.
+- **Correction drift** (opt-in, default off): a rising share of "softening" language in recent approved corrections flags a possible slow-poisoning campaign. Set `LOOP_INTEGRITY_DETECTION_ENABLED=true` and the gateway runs `analyze_correction_drift` on each corrections approval, cooldown-gated so repeat approvals cannot flood duplicate flags. Library users are NOT auto-wired -- pass the hook explicitly:
+
+  ```python
+  from <project>.learning import CorrectionsManager, create_drift_check_hook
+
+  manager = CorrectionsManager(
+      store,
+      on_approve=create_drift_check_hook(store),  # None while the flag is off
+  )
+  ```
+
+  The hook derives the tenant from the approved `Correction` it receives. The same flag also activates the multi-turn poisoning scan on chat turns (see GOVERNANCE.md's Loop-integrity detection row); both are detect-only.
 - **User activity anomalies**: per-user request bursts, repeated auth failures, and agent-registration sprees trip configurable thresholds (`ACTIVITY_TRACKING_ENABLED` to opt out).
 - **Agent behavioral baselines** (opt-in, default off): each agent's refusal rate, confidence, latency, and scope discipline are compared against its own history -- an agent with valid credentials that stops behaving like itself still gets flagged. Set `BASELINE_TRACKING_ENABLED=true` and every round-table/chat dispatch records its stats (duration, refusal, confidence, scope violations) under the caller's tenant; `resolve`/single-shot dispatches are not covered. Recording is wired; run `AgentBaselineTracker.check_deviation` (or `compute_baseline`) from your review tooling to analyze drift.
 - **Delegation records** (opt-in, default off): set `DELEGATION_RECORDS_ENABLED=true` and every gated dispatch writes one `delegation_records` row -- task id, tenant, phase (`analyze`/`challenge`/`vote`), agent, and `derived_from_json` naming the upstream artifacts that fed that dispatch (analyze: nothing; challenge: the agents whose Phase-1 analyses were consumed; vote: the synthesis). **Be clear about what these document: phase-derivation hops in the hub-and-spoke orchestration.** Agents never call each other in this architecture, so there are no agent-to-agent calls to record -- the rows answer "whose output influenced this dispatch", which is what incident reconstruction actually needs. Writes are fire-and-forget off the event loop (a failing store never fails or slows a dispatch), and nothing analyzes the rows automatically -- they are query material for your review tooling (`learning/delegation.py`).
@@ -613,7 +639,7 @@ Define retention policies for each data store and document them for your legal/c
 | Collusion / behavioral-baseline / sequence detectors | **Opt-in wiring provided (default off)** | `COLLUSION_DETECTION_ENABLED` / `BASELINE_TRACKING_ENABLED` / `SEQUENCE_DETECTION_ENABLED`; detect-only, fire-and-forget (see Learning integrity above) |
 | Delegation records (phase-derivation audit trail) | **Opt-in wiring provided (default off)** | `DELEGATION_RECORDS_ENABLED`; one row per gated dispatch, fire-and-forget; documents phase derivation, not agent-to-agent calls (see Learning integrity above) |
 | Per-phase OTel tracing | **Opt-in via `[otel]` extra** | No env toggle: inert without the extra and a user-configured tracer provider (see Tracing above) |
-| Correction-drift detector | **Shipped, you wire** | `analyze_correction_drift` is a tested library the default runtime does not schedule; run from a periodic job or post-approval hook |
+| Loop-integrity detection (correction drift + multi-turn poisoning) | **Opt-in wiring provided (default off)** | `LOOP_INTEGRITY_DETECTION_ENABLED=true` runs the drift check on each gateway approval and the poisoning scan on each chat turn; library users wire `on_approve` themselves (see Correction drift above). Detect-only |
 | Model routing (tiers, cascade, budget downgrades) | **Opt-in wiring provided (default off)** | `MODEL_ROUTING_ENABLED=true` makes the gateway's LLM client route per call role and try one cascade step up-tier on final failure |
 | Startup canary self-check | **Opt-in wiring provided (default off)** | `STARTUP_CANARY_ENABLED=true` self-tests the canary machinery once at boot; failure logs + flags, never blocks startup |
 | Sentinel refusal enforcement | **Opt-in wiring provided (default off)** | `SENTINEL_ENFORCEMENT_ENABLED=true` (or `RoundTableConfig.sentinel_enforcement=True`) halts a round table with an explicit refusal on a HIGH Sentinel verdict, a Sentinel refusal, or a missing Sentinel analysis. The one opt-in that ENFORCES rather than detects: it fails closed and trades availability for screening coverage (see GOVERNANCE.md and OPERATIONS.md) |

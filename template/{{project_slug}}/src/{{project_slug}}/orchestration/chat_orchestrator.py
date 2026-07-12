@@ -126,6 +126,7 @@ class ChatOrchestrator:
         baseline_tracker: Any = None,
         learning_store: Any = None,
         delegation_recorder: Any = None,
+        session_key: str | None = None,
     ):
         self._llm = llm
         self._registry = registry
@@ -137,6 +138,10 @@ class ChatOrchestrator:
         self._baseline_tracker = baseline_tracker
         self._learning_store = learning_store
         self._delegation_recorder = delegation_recorder
+        # Distinct per session so the opt-in multi-turn-poisoning scan flags
+        # each conversation separately; the gateway passes its session key,
+        # library callers may pass their own (default: unique per instance).
+        self._session_key = session_key or uuid.uuid4().hex
         self._conversation_history: list[dict] = []
 
     def _system_prompt(self, tenant_id: str = "default") -> str:
@@ -283,6 +288,15 @@ class ChatOrchestrator:
             "content": response_content,
             "agents_consulted": [c.agent_name for c in consultations],
         })
+
+        from .chat_helpers import scan_history_for_poisoning
+
+        await scan_history_for_poisoning(
+            self._conversation_history,
+            store=self._learning_store,
+            tenant_id=tenant_id,
+            subject_id=self._session_key,
+        )
 
         return ChatResponse(
             content=response_content,

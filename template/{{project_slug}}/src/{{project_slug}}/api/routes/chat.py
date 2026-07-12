@@ -135,6 +135,9 @@ def _get_or_create_orchestrator(
         baseline_tracker=getattr(request.app.state, "baseline_tracker", None),
         learning_store=getattr(request.app.state, "learning_store", None),
         delegation_recorder=getattr(request.app.state, "delegation_recorder", None),
+        # Keys the opt-in multi-turn-poisoning flag to this session, so
+        # sessions never collapse into one integrity-flag row.
+        session_key=key,
     )
 
     while len(_orchestrators) > MAX_SESSIONS:

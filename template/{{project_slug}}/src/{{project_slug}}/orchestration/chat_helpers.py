@@ -7,6 +7,7 @@ ChatOrchestrator. Extracted to keep chat_orchestrator.py under 500 lines.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -94,6 +95,46 @@ def _serialize_violations(result) -> list[str]:
         f"[{v.severity}] {v.rule}: {v.message}"
         for v in result.violations
     ]
+
+
+async def scan_history_for_poisoning(
+    history: list,
+    store,
+    tenant_id: str,
+    subject_id: str,
+) -> None:
+    """Detect-only multi-turn poisoning scan after a chat turn (opt-in).
+
+    Off (byte-identical, zero message access) unless
+    LOOP_INTEGRITY_DETECTION_ENABLED. The last-N slice COPY is taken on the
+    event loop before offloading -- ``history`` is a mutable list a
+    concurrent turn can append to mid-scan, so the copy must not move into
+    the thread. The scan itself only logs + writes an integrity flag; a
+    slow store adds its latency to the turn (like the other wired
+    detectors), a broken store is a logged no-op. Never raises.
+    """
+    from ..learning.loop_integrity import (
+        loop_integrity_enabled,
+        scan_conversation_window,
+        scan_window_size,
+    )
+
+    if not loop_integrity_enabled():
+        return
+    window_copy = list(history[-scan_window_size():])
+    try:
+        await asyncio.to_thread(
+            scan_conversation_window,
+            window_copy,
+            store,
+            tenant_id,
+            subject_id,
+        )
+    except Exception:  # noqa: BLE001 -- detect-only, never fail the turn
+        logger.warning(
+            "[ChatOrchestrator] Loop-integrity scan raised; turn unaffected",
+            exc_info=True,
+        )
 
 
 async def enforce_chat_synthesis(
