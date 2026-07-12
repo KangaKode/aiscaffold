@@ -701,8 +701,12 @@ else
     lacks "gateway off: OPERATIONS.md cites no api/ modules" 'api/gateway\.py|api/routes/|api/middleware/' docs/OPERATIONS.md
     # The context-pressure signal is wired in the LLM client (active in
     # every profile), so its posture row -- carrying the no-[metrics]
-    # blind-spot note -- must render with the gateway off too.
-    has "gateway off: OPERATIONS.md documents context-pressure posture" 'CONTEXT_PRESSURE_ENABLED' docs/OPERATIONS.md
+    # blind-spot note -- must render with the gateway off too. Pattern is
+    # the row's header cell, which appears ONLY in the posture row (the
+    # monitor table and triage section mention the flag in other phrasings
+    # and would keep a bare-flag grep green if the row regressed into the
+    # gateway-only branch).
+    has "gateway off: OPERATIONS.md documents context-pressure posture" 'Context-pressure signal \(.CONTEXT_PRESSURE_ENABLED.\) \| Flag unset' docs/OPERATIONS.md
     lacks "gateway off: README advertises no HTTP endpoint" 'localhost:8000' README.md
     if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
         # gateway-off + deployment-on: the image CMD prints usage and
