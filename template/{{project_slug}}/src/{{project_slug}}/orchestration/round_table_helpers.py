@@ -6,7 +6,9 @@ Extracted from round_table.py to keep that file under 500 lines.
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING
+import os
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .round_table import (
@@ -19,6 +21,206 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+SENTINEL_ENFORCEMENT_ENV = "SENTINEL_ENFORCEMENT_ENABLED"
+
+
+def resolve_sentinel_enforcement(configured: bool | None) -> bool:
+    """Resolve the Sentinel enforcement setting once, at RoundTable init.
+
+    Explicit config (True/False) wins; None falls back to the
+    SENTINEL_ENFORCEMENT_ENABLED env flag with the same truthy parse as
+    the other opt-in toggles (see llm.model_router.create_model_router).
+    Default is OFF: Sentinel stays advisory (detect, never act).
+    """
+    if configured is not None:
+        return configured
+    return os.environ.get(SENTINEL_ENFORCEMENT_ENV, "").strip().lower() in (
+        "true", "1", "yes",
+    )
+
+
+def init_sentinel_enforcement(
+    config: "RoundTableConfig", core_agent_names: set
+) -> tuple[bool, str | None, frozenset]:
+    """Resolve the enforcement state once, at RoundTable init.
+
+    Returns (enabled, sentinel_name, rate_limit_exempt). Enforcement
+    keys on the CORE Sentinel only: an agent merely named "sentinel"
+    outside the core roster never satisfies it and never earns the
+    rate-limit exemption (sentinel_name is None unless the core roster
+    contains Sentinel).
+    """
+    enabled = resolve_sentinel_enforcement(config.sentinel_enforcement)
+    sentinel_name = "sentinel" if "sentinel" in core_agent_names else None
+    if enabled and sentinel_name is None:
+        logger.warning(
+            "[RoundTable] Sentinel enforcement is ON but the core Sentinel "
+            "is not on the roster -- every run will refuse with "
+            "sentinel_missing"
+        )
+    exempt = frozenset({sentinel_name}) if enabled and sentinel_name else frozenset()
+    return enabled, sentinel_name, exempt
+
+
+def capture_sentinel_analysis(
+    analyses: list, sentinel_name: str | None
+) -> "AgentAnalysis | None":
+    """Pre-pipeline capture of the core Sentinel's Phase 1 analysis.
+
+    Called on the raw dispatch output, BEFORE enforce_evidence runs, so
+    the enforcement trigger survives any pipeline drop or rewrite.
+    Returns None when enforcement is off (sentinel_name None) or the
+    Sentinel produced no analysis.
+    """
+    if sentinel_name is None:
+        return None
+    return next((a for a in analyses if a.agent_name == sentinel_name), None)
+
+
+@dataclass
+class SentinelRefusal:
+    """Machine-readable refusal contract for the opt-in short-circuit.
+
+    reason is a bounded enum:
+      sentinel_high_risk   -- screening verdict risk_level == "HIGH"
+      sentinel_unavailable -- Sentinel could not screen (no LLM /
+                              transport or budget failure); fail-closed
+      sentinel_premise     -- Sentinel asserted premise_valid=False for
+                              any other reason
+      sentinel_missing     -- enforcement is on but no core Sentinel
+                              analysis was produced in Phase 1 (roster
+                              off, core load failure, dispatch gate,
+                              analyze() crash)
+
+    detail and observation are sanitized before they land here -- they
+    flow into artifacts and API responses.
+    """
+
+    reason: str
+    detail: str = ""
+    observation: dict = field(default_factory=dict)
+
+
+def _sanitize_sentinel_observation(obs: dict) -> dict:
+    """Sanitize the captured screening observation for surfacing.
+
+    Screening evidence quotes untrusted task content, so every surfaced
+    string passes sanitize_for_prompt with a length cap (indicators are
+    sanitized per element), per the premise-gate precedent.
+    """
+    from ..security.prompt_guard import sanitize_for_prompt
+
+    sanitized = {
+        "finding": sanitize_for_prompt(str(obs.get("finding", "")), max_length=200),
+        "evidence": sanitize_for_prompt(str(obs.get("evidence", "")), max_length=500),
+        "risk_level": str(obs.get("risk_level", ""))[:16],
+    }
+    indicators = obs.get("indicators")
+    if isinstance(indicators, list):
+        sanitized["indicators"] = [
+            sanitize_for_prompt(str(item), max_length=200)
+            for item in indicators[:10]
+        ]
+    return sanitized
+
+
+def check_sentinel_refusal(
+    sentinel_analysis: "AgentAnalysis | None",
+) -> SentinelRefusal | None:
+    """Map the captured core-Sentinel analysis to a refusal, or None.
+
+    The caller captures the analysis BEFORE the evidence-enforcement
+    pipeline runs (pre-pipeline capture), so pipeline drops or rewrites
+    can never erase the trigger. A parse-failure analysis (premise_valid
+    True, no HIGH observation) never halts -- malformed JSON from a live
+    model is a formatting quirk, not a screening verdict.
+    """
+    from ..security.prompt_guard import sanitize_for_prompt
+
+    if sentinel_analysis is None:
+        return SentinelRefusal(
+            reason="sentinel_missing",
+            detail="No core Sentinel analysis was produced in Phase 1",
+        )
+    observations = getattr(sentinel_analysis, "observations", None) or []
+    first_obs = (
+        observations[0]
+        if observations and isinstance(observations[0], dict)
+        else {}
+    )
+    if getattr(sentinel_analysis, "premise_valid", True) is False:
+        raw_reason = getattr(sentinel_analysis, "refusal_reason", "") or ""
+        return SentinelRefusal(
+            reason=(
+                "sentinel_unavailable"
+                if raw_reason == "sentinel_unavailable"
+                else "sentinel_premise"
+            ),
+            detail=sanitize_for_prompt(raw_reason, max_length=200),
+            observation=_sanitize_sentinel_observation(first_obs),
+        )
+    for obs in observations:
+        if isinstance(obs, dict) and obs.get("risk_level") == "HIGH":
+            return SentinelRefusal(
+                reason="sentinel_high_risk",
+                detail=sanitize_for_prompt(
+                    str(obs.get("evidence", "")), max_length=200
+                ),
+                observation=_sanitize_sentinel_observation(obs),
+            )
+    return None
+
+
+def finalize_sentinel_refusal(
+    result: "RoundTableResult",
+    sentinel_analysis: "AgentAnalysis | None",
+    write_artifact,
+) -> bool:
+    """Apply the enforcement decision to the result. Returns True when
+    the run must short-circuit (result.sentinel_refusal is set and the
+    phase1_sentinel_refusal artifact is written)."""
+    refusal = check_sentinel_refusal(sentinel_analysis)
+    if refusal is None:
+        return False
+    result.sentinel_refusal = refusal
+    logger.warning(
+        f"[RoundTable] Task {result.task_id}: Sentinel enforcement refused "
+        f"the run ({refusal.reason}) -- short-circuiting before Phase 2"
+    )
+    write_artifact(result.task_id, "phase1_sentinel_refusal", asdict(refusal))
+    return True
+
+
+def build_system_prompt(agents: list) -> str:
+    """The orchestrator's stable system prompt (cached across calls)."""
+    agent_info = ", ".join(f"{a.name} ({a.domain})" for a in agents)
+    return (
+        f"You are an orchestrator coordinating {len(agents)} specialist agents: "
+        f"{agent_info}.\n\n"
+        f"Rules:\n"
+        f"- Preserve ALL evidence fields from agent outputs\n"
+        f"- Do NOT summarize away supporting quotes, data, or citations\n"
+        f"- Surface disagreements -- minority views are valuable\n"
+        f"- Return valid JSON"
+    )
+
+
+def write_artifact(
+    config: "RoundTableConfig", task_id: str, phase: str, data: Any
+) -> None:
+    """Write intermediate results to the filesystem for auditability."""
+    if not config.write_artifacts:
+        return
+    artifact_dir = config.artifacts_dir / task_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    path = artifact_dir / f"{phase}.json"
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+        logger.debug(f"[RoundTable] Artifact: {path}")
+    except Exception as e:
+        logger.warning(f"[RoundTable] Artifact write failed: {e}")
 
 
 async def phase_strategy(

@@ -115,8 +115,13 @@ else:
 
 
 def record_deliberation(outcome: str, duration_seconds: float) -> None:
-    """One finished round table run. outcome is a bounded enum
-    ("completed", "refused", "failed"). Never raises."""
+    """One finished round table run. outcome is a bounded enum:
+    "completed", "refused" (premise gate), "failed", plus the opt-in
+    Sentinel-enforcement refusals "refused_sentinel" (HIGH-risk
+    verdict), "refused_sentinel_premise", "refused_sentinel_unavailable"
+    (Sentinel could not screen; fail-closed), and
+    "refused_sentinel_missing" (enforcement on, no Sentinel analysis).
+    Never raises."""
     if not PROMETHEUS_AVAILABLE:
         return
     try:

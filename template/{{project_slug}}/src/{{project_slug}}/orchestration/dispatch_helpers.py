@@ -146,6 +146,7 @@ def gate_agents(
     rate_limiter: AgentRateLimiter | None,
     component: str,
     store: Any = None,
+    rate_limit_exempt: frozenset = frozenset(),
 ) -> tuple[list[tuple[Any, Any, AgentCapability | None]], int]:
     """Run the per-agent dispatch gates and scope-filter the task.
 
@@ -156,7 +157,12 @@ def gate_agents(
          block also records an ``agent_identity_blocked`` integrity
          flag carrying the block reason (fire-and-forget -- see
          _record_identity_block).
-      2. Rate limit check against the agent's capability.
+      2. Rate limit check against the agent's capability. Agent names
+         in ``rate_limit_exempt`` skip ONLY this gate (identity and
+         scope gates still apply). The round table passes the core
+         Sentinel here when Sentinel enforcement is on, so an exhausted
+         limiter cannot starve the enforcement signal; the default
+         (empty) leaves every other caller byte-identical.
       3. Scope filtering of the task's ``context`` dict (agents with a
          capability declaring non-empty access_scopes see only those
          keys; ``agent_focus_areas`` is orchestrator metadata and
@@ -179,7 +185,9 @@ def gate_agents(
                 block_reason[0] if block_reason else "unknown",
             )
             continue
-        if not check_rate_limit(registry, agent, rate_limiter, component):
+        if agent.name not in rate_limit_exempt and not check_rate_limit(
+            registry, agent, rate_limiter, component
+        ):
             skipped += 1
             continue
         if registry is not None and hasattr(registry, "touch_last_active"):
@@ -211,6 +219,7 @@ async def run_challenge_phase(
     component: str = "RoundTable",
     store: Any = None,
     delegation_recorder: Any = None,
+    rate_limit_exempt: frozenset = frozenset(),
 ) -> list:
     """Phase 2: agents challenge each other (mediated hub-and-spoke).
 
@@ -219,10 +228,12 @@ async def run_challenge_phase(
     agent suspended mid-run is excluded here. store enables the
     identity-block flag; delegation_recorder (opt-in) records each
     challenger with the names of the analysts it consumed.
+    rate_limit_exempt skips only the rate gate (see gate_agents).
     """
     rate_limiter = getattr(registry, "rate_limiter", None)
     gated, skipped = gate_agents(
-        agents, task, registry, rate_limiter, component, store=store
+        agents, task, registry, rate_limiter, component, store=store,
+        rate_limit_exempt=rate_limit_exempt,
     )
     if skipped:
         logger.warning(
@@ -256,6 +267,7 @@ async def run_voting_phase(
     midrun_names: set[str] | None = None,
     store: Any = None,
     delegation_recorder: Any = None,
+    rate_limit_exempt: frozenset = frozenset(),
 ) -> tuple[list, int]:
     """Phase 3b: agents vote on the synthesis. Dissent is valuable.
 
@@ -279,7 +291,8 @@ async def run_voting_phase(
 
     rate_limiter = getattr(registry, "rate_limiter", None)
     gated, skipped = gate_agents(
-        agents, task, registry, rate_limiter, component, store=store
+        agents, task, registry, rate_limiter, component, store=store,
+        rate_limit_exempt=rate_limit_exempt,
     )
     record_dispatches(
         delegation_recorder, task, PHASE_VOTE,
@@ -320,6 +333,7 @@ async def dispatch_with_gates(
     baseline_tracker: Any = None,
     store: Any = None,
     delegation_recorder: Any = None,
+    rate_limit_exempt: frozenset = frozenset(),
 ) -> tuple[list[Any], int, int]:
     """Run analyze() on all agents in parallel with per-agent dispatch gates.
 
@@ -338,6 +352,7 @@ async def dispatch_with_gates(
     store: optional LearningStore enabling the identity-block integrity
     flag (see gate_agents). delegation_recorder: opt-in phase-derivation
     recorder; analyze dispatches derive from nothing upstream ([]).
+    rate_limit_exempt skips only the rate gate (see gate_agents).
 
     Returns (analyses, skipped_count, failed_count) where skipped_count is
     agents blocked by a gate and failed_count is agents whose analyze()
@@ -346,7 +361,8 @@ async def dispatch_with_gates(
     """
     scope_filter = ScopeFilter()
     gated, skipped = gate_agents(
-        agents, task, registry, rate_limiter, component, store=store
+        agents, task, registry, rate_limiter, component, store=store,
+        rate_limit_exempt=rate_limit_exempt,
     )
     record_dispatches(
         delegation_recorder, task, PHASE_ANALYZE,

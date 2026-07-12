@@ -43,6 +43,7 @@ ALL_TOGGLES = (
     "SEQUENCE_DETECTION_ENABLED",
     "MODEL_ROUTING_ENABLED",
     "STARTUP_CANARY_ENABLED",
+    "SENTINEL_ENFORCEMENT_ENABLED",
 )
 
 # Deterministic tier map for the routing tests (never depends on the
@@ -351,6 +352,47 @@ class TestModelRoutingWiring:
         response = await client.call("hello")
         assert response.is_error is False
         assert calls == [client._model]
+
+
+# =============================================================================
+# SENTINEL ENFORCEMENT RESOLVER (SENTINEL_ENFORCEMENT_ENABLED)
+# =============================================================================
+
+
+class TestSentinelEnforcementResolver:
+    """resolve_sentinel_enforcement: env-gated, default off, explicit
+    config wins over env. Behavior tests live in test_orchestration /
+    test_safety_fail_closed; this covers only the resolution rules."""
+
+    def test_default_is_off(self):
+        from {{project_slug}}.orchestration.round_table_helpers import (
+            resolve_sentinel_enforcement,
+        )
+
+        assert resolve_sentinel_enforcement(None) is False
+
+    @pytest.mark.parametrize("value,expected", [
+        ("true", True), ("1", True), ("yes", True), (" TRUE ", True),
+        ("false", False), ("0", False), ("no", False), ("", False),
+        ("enabled", False),  # unknown strings never enable enforcement
+    ])
+    def test_env_truthy_parse(self, monkeypatch, value, expected):
+        from {{project_slug}}.orchestration.round_table_helpers import (
+            resolve_sentinel_enforcement,
+        )
+
+        monkeypatch.setenv("SENTINEL_ENFORCEMENT_ENABLED", value)
+        assert resolve_sentinel_enforcement(None) is expected
+
+    def test_explicit_config_beats_env(self, monkeypatch):
+        from {{project_slug}}.orchestration.round_table_helpers import (
+            resolve_sentinel_enforcement,
+        )
+
+        monkeypatch.setenv("SENTINEL_ENFORCEMENT_ENABLED", "true")
+        assert resolve_sentinel_enforcement(False) is False
+        monkeypatch.delenv("SENTINEL_ENFORCEMENT_ENABLED")
+        assert resolve_sentinel_enforcement(True) is True
 
 
 {% if include_api_gateway -%}

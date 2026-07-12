@@ -18,7 +18,6 @@ Reference: docs/REFERENCES.md
 """
 
 import logging
-import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -162,6 +161,7 @@ class RoundTableResult:
 
     task_id: str
     premise_challenge: Any = None  # PremiseChallengeResult when the gate tripped
+    sentinel_refusal: Any = None  # SentinelRefusal when opt-in enforcement tripped
     strategy: StrategyPlan | None = None
     analyses: list[AgentAnalysis] = field(default_factory=list)
     challenges: list[AgentChallenge] = field(default_factory=list)
@@ -203,6 +203,8 @@ class RoundTableConfig:
     autonomy_level: int | None = None  # 1-6; policy may force human approval
     premise_challenge_enabled: bool = True  # Phase 0.5 refusal gate (needs an LLM)
     refusal_threshold: int = 2  # Agents needed to trip the gate (clamped, see premise.py)
+    # Opt-in short-circuit: None = env SENTINEL_ENFORCEMENT_ENABLED (default OFF)
+    sentinel_enforcement: bool | None = None
 
 
 # =============================================================================
@@ -272,6 +274,12 @@ class RoundTable:
             self.agents = agents
             logger.info(f"[RoundTable] Initialized with {len(agents)} agents (core agents disabled)")
 
+        # Opt-in Sentinel enforcement (default off; keys on the CORE Sentinel
+        # only -- see round_table_helpers.init_sentinel_enforcement).
+        from .round_table_helpers import init_sentinel_enforcement
+        (self._sentinel_enforcement, self._sentinel_name,
+         self._rate_limit_exempt) = init_sentinel_enforcement(config, self._core_agent_names)
+
     async def run(self, task: RoundTableTask) -> RoundTableResult:
         """Execute the full phased round table protocol."""
         start = datetime.now()
@@ -313,8 +321,16 @@ class RoundTable:
 
         logger.info(f"[RoundTable] Phase 1: Independent analysis ({len(self.agents)} agents)")
         with phase_span("deliberation.phase.independent", agent_count=len(self.agents)):
-            result.analyses, result.failed_agent_count = await self._phase_independent(task)
+            (result.analyses, result.failed_agent_count,
+             sentinel_analysis) = await self._phase_independent(task)
         self._write_artifact(task.id, "phase1_analyses", [asdict(a) for a in result.analyses])
+
+        # Opt-in Sentinel enforcement (default off): halt on the captured verdict.
+        if self._sentinel_enforcement:
+            from .round_table_helpers import finalize_sentinel_refusal
+            if finalize_sentinel_refusal(result, sentinel_analysis, self._write_artifact):
+                result.duration_seconds = (datetime.now() - start).total_seconds()
+                return result
 
         # Quorum: degraded when too few domain (non-core) analyses succeeded
         # AND at least one agent was skipped by a gate or failed.
@@ -392,17 +408,10 @@ class RoundTable:
         return result
 
     def _build_system_prompt(self) -> str:
-        """Build the stable system prompt (cached across calls)."""
-        agent_info = ", ".join(f"{a.name} ({a.domain})" for a in self.agents)
-        return (
-            f"You are an orchestrator coordinating {len(self.agents)} specialist agents: "
-            f"{agent_info}.\n\n"
-            f"Rules:\n"
-            f"- Preserve ALL evidence fields from agent outputs\n"
-            f"- Do NOT summarize away supporting quotes, data, or citations\n"
-            f"- Surface disagreements -- minority views are valuable\n"
-            f"- Return valid JSON"
-        )
+        """Stable system prompt (see round_table_helpers.build_system_prompt)."""
+        from .round_table_helpers import build_system_prompt
+
+        return build_system_prompt(self.agents)
 
     async def _phase_strategy(self, task: RoundTableTask) -> StrategyPlan:
         """Phase 0 (see round_table_helpers.phase_strategy)."""
@@ -414,15 +423,18 @@ class RoundTable:
 
     async def _phase_independent(
         self, task: RoundTableTask
-    ) -> tuple[list[AgentAnalysis], int]:
+    ) -> tuple[list[AgentAnalysis], int, AgentAnalysis | None]:
         """Phase 1: All agents analyze independently and in PARALLEL.
 
         Each agent passes identity and rate-limit gates before dispatch, and
         its task context is scope-filtered by its capability. Gated/failed
         agents are logged and excluded, never fatal.
 
-        Returns (analyses, failed_agent_count) where failed_agent_count is
-        agents skipped by a gate plus agents whose analyze() raised.
+        Returns (analyses, failed_agent_count, sentinel_analysis):
+        failed_agent_count is agents skipped by a gate plus agents whose
+        analyze() raised; sentinel_analysis is the core Sentinel's analysis
+        captured BEFORE the evidence pipeline (see
+        round_table_helpers.capture_sentinel_analysis).
         """
         from .dispatch_helpers import dispatch_with_gates
 
@@ -432,13 +444,18 @@ class RoundTable:
             baseline_tracker=self._baseline_tracker,
             store=self._learning_store,
             delegation_recorder=self._delegation_recorder,
+            rate_limit_exempt=self._rate_limit_exempt,
         )
+
+        from .round_table_helpers import capture_sentinel_analysis
+        sentinel_analysis = capture_sentinel_analysis(
+            analyses, self._sentinel_name if self._sentinel_enforcement else None)
 
         if self.config.enforce_evidence:
             from .round_table_helpers import enforce_evidence
             analyses = await enforce_evidence(analyses, task, self.llm)
 
-        return analyses, skipped + failed
+        return analyses, skipped + failed, sentinel_analysis
 
     async def _phase_challenge(
         self, task: RoundTableTask, analyses: list[AgentAnalysis]
@@ -451,6 +468,7 @@ class RoundTable:
             self.agents, task, analyses, self._registry,
             store=self._learning_store,
             delegation_recorder=self._delegation_recorder,
+            rate_limit_exempt=self._rate_limit_exempt,
         )
 
     async def _phase_voting(
@@ -470,18 +488,11 @@ class RoundTable:
             midrun_names=analyzed_names,
             store=self._learning_store,
             delegation_recorder=self._delegation_recorder,
+            rate_limit_exempt=self._rate_limit_exempt,
         )
 
     def _write_artifact(self, task_id: str, phase: str, data: Any) -> None:
-        """Write intermediate results to filesystem for auditability."""
-        if not self.config.write_artifacts:
-            return
-        artifact_dir = self.config.artifacts_dir / task_id
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        path = artifact_dir / f"{phase}.json"
-        try:
-            with open(path, "w") as f:
-                json.dump(data, f, indent=2, default=str)
-            logger.debug(f"[RoundTable] Artifact: {path}")
-        except Exception as e:
-            logger.warning(f"[RoundTable] Artifact write failed: {e}")
+        """Write intermediate results (see round_table_helpers.write_artifact)."""
+        from .round_table_helpers import write_artifact
+
+        write_artifact(self.config, task_id, phase, data)

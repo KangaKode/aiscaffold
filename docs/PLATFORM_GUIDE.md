@@ -550,6 +550,7 @@ Define retention policies for each data store and document them for your legal/c
 | Correction-drift detector | **Shipped, you wire** | `analyze_correction_drift` is a tested library the default runtime does not schedule; run from a periodic job or post-approval hook |
 | Model routing (tiers, cascade, budget downgrades) | **Opt-in wiring provided (default off)** | `MODEL_ROUTING_ENABLED=true` makes the gateway's LLM client route per call role and try one cascade step up-tier on final failure |
 | Startup canary self-check | **Opt-in wiring provided (default off)** | `STARTUP_CANARY_ENABLED=true` self-tests the canary machinery once at boot; failure logs + flags, never blocks startup |
+| Sentinel refusal enforcement | **Opt-in wiring provided (default off)** | `SENTINEL_ENFORCEMENT_ENABLED=true` (or `RoundTableConfig.sentinel_enforcement=True`) halts a round table with an explicit refusal on a HIGH Sentinel verdict, a Sentinel refusal, or a missing Sentinel analysis. The one opt-in that ENFORCES rather than detects: it fails closed and trades availability for screening coverage (see the generated GOVERNANCE.md and OPERATIONS.md) |
 | Agentic governance (graduated autonomy, per-tenant budgets, audit trail, content policy, PII redaction) | **Built** | Tune levels via `AUTONOMY_POLICIES`; budgets/audit at `/api/v1/budgets` and `/api/v1/audit/deliberations` |
 | SIEM export, tamper-proof audit storage | **You add** | Poll `audit_events` by `created_at`; ship to append-only storage |
 | JWT/OIDC auth | **You add** | Replace `verify_api_key` (~20 lines) |
