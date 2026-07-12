@@ -34,6 +34,7 @@ incident, not during it.
 | Delegation records (`DELEGATION_RECORDS_ENABLED`) | Toggle unset, no learning store, or store write fails | **Degrades to no-op with a logged warning** | Off by default. Enabled without a store: the factory logs and returns None. Writes are fire-and-forget off the event loop; a failing insert is logged and swallowed -- dispatch never fails or slows (`learning/delegation.py`, `orchestration/dispatch_helpers.py`) |
 | Trust decay / min-interaction gate (`TRUST_DECAY_ENABLED`, `TRUST_MIN_INTERACTIONS`) | Flags unset, or an unparseable `last_updated` timestamp | **Passthrough** | Off by default: with both unset, routing reads raw stored scores (exact passthrough). When on, adjustments are derived at read time and stored scores are never mutated -- unset the flag and behavior reverts instantly. Decay shifts a routing score by at most ~0.09 (the 0.19 trust cap x full decay): tiebreak-level, expected, never page. An unparseable timestamp skips decay for that agent (no adjustment) (`learning/trust_guard.py`, `api/routes/chat.py`) |
 | Trust burst detection (`TRUST_BURST_DETECTION_ENABLED`) | Toggle unset, no learning store, or a failure on either storage stack | **Degrades to no-op with a logged warning** | Off by default. Detect-only scan on each feedback write: flags positive-signal bursts and single-source domination as integrity flags plus a best-effort check-in -- routing is never altered, and a failing store or tracker never fails the feedback request (`learning/trust_guard.py`, `api/routes/feedback.py`) |
+| Context-pressure signal (`CONTEXT_PRESSURE_ENABLED`) | Flag unset, or any estimator failure | **Passthrough** (failure = debug-logged no-op) | Off by default. Detect-only check on every LLM call: warns once per (phase, reason) per process + increments `context_pressure_total` per event when the assembled prompt nears the configured window (`reason=window`, chars/4 heuristic) or a single field exceeds the client's per-field truncation cap (`reason=field_truncation`, exact -- the client truncates that field on the next line). The call is never delayed, blocked, or altered. WITHOUT the `[metrics]` extra the counter no-ops, so one warning per (phase, reason) per process lifetime is the ONLY signal -- install `[metrics]` where trend visibility matters (`llm/context_pressure.py`, `llm/client.py`) |
 | OTel phase tracing | `[otel]` extra not installed, or no tracer provider configured | **No-op** | Without the extra, `phase_span` is a plain `nullcontext`; with the extra but no provider, spans are non-recording (the OTel API default). Wrapped code runs unchanged either way (`observability/tracing.py`) |
 {% else -%}
 | Extraction detection | Activity events not recorded / store unavailable | **Inert** | Timing analysis, read-volume guard, and burst checks all key off activity events; without tracking they observe nothing (`learning/extraction_guard.py`) |
@@ -78,6 +79,8 @@ Work top-down; each step is cheaper than the one below it.
 | `llm_tokens_total` | `direction` (input / output) | Input-token growth = prompt bloat |
 | `llm_cost_dollars_total` | -- | Spend rate (all tenants combined) |
 | `corrections_lifecycle_total` | `action` (propose / approve / reject / retire / revalidate) | Approvals without proposals, mass retirements |
+| `trust_events_total` | `action` (burst_flagged / domination_flagged / checkin_created) | Any non-zero count = review the matching integrity flags (opt-in: `TRUST_BURST_DETECTION_ENABLED`) |
+| `context_pressure_total` | `phase` (analysis / challenge / vote / synthesis / premise / single_shot / chat / other), `reason` (window / field_truncation) | Sustained `field_truncation` = that phase's prompts ARE being cut; rising `window` = capacity trend (opt-in: `CONTEXT_PRESSURE_ENABLED`) |
 
 {% if include_api_gateway -%}
 The endpoint is authenticated with the **same bearer API key as the
@@ -252,6 +255,17 @@ Both flags are detect-only (routing is never altered) and deduped per
 (agent, tenant) via the standard integrity-flag hit counter. Resolve via
 the anomalies endpoint{% if not include_api_gateway %} (not generated here -- update the store row directly){% endif %}; the `trust_events_total{action}` counter
 tracks new flags and check-ins.
+
+Context-pressure triage (`CONTEXT_PRESSURE_ENABLED`): warns are a
+capacity trend, never page. The counter is the durable signal and the
+log is a first-occurrence breadcrumb -- do NOT infer "no new logs =
+resolved" on a long-lived process. `reason=field_truncation` means that
+phase's prompts ARE being truncated: trim what feeds the offending field
+(history depth, analyses count, corrections context).  `reason=window`
+means raise `CONTEXT_PRESSURE_WINDOW_TOKENS` to match your model's real
+window, or trim inputs. Raising the window moves only the window
+condition; field-truncation detection keys off the LLM client's own
+per-field cap and never moves with it.
 
 ---
 
