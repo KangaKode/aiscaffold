@@ -79,6 +79,7 @@ Provider-agnostic wrapper supporting Anthropic, OpenAI, and Google. Auto-detects
 - `llm/budget_manager.py` -- Per-tenant LLM spend governance: warn/exhaust thresholds, tenant context propagation via contextvars, and a pre-call gate that raises `BudgetExceededError` for exhausted tenants
 - `llm/mock.py` -- `MockLLMClient`: deterministic, offline, zero-cost LLM client (role-keyed canned responses or a scripted list) for tests and demos with no API key
 - `llm/model_config.py` + `llm/model_router.py` -- Optional model routing across four cost tiers (nano/budget/standard/frontier). The tier map and role->tier assignments are env/JSON-configurable (no hardcoded price table); the router does heuristic tier selection, one-tier cascade on failure, a per-tier circuit breaker, and budget-aware downgrades via `BudgetManager.remaining_pct`. Off unless `MODEL_ROUTING_ENABLED` is set -- and even then it is initialized at the gateway but not yet consulted by the LLM client; wiring `route()`/`cascade()` into your client is an extension point (see GOVERNANCE.md Non-Claims)
+- `llm/context_pressure.py` -- Detect-only context-pressure signal (`CONTEXT_PRESSURE_ENABLED`, default off): every `client.call()` checks the assembled prompt against a configurable token window (chars/4 heuristic) and the client's exact per-field truncation cap, emitting a once-per-(phase, reason) warning plus the `context_pressure_total` counter. Never blocks, compacts, or alters the prompt
 
 **Key files:** `llm/client.py`, `llm/budget_manager.py`, `llm/model_router.py`
 

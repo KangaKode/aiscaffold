@@ -28,8 +28,8 @@ prometheus_client's multiprocess mode (PROMETHEUS_MULTIPROC_DIR + a
 shared CollectorRegistry) -- that is a "you add" extension, see
 docs/OPERATIONS.md.
 
-Keep this file under 220 lines. (Raised from 200 when the trust-guard
-counter landed; the context-pressure counter shares this headroom.)
+Keep this file under 235 lines. (Raised from 220: the context-pressure
+counter + its PHASES/REASONS bounds outgrew A1's predicted headroom.)
 """
 
 import logging
@@ -67,6 +67,12 @@ class _NoopInstrument:
 # Deliberation phases run 1-100+ seconds, so buckets stretch far beyond
 # the prometheus_client defaults (which top out at 10s).
 DURATION_BUCKETS = (0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0)
+
+# Context-pressure label bounds (llm/context_pressure.py imports us --
+# defining these there would be an import cycle; this stays a leaf).
+PHASES = ("analysis", "challenge", "vote", "synthesis", "premise",
+          "single_shot", "chat", "other")
+REASONS = ("window", "field_truncation")
 
 if PROMETHEUS_AVAILABLE:
     _deliberations_total = Counter(
@@ -109,6 +115,11 @@ if PROMETHEUS_AVAILABLE:
         "Trust-guard detection events by action",
         ["action"],
     )
+    _context_pressure_total = Counter(
+        "context_pressure_total",
+        "Context-pressure detections by phase and reason",
+        ["phase", "reason"],
+    )
 else:
     _noop = _NoopInstrument()
     _deliberations_total = _noop
@@ -119,6 +130,7 @@ else:
     _llm_cost_dollars_total = _noop
     _corrections_lifecycle_total = _noop
     _trust_events_total = _noop
+    _context_pressure_total = _noop
 
 
 def record_deliberation(outcome: str, duration_seconds: float) -> None:
@@ -198,6 +210,20 @@ def record_trust_event(action: str) -> None:
         _trust_events_total.labels(action=action or "unknown").inc()
     except Exception as exc:
         logger.warning(f"[Metrics] record_trust_event failed: {exc}")
+
+
+def record_context_pressure(phase: str, reason: str) -> None:
+    """One context-pressure detection; labels clamp to the tuples above.
+    DEBUG on failure (fires per event; must not warn-flood). Never raises."""
+    if not PROMETHEUS_AVAILABLE:
+        return
+    try:
+        _context_pressure_total.labels(
+            phase=phase if phase in PHASES else "other",
+            reason=reason if reason in REASONS else "window",
+        ).inc()
+    except Exception as exc:
+        logger.debug(f"[Metrics] record_context_pressure failed: {exc}")
 
 
 def render_prometheus() -> bytes:

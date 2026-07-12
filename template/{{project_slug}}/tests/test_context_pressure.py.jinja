@@ -1,0 +1,374 @@
+"""
+Detect-only context-pressure signal (CONTEXT_PRESSURE_ENABLED, default off).
+
+Two independent conditions, both detect-only (never block, compact, or
+alter the prompt):
+  window          -- aggregate chars/4 estimate >= threshold * window_tokens
+  field_truncation -- any single prompt field STRICTLY over the client's
+                      per-field truncation cap (the exact quantity
+                      _sanitize_prompt truncates at on the next line)
+
+Flag off (the shipped default) the check reads one env var and returns:
+no logs, no metrics, no prompt access -- pinned by T1/T2. llm/ and
+observability/ ship in ALL profiles, so this file runs everywhere
+including gateway-off.
+"""
+
+import logging
+from unittest.mock import MagicMock
+
+import pytest
+
+from {{project_slug}}.llm import context_pressure as cp
+from {{project_slug}}.llm.client import (
+    CacheablePrompt,
+    LLMClient,
+    LLMResponse,
+    TokenUsage,
+)
+from {{project_slug}}.observability import metrics
+
+PRESSURE_ENV_VARS = (
+    cp.CONTEXT_PRESSURE_ENV,
+    cp.CONTEXT_PRESSURE_WINDOW_ENV,
+    cp.CONTEXT_PRESSURE_THRESHOLD_ENV,
+)
+
+
+@pytest.fixture(autouse=True)
+def _pressure_reset(monkeypatch):
+    """Flags unset + warn-once seen-set cleared, so no test order matters."""
+    for var in PRESSURE_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    cp._reset_warned()
+    yield
+    cp._reset_warned()
+
+
+@pytest.fixture
+def recorder_calls(monkeypatch):
+    """Capture record_context_pressure calls made by the check."""
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        cp, "record_context_pressure", lambda phase, reason: calls.append((phase, reason))
+    )
+    return calls
+
+
+def _mk_client(**kwargs) -> LLMClient:
+    """LLM client with a fake SDK handle (test_detection_wiring pattern)."""
+    client = LLMClient(
+        provider="anthropic", api_key="test-key", max_retries=0, **kwargs
+    )
+    client._client = MagicMock()
+    return client
+
+
+def _capture_provider(client: LLMClient, prompts: list):
+    """Replace _call_provider with a stub recording the prompt it received."""
+
+    async def fake_provider(prompt, temp, max_tok, model=None):
+        prompts.append(prompt)
+        return LLMResponse(
+            content="ok",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+            provider="test",
+            model=model or "unset",
+        )
+
+    client._call_provider = fake_provider
+
+
+class _UntouchablePrompt:
+    """Raises on ANY attribute access: condition 2 reads the three fields
+    directly, so guarding only total_length would under-pin flag-off cost."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"prompt attribute accessed with flag off: {name}")
+
+
+def _pressure_records(caplog):
+    return [r for r in caplog.records if "[ContextPressure]" in r.getMessage()]
+
+
+# =============================================================================
+# T1-T2: flag off (the shipped default) is a no-op
+# =============================================================================
+
+
+class TestFlagOffRegression:
+    @pytest.mark.asyncio
+    async def test_default_off_no_signal(self, recorder_calls, caplog):
+        """T1: a huge prompt through client.call() with env unset -- response
+        unchanged, zero pressure logs, counter untouched."""
+        caplog.set_level(logging.DEBUG)
+        client = _mk_client()
+        prompts: list = []
+        _capture_provider(client, prompts)
+        huge = CacheablePrompt(user_message="x" * 300_000)
+        response = await client.call(prompt=huge, role="synthesis")
+        assert response.content == "ok"
+        assert _pressure_records(caplog) == []
+        assert recorder_calls == []
+
+    def test_default_off_env_read_only(self, caplog):
+        """T2: flag unset never touches the prompt object at all -- and no
+        [ContextPressure] record fires at ANY level, so a future refactor
+        that moves the prompt access inside the try block (swallowing the
+        stub's AssertionError into the debug no-op path) still fails here."""
+        caplog.set_level(logging.DEBUG)
+        cp.check_context_pressure(_UntouchablePrompt(), "synthesis", 100)
+        assert _pressure_records(caplog) == []
+
+
+# =============================================================================
+# T3-T5: estimator math and env parsing
+# =============================================================================
+
+
+class TestEstimatorAndEnv:
+    def test_estimator_math(self):
+        """T3: estimated_tokens = total_length // CHARS_PER_TOKEN."""
+        prompt = CacheablePrompt(
+            system="a" * 100, context="b" * 50, user_message="c" * 50
+        )
+        assert cp.estimated_tokens(prompt) == 200 // cp.CHARS_PER_TOKEN
+        assert cp.estimated_tokens(CacheablePrompt()) == 0
+
+    def test_threshold_boundary(self, monkeypatch, recorder_calls):
+        """T4: est == threshold*window fires; one token below does not."""
+        monkeypatch.setenv(cp.CONTEXT_PRESSURE_ENV, "true")
+        monkeypatch.setenv(cp.CONTEXT_PRESSURE_WINDOW_ENV, "100")
+        monkeypatch.setenv(cp.CONTEXT_PRESSURE_THRESHOLD_ENV, "0.5")
+        below = CacheablePrompt(user_message="x" * 196)  # 49 tokens < 50
+        cp.check_context_pressure(below, "synthesis", 10**9)
+        assert recorder_calls == []
+        at = CacheablePrompt(user_message="x" * 200)  # 50 tokens == 50
+        cp.check_context_pressure(at, "synthesis", 10**9)
+        assert recorder_calls == [("synthesis", "window")]
+
+    def test_env_parsing(self, monkeypatch):
+        """T5: truthy set matches the detection-hook precedent; garbage or
+        out-of-range numerics fall back to the documented defaults."""
+        for raw in ("true", "1", "yes", "TRUE", " True "):
+            monkeypatch.setenv(cp.CONTEXT_PRESSURE_ENV, raw)
+            assert cp.resolve_pressure_flags().enabled
+        for raw in ("", "false", "0", "no", "enabled"):
+            monkeypatch.setenv(cp.CONTEXT_PRESSURE_ENV, raw)
+            assert not cp.resolve_pressure_flags().enabled
+        monkeypatch.setenv(cp.CONTEXT_PRESSURE_WINDOW_ENV, "garbage")
+        monkeypatch.setenv(cp.CONTEXT_PRESSURE_THRESHOLD_ENV, "garbage")
+        flags = cp.resolve_pressure_flags()
+        assert flags.window_tokens == cp.DEFAULT_WINDOW_TOKENS
+        assert flags.threshold == cp.DEFAULT_THRESHOLD
+        for bad in ("0", "-5"):
+            monkeypatch.setenv(cp.CONTEXT_PRESSURE_WINDOW_ENV, bad)
+            assert cp.resolve_pressure_flags().window_tokens == cp.DEFAULT_WINDOW_TOKENS
+        for bad in ("0", "-0.1", "1.5"):
+            monkeypatch.setenv(cp.CONTEXT_PRESSURE_THRESHOLD_ENV, bad)
+            assert cp.resolve_pressure_flags().threshold == cp.DEFAULT_THRESHOLD
+
+
+# =============================================================================
+# T6: label bounding (SRE cardinality invariant)
+# =============================================================================
+
+# Measured from the tree (rg 'role="' src/): 24 runtime call sites, 23
+# distinct roles. enforcement_rewrite / specialist / assistant are
+# INTENTIONALLY "other" (recorded decision in the plan); everything else
+# must land in its named bucket -- a shipped role silently regressing to
+# "other" fails this table.
+EXPECTED_PHASES = {
+    "sentinel_analysis": "analysis",
+    "skeptic_analysis": "analysis",
+    "evidence_analysis": "analysis",
+    "quality_analysis": "analysis",
+    "sentinel_challenge": "challenge",
+    "skeptic_challenge": "challenge",
+    "evidence_challenge": "challenge",
+    "quality_challenge": "challenge",
+    "fact_checker_challenge": "challenge",
+    "citation_challenge": "challenge",
+    "sentinel_vote": "vote",
+    "skeptic_vote": "vote",
+    "evidence_vote": "vote",
+    "quality_vote": "vote",
+    "fact_checker_vote": "vote",
+    "citation_vote": "vote",
+    "synthesis": "synthesis",
+    "chat_synthesis": "chat",
+    "cross_check": "chat",
+    "premise_validation": "premise",
+    "single_shot_resolution": "single_shot",
+    "enforcement_rewrite": "other",
+    "specialist": "other",
+    "assistant": "other",
+}
+
+
+class TestLabelBounding:
+    def test_phase_bucketing_exact(self):
+        """T6: every shipped role maps to its EXACT expected phase (exact
+        table wins before suffix matching -- chat_synthesis must not
+        suffix-match to "synthesis"); arbitrary strings bucket to "other"."""
+        for role, phase in EXPECTED_PHASES.items():
+            assert cp.phase_for_role(role) == phase, role
+        for junk in ("x", "", "accuracy_judge", "z" * 500, None):
+            assert cp.phase_for_role(junk) == "other"
+        assert set(EXPECTED_PHASES.values()) <= set(metrics.PHASES)
+
+    def test_recorder_clamps_labels(self, monkeypatch):
+        """T6b: the metrics recorder does not trust its caller -- junk labels
+        clamp to ("other", "window") instead of minting new series."""
+        fake = MagicMock()
+        monkeypatch.setattr(metrics, "PROMETHEUS_AVAILABLE", True)
+        monkeypatch.setattr(metrics, "_context_pressure_total", fake)
+        metrics.record_context_pressure("garbage", "junk")
+        fake.labels.assert_called_once_with(phase="other", reason="window")
+        fake.labels.return_value.inc.assert_called_once()
+
+
+# =============================================================================
+# T7-T9c: behavior under fire
+# =============================================================================
+
+
+class TestPressureBehavior:
+    def _enable(self, monkeypatch, window="100", threshold="0.5"):
+        monkeypatch.setenv(cp.CONTEXT_PRESSURE_ENV, "true")
+        monkeypatch.setenv(cp.CONTEXT_PRESSURE_WINDOW_ENV, window)
+        monkeypatch.setenv(cp.CONTEXT_PRESSURE_THRESHOLD_ENV, threshold)
+
+    def test_warn_once_counter_every_time(self, monkeypatch, recorder_calls, caplog):
+        """T7: two over-threshold calls, same (phase, reason) -> ONE warning,
+        TWO counter increments; a different phase warns again."""
+        caplog.set_level(logging.WARNING)
+        self._enable(monkeypatch)
+        over = CacheablePrompt(user_message="x" * 400)
+        cp.check_context_pressure(over, "synthesis", 10**9)
+        cp.check_context_pressure(over, "synthesis", 10**9)
+        assert recorder_calls == [("synthesis", "window")] * 2
+        assert len(_pressure_records(caplog)) == 1
+        cp.check_context_pressure(over, "premise_validation", 10**9)
+        assert len(_pressure_records(caplog)) == 2
+
+    def test_fires_without_metrics_extra(self, monkeypatch, caplog):
+        """T8: PROMETHEUS_AVAILABLE=False -- the warning log still fires
+        (works in every profile without the [metrics] extra)."""
+        caplog.set_level(logging.WARNING)
+        monkeypatch.setattr(metrics, "PROMETHEUS_AVAILABLE", False)
+        self._enable(monkeypatch)
+        cp.check_context_pressure(
+            CacheablePrompt(user_message="x" * 400), "synthesis", 10**9
+        )
+        assert len(_pressure_records(caplog)) == 1
+
+    def test_field_truncation_boundary(self, monkeypatch, recorder_calls):
+        """T9 (unit): exact boundary -- len == field_cap does NOT fire
+        (sanitize_for_prompt truncates on strict >), len == field_cap + 1
+        DOES; a non-default cap shifts the boundary."""
+        self._enable(monkeypatch, window="1000000")
+        at_cap = CacheablePrompt(user_message="x" * 100)
+        cp.check_context_pressure(at_cap, "synthesis", 100)
+        assert recorder_calls == []
+        over_cap = CacheablePrompt(user_message="x" * 101)
+        cp.check_context_pressure(over_cap, "synthesis", 100)
+        assert recorder_calls == [("synthesis", "field_truncation")]
+        cp.check_context_pressure(over_cap, "premise_validation", 101)
+        assert recorder_calls == [("synthesis", "field_truncation")]
+
+    @pytest.mark.asyncio
+    async def test_field_truncation_end_to_end(self, monkeypatch, caplog):
+        """T9 (end to end): one field over the client's real per-field cap,
+        aggregate far under the window -- fires reason=field_truncation AND
+        the provider still receives the truncated prompt (detection precedes,
+        never replaces, truncation)."""
+        caplog.set_level(logging.WARNING)
+        self._enable(monkeypatch, window="1000000")
+        client = _mk_client(max_prompt_length=300)  # per-field cap = 100
+        prompts: list = []
+        _capture_provider(client, prompts)
+        await client.call(
+            prompt=CacheablePrompt(user_message="x" * 150), role="synthesis"
+        )
+        records = _pressure_records(caplog)
+        assert len(records) == 1
+        assert "field_truncation" in records[0].getMessage()
+        # Exact payload pins _sanitize_prompt's cap at the client level
+        # (would catch a mis-derived _per_field_cap, e.g. a wrong // 3).
+        assert prompts[0].user_message == "x" * 100 + "\n[TRUNCATED]"
+
+    def test_window_fires_without_field_truncation(self, monkeypatch, recorder_calls):
+        """T9b: aggregate over threshold*window, every field under the cap
+        -- reason=window only."""
+        self._enable(monkeypatch, window="100", threshold="0.5")
+        spread = CacheablePrompt(
+            system="a" * 70, context="b" * 70, user_message="c" * 70
+        )
+        cp.check_context_pressure(spread, "synthesis", 100)
+        assert recorder_calls == [("synthesis", "window")]
+
+    def test_both_conditions_trip_independently(
+        self, monkeypatch, recorder_calls, caplog
+    ):
+        """T9c: one huge field trips field_truncation AND pushes the
+        aggregate over the window -- BOTH reasons fire (no early return)."""
+        caplog.set_level(logging.WARNING)
+        self._enable(monkeypatch, window="100", threshold="0.5")
+        huge = CacheablePrompt(user_message="x" * 400)
+        cp.check_context_pressure(huge, "synthesis", 100)
+        assert sorted(recorder_calls) == [
+            ("synthesis", "field_truncation"),
+            ("synthesis", "window"),
+        ]
+        assert len(_pressure_records(caplog)) == 2
+
+
+# =============================================================================
+# T10-T11: never break the call
+# =============================================================================
+
+
+class TestNeverBreakTheCall:
+    @pytest.mark.asyncio
+    async def test_estimator_failure_nonfatal(self, monkeypatch, caplog):
+        """T10: a failing estimator is a debug-logged no-op; the call
+        succeeds and no exception escapes."""
+        caplog.set_level(logging.DEBUG)
+        monkeypatch.setenv(cp.CONTEXT_PRESSURE_ENV, "true")
+
+        def boom(_prompt):
+            raise RuntimeError("estimator broke")
+
+        monkeypatch.setattr(cp, "estimated_tokens", boom)
+        client = _mk_client()
+        prompts: list = []
+        _capture_provider(client, prompts)
+        response = await client.call(prompt="hello", role="synthesis")
+        assert response.content == "ok"
+        assert not any(
+            r.levelno > logging.DEBUG for r in _pressure_records(caplog)
+        )
+
+    @pytest.mark.asyncio
+    async def test_call_result_byte_identical_flag_on(self, monkeypatch):
+        """T11: detect-never-act pinned end to end -- same call with the flag
+        on vs off yields an identical response and an identical prompt
+        reaching the provider."""
+        prompt_text = "y" * 500
+        results = []
+        for enabled in (False, True):
+            cp._reset_warned()
+            if enabled:
+                monkeypatch.setenv(cp.CONTEXT_PRESSURE_ENV, "true")
+                monkeypatch.setenv(cp.CONTEXT_PRESSURE_WINDOW_ENV, "10")
+            else:
+                monkeypatch.delenv(cp.CONTEXT_PRESSURE_ENV, raising=False)
+                monkeypatch.delenv(cp.CONTEXT_PRESSURE_WINDOW_ENV, raising=False)
+            client = _mk_client()
+            prompts: list = []
+            _capture_provider(client, prompts)
+            response = await client.call(prompt=prompt_text, role="synthesis")
+            results.append((response.content, prompts[0]))
+        assert results[0][0] == results[1][0]
+        assert results[0][1] == results[1][1]

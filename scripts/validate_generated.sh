@@ -515,7 +515,7 @@ elif [ -d "$GEN_ROOT/tests" ]; then
 
     # Run all test files (all use mocks/in-process testing, no external deps)
     UNIT_FILES=""
-    for f in tests/test_security.py tests/test_injection_defense.py tests/test_ingest_scan.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_extraction_defense.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_safety_fail_closed.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py tests/test_learning_hygiene.py tests/test_trust_guard.py tests/test_tenant_integrity.py tests/test_detection_wiring.py tests/test_credential_currency.py tests/test_detection_regressions.py; do
+    for f in tests/test_security.py tests/test_injection_defense.py tests/test_ingest_scan.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_extraction_defense.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_safety_fail_closed.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py tests/test_learning_hygiene.py tests/test_trust_guard.py tests/test_context_pressure.py tests/test_tenant_integrity.py tests/test_detection_wiring.py tests/test_credential_currency.py tests/test_detection_regressions.py; do
         if [ -f "$f" ]; then
             UNIT_FILES="$UNIT_FILES $f"
         fi
@@ -699,6 +699,14 @@ else
     # Docs must not advertise HTTP-server workflows that do not exist.
     lacks "gateway off: OPERATIONS.md has no serve-prod reference" 'serve-prod' docs/OPERATIONS.md
     lacks "gateway off: OPERATIONS.md cites no api/ modules" 'api/gateway\.py|api/routes/|api/middleware/' docs/OPERATIONS.md
+    # The context-pressure signal is wired in the LLM client (active in
+    # every profile), so its posture row -- carrying the no-[metrics]
+    # blind-spot note -- must render with the gateway off too. Pattern is
+    # the row's header cell, which appears ONLY in the posture row (the
+    # monitor table and triage section mention the flag in other phrasings
+    # and would keep a bare-flag grep green if the row regressed into the
+    # gateway-only branch).
+    has "gateway off: OPERATIONS.md documents context-pressure posture" 'Context-pressure signal \(.CONTEXT_PRESSURE_ENABLED.\) \| Flag unset' docs/OPERATIONS.md
     lacks "gateway off: README advertises no HTTP endpoint" 'localhost:8000' README.md
     if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
         # gateway-off + deployment-on: the image CMD prints usage and

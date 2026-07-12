@@ -22,6 +22,7 @@ incident, not during it.
 | Learning system init | Store init raises at startup | **Degrades to no-op** | The gateway logs a warning and continues serving; learning features are absent, core deliberation is unaffected (`api/gateway.py`) |
 {% endif -%}
 | Budget tracking | No store (or store write fails) | **In-memory fallback** | Spend accumulates in process memory and caps live in process memory too; both **reset on restart** -- a restart silently refills every tenant's budget until a store is attached. With a store, spend (`budget_spend`) and caps (`budget_configs`) both survive restarts; changing a cap never resets recorded spend. Cap configs are cached per process and re-read at most every `BUDGET_CONFIG_TTL_SECONDS` (default 60s), so cross-replica cap changes converge within the TTL (`llm/budget_manager.py`) |
+| Context-pressure signal (`CONTEXT_PRESSURE_ENABLED`) | Flag unset, or any estimator failure | **Passthrough** (failure = debug-logged no-op) | Off by default. Detect-only check on every LLM call (wired in the LLM client itself, so it is active in every profile, gateway or not): warns once per (phase, reason) per process + increments `context_pressure_total` per event when the assembled prompt nears the configured window (`reason=window`, chars/4 heuristic) or a single field exceeds the client's per-field truncation cap (`reason=field_truncation`, exact -- the client truncates that field on the next line). The call is never delayed, blocked, or altered. WITHOUT the `[metrics]` extra the counter no-ops, so one warning per (phase, reason) per process lifetime is the ONLY signal -- install `[metrics]` where trend visibility matters (`llm/context_pressure.py`, `llm/client.py`) |
 {% if include_api_gateway -%}
 | Rate limiting | Always in-memory | **Per-process, resets on restart** | The sliding window lives in process memory; multiple replicas each enforce the limit independently (`api/middleware/rate_limit.py`) |
 | Extraction detection | `ACTIVITY_TRACKING_ENABLED=false` or store unavailable | **Inert** | Timing analysis, read-volume guard, and burst checks all key off activity events; without tracking they observe nothing. The gateway logs a one-time warning (`api/gateway.py`, `learning/extraction_guard.py`) |
@@ -78,6 +79,8 @@ Work top-down; each step is cheaper than the one below it.
 | `llm_tokens_total` | `direction` (input / output) | Input-token growth = prompt bloat |
 | `llm_cost_dollars_total` | -- | Spend rate (all tenants combined) |
 | `corrections_lifecycle_total` | `action` (propose / approve / reject / retire / revalidate) | Approvals without proposals, mass retirements |
+| `trust_events_total` | `action` (burst_flagged / domination_flagged / checkin_created) | Any non-zero count = review the matching integrity flags (opt-in: `TRUST_BURST_DETECTION_ENABLED`) |
+| `context_pressure_total` | `phase` (analysis / challenge / vote / synthesis / premise / single_shot / chat / other), `reason` (window / field_truncation) | Sustained `field_truncation` = that phase's prompts ARE being cut; rising `window` = capacity trend (opt-in: `CONTEXT_PRESSURE_ENABLED`) |
 
 {% if include_api_gateway -%}
 The endpoint is authenticated with the **same bearer API key as the
@@ -252,6 +255,17 @@ Both flags are detect-only (routing is never altered) and deduped per
 (agent, tenant) via the standard integrity-flag hit counter. Resolve via
 the anomalies endpoint{% if not include_api_gateway %} (not generated here -- update the store row directly){% endif %}; the `trust_events_total{action}` counter
 tracks new flags and check-ins.
+
+Context-pressure triage (`CONTEXT_PRESSURE_ENABLED`): warns are a
+capacity trend, never page. The counter is the durable signal and the
+log is a first-occurrence breadcrumb -- do NOT infer "no new logs =
+resolved" on a long-lived process. `reason=field_truncation` means that
+phase's prompts ARE being truncated: trim what feeds the offending field
+(history depth, analyses count, corrections context).  `reason=window`
+means raise `CONTEXT_PRESSURE_WINDOW_TOKENS` to match your model's real
+window, or trim inputs. Raising the window moves only the window
+condition; field-truncation detection keys off the LLM client's own
+per-field cap and never moves with it.
 
 ---
 

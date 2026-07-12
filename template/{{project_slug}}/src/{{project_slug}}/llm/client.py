@@ -3,8 +3,8 @@ Provider-agnostic LLM client with prompt caching and token tracking.
 
 Supports Anthropic (Claude), OpenAI (GPT), Google (Gemini) -- the
 provider-specific call implementations live in provider_calls.py; this
-module owns the call lifecycle (sanitization, budget checks, retries,
-opt-in model routing, usage tracking).
+module owns the call lifecycle (context-pressure detection, sanitization,
+budget checks, retries, opt-in model routing, usage tracking).
 Uses CacheablePrompt(system, context, user_message) for automatic caching.
 """
 
@@ -19,6 +19,7 @@ from typing import Any
 from ..observability.metrics import record_llm_call
 from ..security.prompt_guard import sanitize_for_prompt
 from .budget_manager import enforce_budget, record_response_spend
+from .context_pressure import check_context_pressure
 from .model_router import cascade_for_call, route_for_call
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,11 @@ class LLMClient:
         self._api_key = api_key or self._load_api_key()
         self._timeout = timeout
         self._max_retries = max_retries
-        self._max_prompt_length = max_prompt_length
+        # Single source of truth for the per-field truncation point --
+        # shared by _sanitize_prompt and the context-pressure check so
+        # the two can never desync. (Replaces the former
+        # _max_prompt_length attribute, which nothing read directly.)
+        self._per_field_cap = max_prompt_length // 3
         self._max_cost_usd = max_cost_usd
         # Optional BudgetManager; None = no checks (zero-config unchanged)
         self.budget_manager = budget_manager
@@ -221,6 +226,10 @@ class LLMClient:
         """Make an LLM call with prompt caching, retries, and budget enforcement."""
         if isinstance(prompt, str):
             prompt = CacheablePrompt(user_message=prompt)
+
+        # Detect-only, opt-in (default off), never raises. Measured on
+        # what the caller ASSEMBLED, before _sanitize_prompt truncates.
+        check_context_pressure(prompt, role, self._per_field_cap)
 
         prompt = self._sanitize_prompt(prompt)
 
@@ -334,14 +343,12 @@ class LLMClient:
     def _sanitize_prompt(self, prompt: CacheablePrompt) -> CacheablePrompt:
         """Enforce size limits and sanitize prompt content."""
         return CacheablePrompt(
-            system=sanitize_for_prompt(
-                prompt.system, max_length=self._max_prompt_length // 3
-            ),
+            system=sanitize_for_prompt(prompt.system, max_length=self._per_field_cap),
             context=sanitize_for_prompt(
-                prompt.context, max_length=self._max_prompt_length // 3
+                prompt.context, max_length=self._per_field_cap
             ),
             user_message=sanitize_for_prompt(
-                prompt.user_message, max_length=self._max_prompt_length // 3
+                prompt.user_message, max_length=self._per_field_cap
             ),
         )
 
