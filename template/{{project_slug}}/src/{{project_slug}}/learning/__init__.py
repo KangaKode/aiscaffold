@@ -48,6 +48,11 @@ from .error_schemata import (  # noqa: F401
     get_schemas_for_context,
 )
 from .contradiction import ContradictionFinding, scan_corrections  # noqa: F401
+from .trust_guard import (  # noqa: F401
+    check_feedback_burst,
+    effective_trust_scores,
+    resolve_trust_flags,
+)
 
 __all__ = [
     "FeedbackSignal",
@@ -94,4 +99,7 @@ __all__ = [
     "get_schemas_for_context",
     "ContradictionFinding",
     "scan_corrections",
+    "check_feedback_burst",
+    "effective_trust_scores",
+    "resolve_trust_flags",
 ]

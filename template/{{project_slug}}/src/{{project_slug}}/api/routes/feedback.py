@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from ...learning.feedback_tracker import FeedbackTracker
 from ...learning.models import FeedbackSignal
+from ...learning.trust_guard import check_feedback_burst, resolve_trust_flags
 from ...security import ValidationError, validate_length
 from ..middleware.auth import AuthContext, verify_api_key
 from ..middleware.rate_limit import check_rate_limit
@@ -99,6 +100,19 @@ async def record_feedback(
     trust_mgr = getattr(request.app.state, "trust_manager", None)
     if trust_mgr and signal.agent_id:
         await asyncio.to_thread(trust_mgr.update_from_signal, signal)
+
+    # Opt-in trust-guard burst scan (detect-only, fire-and-forget). The
+    # env check keeps the flag-off route byte-equivalent: no thread hop,
+    # no store access. The signal's own project scope is threaded through.
+    if signal.agent_id and resolve_trust_flags().burst_enabled:
+        await asyncio.to_thread(
+            check_feedback_burst,
+            getattr(request.app.state, "learning_store", None),
+            tracker,
+            signal.agent_id,
+            signal.project_id,
+            checkin_manager=getattr(request.app.state, "checkin_manager", None),
+        )
 
     return FeedbackResponse(
         id=recorded.id,
