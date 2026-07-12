@@ -624,20 +624,15 @@ class TestFeedbackAPI:
 # =============================================================================
 
 
-class _UntouchableStore:
-    """Any access means the flag-off gate leaked -- fail loudly."""
+class _RaisingStore:
+    """Every operation raises: AssertionError = flag-off leak canary,
+    RuntimeError = store down."""
+
+    def __init__(self, exc):
+        self._exc = exc
 
     def query(self, *a, **k):
-        raise AssertionError("learning store touched with TRUST_* off")
-
-    insert = update = query
-
-
-class _DownStore:
-    """Portable store that is down (every operation raises)."""
-
-    def query(self, *a, **k):
-        raise RuntimeError("store down")
+        raise self._exc
 
     insert = update = query
 
@@ -668,7 +663,9 @@ class TestTrustGuardFeedbackRoute:
 
         monkeypatch.delenv(TRUST_BURST_ENV, raising=False)
         app, client = feedback_app
-        app.state.learning_store = _UntouchableStore()
+        app.state.learning_store = _RaisingStore(
+            AssertionError("learning store touched with TRUST_* off")
+        )
         r = await client.post("/api/v1/feedback", json={
             "signal_type": "accept",
             "agent_id": "trusted_agent",
@@ -687,7 +684,7 @@ class TestTrustGuardFeedbackRoute:
 
         monkeypatch.setenv(TRUST_BURST_ENV, "true")
         app, client = feedback_app
-        app.state.learning_store = _DownStore()
+        app.state.learning_store = _RaisingStore(RuntimeError("store down"))
         r = await client.post("/api/v1/feedback", json={
             "signal_type": "accept",
             "agent_id": "trusted_agent",
