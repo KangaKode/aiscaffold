@@ -102,9 +102,11 @@ def resolve_trust_flags() -> TrustFlags:
 
 
 def _parse_ts(value: str) -> datetime | None:
+    """Parse to an AWARE datetime (naive = local time): mixed naive/aware
+    raises on compare/subtract, so normalization happens at the boundary."""
     try:
-        return datetime.fromisoformat(value)
-    except (ValueError, TypeError):
+        return datetime.fromisoformat(value).astimezone()
+    except (ValueError, TypeError, OverflowError, OSError):
         return None
 
 
@@ -116,10 +118,7 @@ def decayed_score(
     updated = _parse_ts(last_updated_iso)
     if updated is None:
         return raw
-    now = now or datetime.now()
-    if (updated.tzinfo is None) != (now.tzinfo is None):
-        # Mixed naive/aware raises on subtraction; treat naive as local.
-        updated, now = updated.astimezone(), now.astimezone()
+    now = (now or datetime.now()).astimezone()
     age_days = max(0.0, (now - updated).total_seconds() / 86400.0)
     return 0.5 + (raw - 0.5) * 2 ** (-age_days / half_life_days)
 
@@ -178,7 +177,7 @@ def check_feedback_burst(
         return
     try:
         tenant = tenant_id or project_id
-        now = now or datetime.now()
+        now = (now or datetime.now()).astimezone()  # aware, like _parse_ts
         signals = tracker.get_signals(
             project_id=project_id, agent_id=agent_id, limit=SIGNAL_SCAN_LIMIT
         )

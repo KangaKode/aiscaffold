@@ -270,6 +270,19 @@ class TestBurstDetection:
         check_feedback_burst(store, tracker, "agent_a")
         assert len(_flags(store, "trust_positive_burst")) == 2  # re-armed
 
+    def test_burst_handles_aware_created_at(self, tracker, store, monkeypatch):
+        """Bugbot regression: tz-aware created_at rows must not silently
+        no-op the scan via a swallowed TypeError in the window compare."""
+        from datetime import timezone
+
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        aware_now = datetime.now(timezone.utc)
+        _record_positives(
+            tracker, BURST_POSITIVE_THRESHOLD, agent="agent_tz", now=aware_now
+        )
+        check_feedback_burst(store, tracker, "agent_tz", now=datetime.now())
+        assert len(_flags(store, "trust_positive_burst")) == 1
+
     def test_rate_only_campaign_flags(self, tracker, store, monkeypatch):
         """T7 (security finding 1): high-confidence rate signals are
         positives -- an accept-free campaign still trips the flag."""
