@@ -32,12 +32,15 @@ incident, not during it.
 | Model routing (`MODEL_ROUTING_ENABLED`) | Toggle unset or router errors | **Falls back to the configured model** | Off by default (single-model path unchanged). Any `route()` error uses the client's configured model; a failed cascade attempt is logged and the original error response is returned (`llm/model_router.py`, `llm/client.py`) |
 | Startup canary self-check (`STARTUP_CANARY_ENABLED`) | Toggle unset, or the self-check fails/crashes | **Never blocks startup** | Off by default. Failure logs an error and records a `startup_canary_failed` integrity flag (when a store exists); even a crashed check is swallowed (`api/detection_hooks.py`) |
 | Delegation records (`DELEGATION_RECORDS_ENABLED`) | Toggle unset, no learning store, or store write fails | **Degrades to no-op with a logged warning** | Off by default. Enabled without a store: the factory logs and returns None. Writes are fire-and-forget off the event loop; a failing insert is logged and swallowed -- dispatch never fails or slows (`learning/delegation.py`, `orchestration/dispatch_helpers.py`) |
+| Trust decay / min-interaction gate (`TRUST_DECAY_ENABLED`, `TRUST_MIN_INTERACTIONS`) | Flags unset, or an unparseable `last_updated` timestamp | **Passthrough** | Off by default: with both unset, routing reads raw stored scores (exact passthrough). When on, adjustments are derived at read time and stored scores are never mutated -- unset the flag and behavior reverts instantly. Decay shifts a routing score by at most ~0.09 (the 0.19 trust cap x full decay): tiebreak-level, expected, never page. An unparseable timestamp skips decay for that agent (no adjustment) (`learning/trust_guard.py`, `api/routes/chat.py`) |
+| Trust burst detection (`TRUST_BURST_DETECTION_ENABLED`) | Toggle unset, no learning store, or a failure on either storage stack | **Degrades to no-op with a logged warning** | Off by default. Detect-only scan on each feedback write: flags positive-signal bursts and single-source domination as integrity flags plus a best-effort check-in -- routing is never altered, and a failing store or tracker never fails the feedback request (`learning/trust_guard.py`, `api/routes/feedback.py`) |
 | OTel phase tracing | `[otel]` extra not installed, or no tracer provider configured | **No-op** | Without the extra, `phase_span` is a plain `nullcontext`; with the extra but no provider, spans are non-recording (the OTel API default). Wrapped code runs unchanged either way (`observability/tracing.py`) |
 {% else -%}
 | Extraction detection | Activity events not recorded / store unavailable | **Inert** | Timing analysis, read-volume guard, and burst checks all key off activity events; without tracking they observe nothing (`learning/extraction_guard.py`) |
 | Prometheus metrics | `[metrics]` extra not installed | **No-op** | Every record function is inert. Nothing else is affected (`observability/metrics.py`) |
 | OTel phase tracing | `[otel]` extra not installed, or no tracer provider configured | **No-op** | Without the extra, `phase_span` is a plain `nullcontext`; with the extra but no provider, spans are non-recording (the OTel API default). Wrapped code runs unchanged either way (`observability/tracing.py`) |
 | Detection hooks / model routing | No API gateway generated | **Library-level only** | The gateway auto-wiring (env toggles) is not present; pass a `baseline_tracker`/`collusion_detector`/`delegation_recorder` (see `create_delegation_recorder`) to `RoundTable`, attach a `ModelRouter` to `LLMClient.model_router`, or invoke the sequence detector yourself. Each degrades to a no-op with a logged warning on store failure (`learning/activity.py`, `learning/collusion.py`, `learning/delegation.py`, `harness/sequence_detector.py`, `llm/model_router.py`) |
+| Trust guard | No API gateway generated | **Library-level only** | The feedback-route auto-wiring is not present; read routing scores via `effective_trust_scores(trust_mgr)` (decay/gate flags apply) and call `check_feedback_burst(store, tracker, agent_id, project_id)` after recording signals. Fire-and-forget: failures are logged no-ops (`learning/trust_guard.py`) |
 {% endif -%}
 
 ## Recovery Hierarchy
@@ -227,6 +230,28 @@ Integrity flags and governance counts live in the learning store; there
 are no shipped HTTP endpoints for them in this project (no API gateway),
 so read them from the store's tables directly.
 {% endif -%}
+
+Trust-guard flag triage (`TRUST_BURST_DETECTION_ENABLED`):
+
+- `trust_positive_burst` -- >= 10 positive signals (accepts, or rate
+  signals at confidence >= 0.7) for one agent inside a 10-minute window.
+  Review the agent's feedback stream for a promotion campaign.
+- `trust_single_source_domination` -- one session id supplied >= 80% of
+  an agent's recent positive signals (min 10 with a session id). **A
+  single-operator deployment where one legitimate session produces >= 10
+  positive signals trips this flag BY CONSTRUCTION** -- expected there,
+  not an incident. Mechanics, honestly: while unresolved, repeats bump
+  the flag's hit counter and ESCALATE it to error severity after ~10
+  hits (anyone alerting on error-severity flags will page on this benign
+  condition); resolving the flag re-arms detection, so in a
+  single-session deployment it simply recurs. Guidance: single-session
+  deployments either leave `TRUST_BURST_DETECTION_ENABLED` off or treat
+  the recurring/escalating domination flag as ambient.
+
+Both flags are detect-only (routing is never altered) and deduped per
+(agent, tenant) via the standard integrity-flag hit counter. Resolve via
+the anomalies endpoint{% if not include_api_gateway %} (not generated here -- update the store row directly){% endif %}; the `trust_events_total{action}` counter
+tracks new flags and check-ins.
 
 ---
 
