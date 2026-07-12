@@ -733,6 +733,39 @@ class TestTrustGuardFeedbackRoute:
         assert len(flags) == 1
         assert flags[0]["subject_id"] == agent
 
+    @pytest.mark.asyncio
+    async def test_burst_falls_back_to_shared_store(
+        self, feedback_app, tmp_path, monkeypatch
+    ):
+        """Bugbot regression: with activity tracking off the gateway never
+        sets app.state.learning_store -- the route falls back to the
+        shared store factory instead of degrading to a warning no-op."""
+        import uuid
+        from {{ project_slug }}.api.routes import feedback as fb_mod
+        from {{ project_slug }}.learning.store import SqliteLearningStore
+        from {{ project_slug }}.learning.trust_guard import TRUST_BURST_ENV
+
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        app, client = feedback_app
+        try:
+            del app.state.learning_store
+        except AttributeError:
+            pass
+        store = SqliteLearningStore(db_path=tmp_path / "shared.db")
+        monkeypatch.setattr(fb_mod, "get_learning_store", lambda: store)
+        agent = f"lazy_store_{uuid.uuid4().hex[:8]}"
+        for i in range(10):
+            r = await client.post("/api/v1/feedback", json={
+                "signal_type": "accept",
+                "agent_id": agent,
+                "session_id": f"s{i}",
+            })
+            assert r.status_code == 200
+        flags = store.query(
+            "integrity_flags", {"flag_type": "trust_positive_burst"}
+        )
+        assert [f for f in flags if f["subject_id"] == agent]
+
 
 # =============================================================================
 # CHECKINS

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from ...learning.feedback_tracker import FeedbackTracker
 from ...learning.models import FeedbackSignal
+from ...learning.store import get_learning_store
 from ...learning.trust_guard import check_feedback_burst, resolve_trust_flags
 from ...security import ValidationError, validate_length
 from ..middleware.auth import AuthContext, verify_api_key
@@ -108,9 +109,16 @@ async def record_feedback(
     # tenant so tenant-scoped anomaly listing surfaces it.
     if signal.agent_id and resolve_trust_flags().burst_enabled:
         try:
+            # app.state.learning_store is only set when activity-tracking
+            # init succeeded; fall back to the shared store factory (same
+            # pattern as the corrections init) so burst detection works
+            # in deployments with activity tracking off.
+            store = getattr(request.app.state, "learning_store", None)
+            if store is None:
+                store = get_learning_store()
             await asyncio.to_thread(
                 check_feedback_burst,
-                getattr(request.app.state, "learning_store", None),
+                store,
                 tracker,
                 signal.agent_id,
                 signal.project_id,
