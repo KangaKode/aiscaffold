@@ -515,7 +515,7 @@ elif [ -d "$GEN_ROOT/tests" ]; then
 
     # Run all test files (all use mocks/in-process testing, no external deps)
     UNIT_FILES=""
-    for f in tests/test_security.py tests/test_injection_defense.py tests/test_ingest_scan.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_extraction_defense.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_safety_fail_closed.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py tests/test_learning_hygiene.py tests/test_trust_guard.py tests/test_context_pressure.py tests/test_tenant_integrity.py tests/test_detection_wiring.py tests/test_credential_currency.py tests/test_detection_regressions.py; do
+    for f in tests/test_security.py tests/test_injection_defense.py tests/test_ingest_scan.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_extraction_defense.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_safety_fail_closed.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py tests/test_learning_hygiene.py tests/test_trust_guard.py tests/test_context_pressure.py tests/test_adversarial_open_corpus.py tests/test_tenant_integrity.py tests/test_detection_wiring.py tests/test_credential_currency.py tests/test_detection_regressions.py; do
         if [ -f "$f" ]; then
             UNIT_FILES="$UNIT_FILES $f"
         fi
@@ -659,6 +659,42 @@ has()    { grep -qE "$2" "$GEN_ROOT/$3" && pass "$1" || fail "$1"; }
 lacks()  { ! grep -qE "$2" "$GEN_ROOT/$3" 2>/dev/null && pass "$1" || fail "$1"; }
 exists() { [ -e "$GEN_ROOT/$2" ] && pass "$1" || fail "$1"; }
 absent() { [ ! -e "$GEN_ROOT/$2" ] && pass "$1" || fail "$1"; }
+
+# Open adversarial corpus + provenance ship in EVERY profile (tests/ is not
+# gated by include_evals). The fixture is plain .py copier never renders, so a
+# raw jinja sequence would survive to runtime -- assert there is none, and that
+# the source stayed pure ASCII (non-ASCII must be \uXXXX-escaped so the seed
+# hashes cannot drift under editor/OS renormalization).
+exists "open corpus: fixture ships in all profiles" tests/adversarial_payloads_open.py
+exists "open corpus: provenance manifest ships in all profiles" tests/fixtures/provenance.json
+exists "open corpus: tests/fixtures ATTRIBUTION ships in all profiles" tests/fixtures/ATTRIBUTION.md
+lacks "open corpus: fixture has no raw jinja expression braces" '\{\{' tests/adversarial_payloads_open.py
+lacks "open corpus: fixture has no raw jinja statement braces" '\{%' tests/adversarial_payloads_open.py
+if LC_ALL=C grep -qP '[^\x00-\x7F]' "$GEN_ROOT/tests/adversarial_payloads_open.py" 2>/dev/null; then
+    fail "open corpus: fixture source is not pure ASCII (non-ASCII must be \\uXXXX-escaped)"
+else
+    pass "open corpus: fixture source is pure ASCII"
+fi
+# OWASP mapping is an unconditional doc; evals-gated artifacts it cites carry a
+# static "(requires include_evals)" annotation rather than being omitted.
+exists "OWASP map: docs/SECURITY_MAPPING.md ships in all profiles" docs/SECURITY_MAPPING.md
+has "OWASP map: cites LLM01 Prompt Injection" 'LLM01' docs/SECURITY_MAPPING.md
+has "OWASP map: cites Agentic ASI category" 'ASI0' docs/SECURITY_MAPPING.md
+has "OWASP map: annotates evals-gated rows" 'requires .include_evals.' docs/SECURITY_MAPPING.md
+
+if [ "$INCLUDE_EVALS" = "true" ]; then
+    exists "evals on: red-team config present" evals/redteam/redteam.yaml
+    exists "evals on: red-team README present" evals/redteam/README.md
+    exists "evals on: evals/fixtures ATTRIBUTION present" evals/fixtures/ATTRIBUTION.md
+    # promptfoo's own {{prompt}} variable must survive copier rendering intact
+    # (it is wrapped in {% raw %}), and the data-egress warning must be present.
+    has "evals on: red-team config keeps literal promptfoo {{prompt}} var" '\{\{prompt\}\}' evals/redteam/redteam.yaml
+    has "evals on: red-team config carries the data-egress warning" 'DATA EGRESS' evals/redteam/redteam.yaml
+    has "evals on: golden set resolves the open corpus" 'corpus_open' evals/tasks/test_injection_defense_golden.py
+else
+    absent "evals off: red-team config excluded" evals/redteam/redteam.yaml
+    absent "evals off: evals/ excluded entirely" evals
+fi
 
 if [ "$INCLUDE_API_GATEWAY" = "true" ]; then
     exists "gateway on: src/$PROJECT_SLUG/api/ present" "src/$PROJECT_SLUG/api"

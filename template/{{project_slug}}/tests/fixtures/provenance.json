@@ -1,0 +1,406 @@
+{
+  "_about": "Provenance manifest for tests/adversarial_payloads_open.py. Each record attests the EXACT payload bytes (sha256 over UTF-8-encoded code points, NO normalization) plus vendoring metadata. The hash covers the payload string only, not category/lang/source_url. upstream_revision is an immutable Hugging Face dataset commit SHA so each seed is re-derivable. source_url/upstream_revision are recorded metadata, never fetched at test time.",
+  "license": "CC-BY-4.0",
+  "records": [
+    {
+      "id": "15118b442fd84eab969c1e9a4a17c9e2",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "6da118b7d97c84d010faec2eb0c6e2c2045983a2c22eb1c432f4a3962968fa95"
+    },
+    {
+      "id": "4788fcf7a6844a5c86525956b1d97964",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "bb7b14732e86e22a08ccaea7eaa5645d6fb5b2ab2547c9186fd5a00dc3462048"
+    },
+    {
+      "id": "5f9fa185291b42bea1a90e6c9309ab86",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "c706a530ca1430b0738246a7b7121624fe5ed5222e7a3a35a3cffc5a9492fd36"
+    },
+    {
+      "id": "46b095541c6c4ff5887a0cc71ab87dc4",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "8dca753226d333aa1f4e7395bac086b7ae70cfde0a194267d96ab7e82486e4b5"
+    },
+    {
+      "id": "5323b2cbb88a46128480fd39c41f4e9c",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "5e887b7759a8df25798311fbfc33a8482507b0b1b29cedc1d1fc0dc2ef5cc112"
+    },
+    {
+      "id": "9fd346a207194c47a984643002e05390",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "3976c88325035e812709a2b4f5b4bb7b8916a77369fd26bbfd44c017a607d934"
+    },
+    {
+      "id": "1319dae615824adf95ecac1b4ce639b7",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "2d917db63b26069733358cc81f14c33b58c0786e803c9267b66dd7209a8a92d1"
+    },
+    {
+      "id": "e73053dcbd1f48f8b265352a46add964",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "e31d8cbb6d2c635d0f7dab87f5fc83fec6c30925ec6c630aacfab59fecb48884"
+    },
+    {
+      "id": "fc683c7bad034ae380cc868e096436de",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "d2b0e9c2162c40812aedc43fb5f851e414881d75d8398e9c7b11753794be0873"
+    },
+    {
+      "id": "a8ce1d48c0124832b4c8b034c4754157",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "7305438c2e2cf481b15a77e1796607337257835ab9e51fda68aedcf4ea561003"
+    },
+    {
+      "id": "bdf29d4cfe534c80b09887683d627467",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "3918813fc86047ea8eb62cc46da3f99d23409331405ecbb8b28a4abf6841fa88"
+    },
+    {
+      "id": "66ba2a422dcc4241afe7940292a70e09",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "53c91f7abf905c9782eb0ed184aa987953eaf1b0a333c98a886e7cd7c6cb2d22"
+    },
+    {
+      "id": "794a42dd7912462abe79e455d001059a",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "c33194a724f030e26067fe145acd73562d90890c1ce7f0550b9ebe4390fd09ba"
+    },
+    {
+      "id": "f5fa83d3414c426587336d2e0123db49",
+      "category": "open_injection",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "f57a4548a7968421034fe703fcb7c50bfd2a017850642eeba966cf45ab48b1c2"
+    },
+    {
+      "id": "32e4d05ba4ea4fdeab890fb7134b27d4",
+      "category": "open_multilingual",
+      "lang": "es",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "f51595a253204324ea8261f0a7fbdcd6dc737a26a2385a70c837cb3bdde8f169"
+    },
+    {
+      "id": "4b51c82c361546e2bbee56a27933f0ba",
+      "category": "open_multilingual",
+      "lang": "es",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "c21386bd4da2ffa89ac12c4d0574014334c5119532949a4b325ddb137ec07517"
+    },
+    {
+      "id": "67c1be6e74144bf7a7aa8ac532556845",
+      "category": "open_multilingual",
+      "lang": "es",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "cc62b302dda0ede0f838f0e276ec90b8f46b871edd52ee27f7074318c1baadf9"
+    },
+    {
+      "id": "11eab5ce3935494cba9e10ebbc61d52f",
+      "category": "open_multilingual",
+      "lang": "fr",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "b12797197b3946db1a920711f1f379a772ac419f0b12d195fc7a53a5066fc064"
+    },
+    {
+      "id": "2e426108641a4380818edd71e9cde579",
+      "category": "open_multilingual",
+      "lang": "fr",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "2500aa0514479096ebae3b064241a8244f08a3c5aa7c01badb9ec9cc4f5f3397"
+    },
+    {
+      "id": "6e247b91c1164728930159ff14e7ac95",
+      "category": "open_multilingual",
+      "lang": "fr",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "240c8b59244b4c01811bfb79e4a4980e67d1b9157f716602599b5f45e2720131"
+    },
+    {
+      "id": "d08ad153850b47adb08892f2a602a14e",
+      "category": "open_multilingual",
+      "lang": "de",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "acc090b5c8390869b3b156f532642ffe76a0aaad7452cd9cf1b26b8d278ee0b3"
+    },
+    {
+      "id": "db074e3dacda41b699f1ec42d4ebe3e7",
+      "category": "open_multilingual",
+      "lang": "de",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "1cae841585f4ee8c587aa4e90762f8f34302425b9de08b59d1e73eb946e770b2"
+    },
+    {
+      "id": "1020adc747ca42d588c96496e64a603c",
+      "category": "open_multilingual",
+      "lang": "it",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "5a17a818418e04095bbc5499f39b160c88cf3685aea6a0eb47e14f76def98bb2"
+    },
+    {
+      "id": "2791e42f96034e8da5774dc1f05a7764",
+      "category": "open_multilingual",
+      "lang": "it",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "c36021721674d378eaedf27bb1a1374452413ebdb4e100c0b299d513a300c2fe"
+    },
+    {
+      "id": "00e013944c8b4cffa1603baed1087836",
+      "category": "open_multilingual",
+      "lang": "ja",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "8da8b6817265ee78ad2269c7d66823c15ae76a72755f0d401ea27438ec0c77d9"
+    },
+    {
+      "id": "0265959962d340ca96ba8b333dc4f3bf",
+      "category": "open_multilingual",
+      "lang": "ja",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "ba10e520e30e3bcf0de46863fd8a636fdcecb12408ff5527e176b51fe16583e2"
+    },
+    {
+      "id": "13d4581fa0c94d44bd877597009d271d",
+      "category": "open_multilingual",
+      "lang": "hi",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "25b8b2b65f719b90cda04762ca5c9a510992defdee47d5239a7f3cbcc099fe9f"
+    },
+    {
+      "id": "454d07a1cbdc4e198b487b2b462de3f2",
+      "category": "open_multilingual",
+      "lang": "hi",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "f2f30f57ce00b5183c42c60002f378e5aca625a7f1606fdfb577e752b7e6121b"
+    },
+    {
+      "id": "013a1bb5d7894b37998aea4fe1594c33",
+      "category": "open_multilingual",
+      "lang": "ko",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "f9e5d6781f7b836b2eb063915cd0cf2bc552c1ed6025ddd8356c3d8b76169a33"
+    },
+    {
+      "id": "02f6d4d7ba704982a5bd35874f83fecc",
+      "category": "open_multilingual",
+      "lang": "ar",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "a65c571bec36b000b11099883900dbabf27f3d98de8dd5fa7a9c77a34585c273"
+    },
+    {
+      "id": "b896dd80c65c4b44bc8905a4cdfed913",
+      "category": "open_multilingual",
+      "lang": "es",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "f68070f555b37543677b0289e07b6d59bd9e0395635d7881994a135b10c1cc55"
+    },
+    {
+      "id": "e984e986029d4e518bcf3bece164c5d6",
+      "category": "open_multilingual",
+      "lang": "es",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "aaca60cacb2a3948a4c020ed4c78f037febf60bf9862fe7ff6556668f3abbea1"
+    },
+    {
+      "id": "00727d26908f4102b4a5a1b33fae15cf",
+      "category": "open_content_safety",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "0fa9a4e5ea831342f96192eb4e24c62315d821d3cc9ed52a2534fbef083c7fd0"
+    },
+    {
+      "id": "011c54dc839a47f1a3c9bf67dab90654",
+      "category": "open_content_safety",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "d3bac50de692d98a8759c33818a4ccaadf5b4a2230027a4b86f47ac5843c12ff"
+    },
+    {
+      "id": "03319614ad3e4668ab8384ecec6ab133",
+      "category": "open_content_safety",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "91d289e4b7fdcf4bdc31b2d7bb0aed685f24b9c8e4bd80efeefdd26a70f8a104"
+    },
+    {
+      "id": "03764d46fcb3463a958c6f2510bc1ffd",
+      "category": "open_content_safety",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "0aa81af1dddfd3e3b01766b370568a03e76d1c8fbdb55390de535200673cb1b9"
+    },
+    {
+      "id": "040d3eedb4a243eea6e25e08e36d140d",
+      "category": "open_content_safety",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "50c1298b56f91cdb5e58b9796ec0e92267acd1731b71ea38112c8029621d2379"
+    },
+    {
+      "id": "0466b9c6fba84fbb91f6983dacf91f07",
+      "category": "open_content_safety",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "442c86341b5eca8853c9bcfb87be816955337a7359dd6bf9565d6a8fae0577d1"
+    },
+    {
+      "id": "047746805624414d998629a39123ff10",
+      "category": "open_content_safety",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "f0a89989c07e1d93d635b102624c03ac324d21a4cd06adc5b3afd284cbdf6293"
+    },
+    {
+      "id": "053ae4daa6cb4f95bdee449b0e62e8f0",
+      "category": "open_content_safety",
+      "lang": "en",
+      "dataset": "Nemotron-Safety-Guard-Dataset-v3",
+      "source_url": "https://huggingface.co/datasets/nvidia/Nemotron-Safety-Guard-Dataset-v3",
+      "license": "CC-BY-4.0",
+      "upstream_revision": "a3f7ecb3433d1933701a83f18de16c36934a7f51",
+      "sha256": "cad5fb30281f7d7011c149f05bcd3605568e7cd21d4cbad7e2e73300d75ab9b6"
+    }
+  ]
+}

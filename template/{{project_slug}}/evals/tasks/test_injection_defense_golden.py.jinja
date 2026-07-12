@@ -18,8 +18,18 @@ a regression (nonzero exit).
 Scope, stated honestly: this is a REGRESSION SMOKE SET for the deterministic
 layers, NOT a security benchmark, and it does NOT cover Layer 3 (the Sentinel
 semantic screen, which needs an LLM). Malicious cases reference the shared
-adversarial corpus (tests/adversarial_payloads.py) by category/index -- one
-payload list, not two. Benign look-alikes measure false positives.
+adversarial corpus by category/index (corpus: = hand-crafted
+tests/adversarial_payloads.py; corpus_open: = the vendored CC-BY-4.0 subset in
+tests/adversarial_payloads_open.py) -- one payload source, not copies. Benign
+look-alikes measure false positives.
+
+The open categories are baselined at their MEASURED values, not zero: the
+Layer 1-2 pattern defenses are English-centric, so open_injection (subtle
+English framings) and open_multilingual (non-English) largely PASS them
+(measured false negatives) -- the layer that could apply is the LLM-backed
+Layer 3 screen, whose multilingual efficacy is UNMEASURED (see GOVERNANCE
+Non-Claims). open_content_safety seeds are expected to PASS the injection
+layers; any residual Layer-1 trip is a measured false positive, not zero.
 
 Run:      python evals/tasks/test_injection_defense_golden.py
 Rebaseline (intentional): python evals/tasks/test_injection_defense_golden.py --update-baseline
@@ -58,10 +68,26 @@ def _corpus():
     return INJECTION_PAYLOADS, POISONING_PAYLOADS
 
 
+def _open_corpus():
+    """Import the vendored open corpus (CC-BY-4.0 subset; strings only)."""
+    if str(_PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PROJECT_ROOT))
+    from tests.adversarial_payloads_open import open_payloads
+
+    return open_payloads
+
+
 def resolve_payload(ref: str) -> str:
-    """Resolve a 'corpus:category[i]' or 'corpus:poisoning.key' reference."""
+    """Resolve a corpus reference.
+
+    'corpus:category[i]' / 'corpus:poisoning.key' -> hand-crafted corpus;
+    'corpus_open:category[i]'                     -> vendored open corpus.
+    """
+    scheme, body = ref.split(":", 1)
+    if scheme == "corpus_open":
+        category, index = body.rstrip("]").split("[")
+        return _open_corpus()(category)[int(index)]
     injection, poisoning = _corpus()
-    body = ref.split(":", 1)[1]
     if body.startswith("poisoning."):
         return poisoning[body.split(".", 1)[1]]
     category, index = body.rstrip("]").split("[")
@@ -71,7 +97,9 @@ def resolve_payload(ref: str) -> str:
 def case_input(case: dict) -> str:
     """The single text a case screens (literal for benign, corpus for attacks)."""
     src = case["source"]
-    return resolve_payload(src) if src.startswith("corpus:") else case.get("input", "")
+    if src.startswith(("corpus:", "corpus_open:")):
+        return resolve_payload(src)
+    return case.get("input", "")
 
 
 def screen(text: str, fence_label: str = "USER_CONTENT") -> str:
@@ -97,7 +125,7 @@ def actual_label(case: dict) -> str:
 
 
 def load_dataset() -> dict:
-    return json.loads(DATASET_PATH.read_text())
+    return json.loads(DATASET_PATH.read_text(encoding="utf-8"))
 
 
 def validate_schema(data: dict) -> list[str]:
@@ -116,7 +144,7 @@ def validate_schema(data: dict) -> list[str]:
         if "messages" in case:
             # Multi-turn case: payloads live in `messages`; `source` is a label.
             pass
-        elif src.startswith("corpus:"):
+        elif src.startswith(("corpus:", "corpus_open:")):
             try:
                 resolve_payload(src)
             except Exception as exc:  # noqa: BLE001 -- surface any lookup failure
@@ -125,7 +153,10 @@ def validate_schema(data: dict) -> list[str]:
             if "input" not in case:
                 errors.append(f"{cid}: benign look-alike missing 'input'")
         else:
-            errors.append(f"{cid}: source must be 'corpus:...' or 'benign-lookalike'")
+            errors.append(
+                f"{cid}: source must be 'corpus:...', 'corpus_open:...', or "
+                f"'benign-lookalike'"
+            )
         for ref in case.get("messages", []):
             try:
                 resolve_payload(ref)
@@ -190,12 +221,18 @@ def run(update_baseline: bool = False) -> int:
 
     current = grade(data)
     if update_baseline:
-        BASELINE_PATH.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+        BASELINE_PATH.write_text(
+            json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         print(f"Baseline written to {BASELINE_PATH}")
         print(format_table(current, current))
         return 0
 
-    baseline = json.loads(BASELINE_PATH.read_text()) if BASELINE_PATH.exists() else None
+    baseline = (
+        json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+        if BASELINE_PATH.exists()
+        else None
+    )
     print(format_table(current, baseline))
     if baseline is None:
         print("\nNo baseline committed; run with --update-baseline to create one.")
@@ -224,6 +261,30 @@ def test_corpus_imports_resolve():
 
 def test_no_regression_vs_baseline():
     assert run(update_baseline=False) == 0
+
+
+# Legacy categories are zero-FN by construction (benign carries the only FPs).
+# Pin them so a careless --update-baseline that quietly regresses the shipped
+# deterministic layers cannot slip through review.
+_FROZEN_LEGACY = {
+    "direct": {"false_negative": 0, "false_positive": 0},
+    "exfiltration": {"false_negative": 0, "false_positive": 0},
+    "fence_break": {"false_negative": 0, "false_positive": 0},
+    "unicode": {"false_negative": 0, "false_positive": 0},
+    "encoded": {"false_negative": 0, "false_positive": 0},
+    "token_split": {"false_negative": 0, "false_positive": 0},
+    "rot13": {"false_negative": 0, "false_positive": 0},
+    "poisoning": {"false_negative": 0, "false_positive": 0},
+    "benign": {"false_negative": 0, "false_positive": 5},
+    "benign_encoded": {"false_negative": 0, "false_positive": 1},
+}
+
+
+def test_legacy_baselines_frozen():
+    baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+    for cat, frozen in _FROZEN_LEGACY.items():
+        assert baseline[cat]["false_negative"] == frozen["false_negative"], cat
+        assert baseline[cat]["false_positive"] == frozen["false_positive"], cat
 
 
 if __name__ == "__main__":
