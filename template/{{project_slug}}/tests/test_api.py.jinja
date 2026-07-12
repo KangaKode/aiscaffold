@@ -695,6 +695,44 @@ class TestTrustGuardFeedbackRoute:
         })
         assert r.status_code == 200
 
+    @pytest.mark.asyncio
+    async def test_burst_flag_lands_in_resolved_tenant(
+        self, feedback_app, tmp_path, monkeypatch
+    ):
+        """Bugbot regression: the flag row is keyed to the caller's
+        RESOLVED tenant (auth), not the signal's default project, so
+        tenant-scoped anomaly listing surfaces it."""
+        import uuid
+        from {{ project_slug }}.learning.store import SqliteLearningStore
+        from {{ project_slug }}.learning.trust_guard import TRUST_BURST_ENV
+
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        app, client = feedback_app
+        store = SqliteLearningStore(db_path=tmp_path / "flags.db")
+        app.state.learning_store = store
+
+        async def auth_override(request: Request) -> AuthContext:
+            return AuthContext(
+                api_key="test-b", user_id="alice", tenant_id="tenant-b"
+            )
+
+        app.dependency_overrides[verify_api_key] = auth_override
+        agent = f"burst_agent_{uuid.uuid4().hex[:8]}"  # unique per run
+        for i in range(10):
+            r = await client.post("/api/v1/feedback", json={
+                "signal_type": "accept",
+                "agent_id": agent,
+                "session_id": f"s{i}",
+            })
+            assert r.status_code == 200
+        app.dependency_overrides.clear()
+        flags = store.query(
+            "integrity_flags",
+            {"flag_type": "trust_positive_burst", "tenant_id": "tenant-b"},
+        )
+        assert len(flags) == 1
+        assert flags[0]["subject_id"] == agent
+
 
 # =============================================================================
 # CHECKINS

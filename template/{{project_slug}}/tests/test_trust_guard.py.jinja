@@ -395,6 +395,27 @@ class TestEnvResolution:
         assert flags.min_interactions == 0
 
 
+class TestProfileConsistency:
+    def test_profile_bundle_uses_guarded_scores(self, trust_mgr, tmp_path, monkeypatch):
+        """Bugbot regression: prompts and routing must not disagree on
+        trust in one request -- the profile bundle applies the same
+        TRUST_* guarded read as agent selection."""
+        from {{ project_slug }}.learning.user_profile import UserProfileManager
+
+        monkeypatch.setenv(TRUST_MIN_INTERACTIONS_ENV, "5")
+        for _ in range(3):
+            trust_mgr.update_from_signal(_signal("below_gate", SignalType.ACCEPT))
+        assert trust_mgr.get_trust("below_gate") > 0.5  # raw is inflated
+        mgr = UserProfileManager(db_path=tmp_path / "trust.db", trust_manager=trust_mgr)
+        assert mgr.get_profile().agent_trust_scores["below_gate"] == DEFAULT_TRUST
+        bundle = mgr.get_context_bundle()
+        assert "below_gate: 50%" in bundle  # masked in prompt context too
+        # Flags off: bundle reflects raw scores (exact passthrough).
+        monkeypatch.delenv(TRUST_MIN_INTERACTIONS_ENV)
+        raw = trust_mgr.get_trust("below_gate")
+        assert mgr.get_profile().agent_trust_scores["below_gate"] == pytest.approx(raw)
+
+
 class _Entry:
     def __init__(self, agent, healthy=True, capabilities=()):
         self.agent = agent

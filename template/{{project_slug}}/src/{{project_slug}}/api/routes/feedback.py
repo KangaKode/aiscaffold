@@ -103,7 +103,9 @@ async def record_feedback(
 
     # Opt-in trust-guard burst scan (detect-only, fire-and-forget). The
     # env check keeps the flag-off route byte-equivalent: no thread hop,
-    # no store access. The signal's own project scope is threaded through.
+    # no store access. The signal's own project scope is threaded through
+    # for the legacy-stack read; the flag lands in the caller's RESOLVED
+    # tenant so tenant-scoped anomaly listing surfaces it.
     if signal.agent_id and resolve_trust_flags().burst_enabled:
         await asyncio.to_thread(
             check_feedback_burst,
@@ -111,6 +113,7 @@ async def record_feedback(
             tracker,
             signal.agent_id,
             signal.project_id,
+            tenant_id=auth.tenant_id,
             checkin_manager=getattr(request.app.state, "checkin_manager", None),
         )
 
