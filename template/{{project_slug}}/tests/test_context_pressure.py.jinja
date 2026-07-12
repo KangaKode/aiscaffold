@@ -111,9 +111,14 @@ class TestFlagOffRegression:
         assert _pressure_records(caplog) == []
         assert recorder_calls == []
 
-    def test_default_off_env_read_only(self):
-        """T2: flag unset never touches the prompt object at all."""
+    def test_default_off_env_read_only(self, caplog):
+        """T2: flag unset never touches the prompt object at all -- and no
+        [ContextPressure] record fires at ANY level, so a future refactor
+        that moves the prompt access inside the try block (swallowing the
+        stub's AssertionError into the debug no-op path) still fails here."""
+        caplog.set_level(logging.DEBUG)
         cp.check_context_pressure(_UntouchablePrompt(), "synthesis", 100)
+        assert _pressure_records(caplog) == []
 
 
 # =============================================================================
@@ -289,8 +294,9 @@ class TestPressureBehavior:
         records = _pressure_records(caplog)
         assert len(records) == 1
         assert "field_truncation" in records[0].getMessage()
-        assert prompts[0].user_message.endswith("[TRUNCATED]")
-        assert prompts[0].user_message.startswith("x" * 100)
+        # Exact payload pins _sanitize_prompt's cap at the client level
+        # (would catch a mis-derived _per_field_cap, e.g. a wrong // 3).
+        assert prompts[0].user_message == "x" * 100 + "\n[TRUNCATED]"
 
     def test_window_fires_without_field_truncation(self, monkeypatch, recorder_calls):
         """T9b: aggregate over threshold*window, every field under the cap

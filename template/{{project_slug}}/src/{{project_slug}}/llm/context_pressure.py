@@ -29,7 +29,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from ..observability.metrics import PHASES, record_context_pressure  # noqa: F401
+from ..observability.metrics import record_context_pressure
 
 logger = logging.getLogger(__name__)
 

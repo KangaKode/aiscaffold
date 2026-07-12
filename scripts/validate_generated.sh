@@ -699,6 +699,10 @@ else
     # Docs must not advertise HTTP-server workflows that do not exist.
     lacks "gateway off: OPERATIONS.md has no serve-prod reference" 'serve-prod' docs/OPERATIONS.md
     lacks "gateway off: OPERATIONS.md cites no api/ modules" 'api/gateway\.py|api/routes/|api/middleware/' docs/OPERATIONS.md
+    # The context-pressure signal is wired in the LLM client (active in
+    # every profile), so its posture row -- carrying the no-[metrics]
+    # blind-spot note -- must render with the gateway off too.
+    has "gateway off: OPERATIONS.md documents context-pressure posture" 'CONTEXT_PRESSURE_ENABLED' docs/OPERATIONS.md
     lacks "gateway off: README advertises no HTTP endpoint" 'localhost:8000' README.md
     if [ "$INCLUDE_DEPLOYMENT" = "true" ]; then
         # gateway-off + deployment-on: the image CMD prints usage and

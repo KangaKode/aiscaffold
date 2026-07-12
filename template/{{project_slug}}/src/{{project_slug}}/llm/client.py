@@ -142,10 +142,10 @@ class LLMClient:
         self._api_key = api_key or self._load_api_key()
         self._timeout = timeout
         self._max_retries = max_retries
-        self._max_prompt_length = max_prompt_length
         # Single source of truth for the per-field truncation point --
         # shared by _sanitize_prompt and the context-pressure check so
-        # the two can never desync.
+        # the two can never desync. (Replaces the former
+        # _max_prompt_length attribute, which nothing read directly.)
         self._per_field_cap = max_prompt_length // 3
         self._max_cost_usd = max_cost_usd
         # Optional BudgetManager; None = no checks (zero-config unchanged)
