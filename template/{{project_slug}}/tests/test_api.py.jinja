@@ -620,6 +620,83 @@ class TestFeedbackAPI:
 
 
 # =============================================================================
+# TRUST GUARD ON THE FEEDBACK ROUTE (opt-in burst detection wiring)
+# =============================================================================
+
+
+class _UntouchableStore:
+    """Any access means the flag-off gate leaked -- fail loudly."""
+
+    def query(self, *a, **k):
+        raise AssertionError("learning store touched with TRUST_* off")
+
+    insert = update = query
+
+
+class _DownStore:
+    """Portable store that is down (every operation raises)."""
+
+    def query(self, *a, **k):
+        raise RuntimeError("store down")
+
+    insert = update = query
+
+
+@pytest.fixture
+async def feedback_app(tmp_path):
+    """(app, client) pair so tests can pin app.state.learning_store."""
+    import os
+    from {{ project_slug }}.agents.registry import AgentRegistry
+    from {{ project_slug }}.api.middleware import rate_limit as rl_mod
+
+    os.environ.pop("API_KEY", None)
+    os.environ.pop("ENV", None)
+    registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+    app = create_app(registry=registry)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield app, c
+    rl_mod._request_log.clear()
+
+
+class TestTrustGuardFeedbackRoute:
+    @pytest.mark.asyncio
+    async def test_feedback_route_unchanged_flag_off(self, feedback_app, monkeypatch):
+        """T3: with TRUST_* unset the route behaves exactly as before --
+        the burst path is never entered and the store is never touched."""
+        from {{ project_slug }}.learning.trust_guard import TRUST_BURST_ENV
+
+        monkeypatch.delenv(TRUST_BURST_ENV, raising=False)
+        app, client = feedback_app
+        app.state.learning_store = _UntouchableStore()
+        r = await client.post("/api/v1/feedback", json={
+            "signal_type": "accept",
+            "agent_id": "trusted_agent",
+            "context_type": "chat",
+        })
+        assert r.status_code == 200
+        assert r.json()["signal_type"] == "accept"
+
+    @pytest.mark.asyncio
+    async def test_feedback_route_nonfatal_when_store_down(
+        self, feedback_app, monkeypatch
+    ):
+        """T10 (route variant): burst enabled + broken portable store ->
+        feedback recording still succeeds (fire-and-forget seam)."""
+        from {{ project_slug }}.learning.trust_guard import TRUST_BURST_ENV
+
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        app, client = feedback_app
+        app.state.learning_store = _DownStore()
+        r = await client.post("/api/v1/feedback", json={
+            "signal_type": "accept",
+            "agent_id": "trusted_agent",
+            "context_type": "chat",
+        })
+        assert r.status_code == 200
+
+
+# =============================================================================
 # CHECKINS
 # =============================================================================
 

@@ -1,0 +1,431 @@
+"""
+Trust-loop hardening tests (learning/trust_guard.py).
+
+Three opt-in, default-off mechanisms: read-time decay toward neutral,
+min-interaction gate, and detect-only positive-signal-burst /
+single-source-domination flagging. Stored trust_score values are NEVER
+mutated -- flag-off behavior must be byte-equivalent to the unguarded
+scaffold, pinned by the regression tests here.
+
+Library-level suite: runs in ALL profiles (learning + orchestration are
+never profile-gated). The gateway-route variants live in test_api.py.
+"""
+
+from datetime import datetime, timedelta
+
+import pytest
+
+from {{ project_slug }}.learning.agent_trust import AgentTrustManager, DEFAULT_TRUST
+from {{ project_slug }}.learning.feedback_tracker import FeedbackTracker
+from {{ project_slug }}.learning.checkin_manager import CheckInManager
+from {{ project_slug }}.learning.models import FeedbackSignal, SignalType
+from {{ project_slug }}.learning.store import SqliteLearningStore
+from {{ project_slug }}.learning.trust_guard import (
+    BURST_POSITIVE_THRESHOLD,
+    DOMINATION_MIN_SIGNALS,
+    POSITIVE_RATE_CONFIDENCE,
+    TRUST_BURST_ENV,
+    TRUST_DECAY_ENV,
+    TRUST_DECAY_HALF_LIFE_ENV,
+    TRUST_MIN_INTERACTIONS_ENV,
+    check_feedback_burst,
+    decayed_score,
+    effective_trust_scores,
+    resolve_trust_flags,
+)
+from {{ project_slug }}.orchestration.agent_router import AgentRouter
+
+ALL_TRUST_ENVS = (
+    TRUST_DECAY_ENV,
+    TRUST_DECAY_HALF_LIFE_ENV,
+    TRUST_MIN_INTERACTIONS_ENV,
+    TRUST_BURST_ENV,
+)
+
+
+@pytest.fixture(autouse=True)
+def _trust_envs_unset(monkeypatch):
+    """Every test starts from the shipped default: all TRUST_* unset."""
+    for var in ALL_TRUST_ENVS:
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture
+def trust_mgr(tmp_path):
+    return AgentTrustManager(db_path=tmp_path / "trust.db")
+
+
+@pytest.fixture
+def tracker(tmp_path):
+    return FeedbackTracker(db_path=tmp_path / "trust.db")
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning.db")
+
+
+def _signal(agent="agent_a", stype=SignalType.ACCEPT, session="", conf=0.5,
+            project="default", at=None):
+    sig = FeedbackSignal(
+        signal_type=stype, agent_id=agent, session_id=session,
+        confidence=conf, project_id=project,
+    )
+    if at is not None:
+        sig.created_at = at.isoformat()
+    return sig
+
+
+def _record_positives(tracker, n, agent="agent_a", stype=SignalType.ACCEPT,
+                      session_fn=lambda i: f"s{i}", conf=0.9, project="default",
+                      spread_minutes=0.0, now=None):
+    now = now or datetime.now()
+    for i in range(n):
+        at = now - timedelta(minutes=spread_minutes * (n - i))
+        tracker.record(_signal(agent, stype, session_fn(i), conf, project, at))
+
+
+def _flags(store, flag_type, tenant="default"):
+    return store.query("integrity_flags", {"flag_type": flag_type, "tenant_id": tenant})
+
+
+class _RaisingEntries:
+    """Trust manager stub whose entry read must never be reached (T1)."""
+
+    def __init__(self, scores):
+        self._scores = scores
+
+    def get_all_scores(self, project_id="default"):
+        return dict(self._scores)
+
+    def get_all_entries(self, project_id="default"):
+        raise AssertionError("passthrough path must not read entries")
+
+
+class _BrokenStore:
+    """Portable-store stub that fails every operation (T10)."""
+
+    def query(self, *a, **k):
+        raise RuntimeError("store down")
+
+    def insert(self, *a, **k):
+        raise RuntimeError("store down")
+
+    def update(self, *a, **k):
+        raise RuntimeError("store down")
+
+
+class _BrokenTracker:
+    """Legacy-stack stub whose signal read fails (T10b)."""
+
+    def get_signals(self, *a, **k):
+        raise RuntimeError("sqlite locked")
+
+
+class _CrashingCheckins:
+    def create(self, *a, **k):
+        raise RuntimeError("checkin backend down")
+
+
+# =============================================================================
+# FLAG-OFF REGRESSION: byte-equivalent to the unguarded scaffold
+# =============================================================================
+
+
+class TestFlagOffRegression:
+    def test_defaults_off_scores_passthrough(self):
+        """T1: no TRUST_* env -> exact get_all_scores() passthrough that
+        never touches the entries read."""
+        mgr = _RaisingEntries({"a": 0.72, "b": 0.31})
+        assert effective_trust_scores(mgr) == {"a": 0.72, "b": 0.31}
+
+    def test_defaults_off_no_burst_write(self, tracker, store):
+        """T2: burst call with flag off writes nothing and reads nothing."""
+        _record_positives(tracker, BURST_POSITIVE_THRESHOLD)
+
+        class _CountingStore(_BrokenStore):
+            pass  # any touch raises -> test fails loudly if reached
+
+        check_feedback_burst(_CountingStore(), _BrokenTracker(), "agent_a")
+        # Real store also stays empty when given real inputs:
+        check_feedback_burst(store, tracker, "agent_a")
+        assert _flags(store, "trust_positive_burst") == []
+        assert _flags(store, "trust_single_source_domination") == []
+
+
+# =============================================================================
+# READ-TIME DECAY AND MIN-INTERACTION GATE
+# =============================================================================
+
+
+class TestDecayAndGate:
+    def test_decay_math_halflife(self):
+        """T4: exact half-life math; unparseable timestamps fail open."""
+        now = datetime.now()
+        one_hl = (now - timedelta(days=30)).isoformat()
+        assert decayed_score(0.9, one_hl, 30.0, now=now) == pytest.approx(0.7)
+        assert decayed_score(0.9, now.isoformat(), 30.0, now=now) == pytest.approx(0.9)
+        ancient = (now - timedelta(days=3000)).isoformat()
+        assert decayed_score(0.9, ancient, 30.0, now=now) == pytest.approx(0.5, abs=1e-4)
+        assert decayed_score(0.9, "not-a-timestamp", 30.0, now=now) == 0.9
+        assert decayed_score(0.9, "", 30.0, now=now) == 0.9
+
+    def test_decay_double_edge_documented_rate(self):
+        """T5: decay rehabilitates JUSTIFIED distrust at the documented
+        rate -- 0.15 reports 0.325 after one half-life. Pins the trade-off
+        stated in GOVERNANCE so a silent rate change fails a test."""
+        now = datetime.now()
+        one_hl = (now - timedelta(days=30)).isoformat()
+        assert decayed_score(0.15, one_hl, 30.0, now=now) == pytest.approx(0.325)
+
+    def test_decay_applies_via_effective_scores(self, trust_mgr, monkeypatch):
+        monkeypatch.setenv(TRUST_DECAY_ENV, "true")
+        monkeypatch.setenv(TRUST_DECAY_HALF_LIFE_ENV, "30")
+        for _ in range(20):
+            trust_mgr.update_from_signal(_signal("agent_hot", SignalType.ACCEPT))
+        raw = trust_mgr.get_trust("agent_hot")
+        # Fresh last_updated: decay of a just-updated score is ~none.
+        eff = effective_trust_scores(trust_mgr)
+        assert eff["agent_hot"] == pytest.approx(raw, abs=1e-3)
+
+    def test_min_interaction_gate(self, trust_mgr, monkeypatch):
+        """T6: below-gate agents report neutral 0.5 in BOTH directions."""
+        monkeypatch.setenv(TRUST_MIN_INTERACTIONS_ENV, "5")
+        # Fabricated early praise: 3 accepts (below gate) -> masked to 0.5.
+        for _ in range(3):
+            trust_mgr.update_from_signal(_signal("fresh_hype", SignalType.ACCEPT))
+        # Legitimately earned early distrust: 3 rejects -> ALSO masked
+        # (the documented double-edge; raw is ~0.31 here).
+        for _ in range(3):
+            trust_mgr.update_from_signal(_signal("early_low", SignalType.REJECT))
+        # Established agent: 6 accepts -> real score reported.
+        for _ in range(6):
+            trust_mgr.update_from_signal(_signal("veteran", SignalType.ACCEPT))
+        eff = effective_trust_scores(trust_mgr)
+        assert eff["fresh_hype"] == DEFAULT_TRUST
+        assert trust_mgr.get_trust("early_low") < 0.4  # earned distrust exists...
+        assert eff["early_low"] == DEFAULT_TRUST       # ...and is masked below gate
+        assert eff["veteran"] == pytest.approx(trust_mgr.get_trust("veteran"))
+
+    def test_gate_off_at_zero(self, trust_mgr, monkeypatch):
+        monkeypatch.setenv(TRUST_MIN_INTERACTIONS_ENV, "0")
+        trust_mgr.update_from_signal(_signal("solo", SignalType.ACCEPT))
+        eff = effective_trust_scores(trust_mgr)
+        assert eff["solo"] == pytest.approx(trust_mgr.get_trust("solo"))
+
+    def test_stored_scores_never_mutated(self, trust_mgr, monkeypatch):
+        """Rollback completeness: reads with decay+gate on leave stored
+        scores untouched, and unsetting the flags restores raw output."""
+        monkeypatch.setenv(TRUST_DECAY_ENV, "true")
+        monkeypatch.setenv(TRUST_MIN_INTERACTIONS_ENV, "5")
+        trust_mgr.update_from_signal(_signal("agent_a", SignalType.ACCEPT))
+        raw_before = trust_mgr.get_trust("agent_a")
+        for _ in range(3):
+            effective_trust_scores(trust_mgr)
+        assert trust_mgr.get_trust("agent_a") == pytest.approx(raw_before)
+        monkeypatch.delenv(TRUST_DECAY_ENV)
+        monkeypatch.delenv(TRUST_MIN_INTERACTIONS_ENV)
+        assert effective_trust_scores(trust_mgr)["agent_a"] == pytest.approx(raw_before)
+
+
+# =============================================================================
+# BURST / DOMINATION DETECTION (detect-only)
+# =============================================================================
+
+
+class TestBurstDetection:
+    def test_positive_burst_flags_once_then_escalates(
+        self, tracker, store, monkeypatch
+    ):
+        """T7: threshold positives in window -> one flag; repeats bump the
+        hit counter; resolving re-arms. Rate-only campaign also flags."""
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        _record_positives(tracker, BURST_POSITIVE_THRESHOLD, agent="agent_a")
+        check_feedback_burst(store, tracker, "agent_a")
+        flags = _flags(store, "trust_positive_burst")
+        assert len(flags) == 1
+        check_feedback_burst(store, tracker, "agent_a")
+        flags = _flags(store, "trust_positive_burst")
+        assert len(flags) == 1  # updated in place, not duplicated
+        store.update("integrity_flags", flags[0]["id"], {"resolved": 1})
+        check_feedback_burst(store, tracker, "agent_a")
+        assert len(_flags(store, "trust_positive_burst")) == 2  # re-armed
+
+    def test_rate_only_campaign_flags(self, tracker, store, monkeypatch):
+        """T7 (security finding 1): high-confidence rate signals are
+        positives -- an accept-free campaign still trips the flag."""
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        _record_positives(
+            tracker, BURST_POSITIVE_THRESHOLD, agent="agent_r",
+            stype=SignalType.RATE, conf=0.95,
+        )
+        check_feedback_burst(store, tracker, "agent_r")
+        assert len(_flags(store, "trust_positive_burst")) == 1
+
+    def test_low_confidence_rate_not_positive(self, tracker, store, monkeypatch):
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        _record_positives(
+            tracker, BURST_POSITIVE_THRESHOLD, agent="agent_l",
+            stype=SignalType.RATE, conf=POSITIVE_RATE_CONFIDENCE - 0.1,
+        )
+        check_feedback_burst(store, tracker, "agent_l")
+        assert _flags(store, "trust_positive_burst") == []
+
+    def test_single_source_domination_flag(self, tracker, store, monkeypatch):
+        """T8: one session >= 80% of positives -> flag; empty session_ids
+        excluded; rate-only domination also flags."""
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        # Spread over hours so the burst window never fires (isolation).
+        _record_positives(
+            tracker, DOMINATION_MIN_SIGNALS, agent="agent_d",
+            session_fn=lambda i: "one_session", spread_minutes=30,
+        )
+        check_feedback_burst(store, tracker, "agent_d")
+        assert len(_flags(store, "trust_single_source_domination")) == 1
+        assert _flags(store, "trust_positive_burst") == []
+
+    def test_empty_session_ids_excluded(self, tracker, store, monkeypatch):
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        _record_positives(
+            tracker, DOMINATION_MIN_SIGNALS, agent="agent_e",
+            session_fn=lambda i: "", spread_minutes=30,
+        )
+        check_feedback_burst(store, tracker, "agent_e")
+        assert _flags(store, "trust_single_source_domination") == []
+
+    def test_rate_only_domination_flags(self, tracker, store, monkeypatch):
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        _record_positives(
+            tracker, DOMINATION_MIN_SIGNALS, agent="agent_rd",
+            stype=SignalType.RATE, conf=0.95,
+            session_fn=lambda i: "one_session", spread_minutes=30,
+        )
+        check_feedback_burst(store, tracker, "agent_rd")
+        assert len(_flags(store, "trust_single_source_domination")) == 1
+
+    def test_burst_scans_non_default_project(self, tracker, store, monkeypatch):
+        """T10c (SRE finding 1): non-default-project deployments are
+        scanned, and the flag lands under the matching tenant."""
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        _record_positives(
+            tracker, BURST_POSITIVE_THRESHOLD, agent="agent_t", project="tenant_a"
+        )
+        check_feedback_burst(store, tracker, "agent_t", project_id="tenant_a")
+        assert len(_flags(store, "trust_positive_burst", tenant="tenant_a")) == 1
+        assert _flags(store, "trust_positive_burst", tenant="default") == []
+
+    def test_detail_carries_no_feedback_content(self, tracker, store, monkeypatch):
+        """Flag details are counts/timestamps only -- feedback content can
+        be user text and must not leak into a new surface."""
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        now = datetime.now()
+        for i in range(BURST_POSITIVE_THRESHOLD):
+            sig = _signal("agent_c", SignalType.ACCEPT, f"s{i}", at=now)
+            sig.content = "SECRET-USER-TEXT"
+            tracker.record(sig)
+        check_feedback_burst(store, tracker, "agent_c")
+        flags = _flags(store, "trust_positive_burst")
+        assert len(flags) == 1
+        assert "SECRET-USER-TEXT" not in (flags[0].get("detail_json") or "")
+
+
+class TestBurstFailureModes:
+    def test_burst_nonfatal_on_store_failure(self, tracker, monkeypatch):
+        """T10: portable-store failure degrades to a logged no-op."""
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        _record_positives(tracker, BURST_POSITIVE_THRESHOLD)
+        check_feedback_burst(_BrokenStore(), tracker, "agent_a")  # must not raise
+
+    def test_burst_nonfatal_on_tracker_failure(self, store, monkeypatch):
+        """T10b (SRE finding 2): LEGACY-side failure (locked sqlite /
+        missing table) also degrades to a logged no-op -- both directions
+        of the seam are pinned."""
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        check_feedback_burst(store, _BrokenTracker(), "agent_a")  # must not raise
+        assert _flags(store, "trust_positive_burst") == []
+
+    def test_checkin_created_on_new_flag_best_effort(
+        self, tracker, store, tmp_path, monkeypatch
+    ):
+        """T11: check-in appears on first flag; a crashing check-in
+        manager never fails the flag write."""
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        _record_positives(tracker, BURST_POSITIVE_THRESHOLD, agent="agent_a")
+        cim = CheckInManager(db_path=tmp_path / "trust.db")
+        check_feedback_burst(store, tracker, "agent_a", checkin_manager=cim)
+        assert any(
+            c.checkin_type == "trust_review" for c in cim.get_pending()
+        )
+        _record_positives(tracker, BURST_POSITIVE_THRESHOLD, agent="agent_b")
+        check_feedback_burst(
+            store, tracker, "agent_b", checkin_manager=_CrashingCheckins()
+        )
+        assert len(_flags(store, "trust_positive_burst")) == 2  # flag still landed
+
+
+# =============================================================================
+# ENV RESOLUTION AND THE ROUTER-CAP INVARIANT
+# =============================================================================
+
+
+class TestEnvResolution:
+    @pytest.mark.parametrize("value,expected", [
+        ("true", True), ("1", True), ("yes", True), ("TRUE", True),
+        ("false", False), ("0", False), ("", False), ("garbage", False),
+    ])
+    def test_boolean_parse(self, monkeypatch, value, expected):
+        """T12: truthy set matches the detection-hook precedent."""
+        monkeypatch.setenv(TRUST_DECAY_ENV, value)
+        monkeypatch.setenv(TRUST_BURST_ENV, value)
+        flags = resolve_trust_flags()
+        assert flags.decay_enabled is expected
+        assert flags.burst_enabled is expected
+
+    def test_garbage_numerics_fall_back(self, monkeypatch):
+        monkeypatch.setenv(TRUST_MIN_INTERACTIONS_ENV, "not-a-number")
+        monkeypatch.setenv(TRUST_DECAY_HALF_LIFE_ENV, "also-not")
+        flags = resolve_trust_flags()
+        assert flags.min_interactions == 0     # off
+        assert flags.half_life_days == 30.0    # documented default
+
+    def test_defaults_all_off(self):
+        flags = resolve_trust_flags()
+        assert flags.decay_enabled is False
+        assert flags.burst_enabled is False
+        assert flags.min_interactions == 0
+
+
+class _Entry:
+    def __init__(self, agent, healthy=True, capabilities=()):
+        self.agent = agent
+        self.healthy = healthy
+        self.capabilities = list(capabilities)
+
+
+class _Agent:
+    def __init__(self, name):
+        self.name = name
+        self.domain = "zzz-no-match"
+
+
+class _Registry:
+    def __init__(self, agents):
+        self._entries = [_Entry(a) for a in agents]
+        self.count = len(self._entries)
+
+    def list_for_tenant(self, tenant_id):
+        return self._entries
+
+
+class TestRouterCapInvariant:
+    def test_router_trust_influence_cap_regression(self):
+        """T9 (pinned invariant): AgentRouter adds exactly trust * 0.2 --
+        max +0.19 at the 0.95 ceiling. Fails if trust influence widens.
+        Pins EXISTING behavior; passes from the moment it is written."""
+        router = AgentRouter(registry=_Registry([_Agent("a"), _Agent("b")]))
+        decision = router.route("query with no domain words",
+                                trust_scores={"a": 0.95})
+        # Baseline 0.1 each; agent a adds 0.95 * 0.2 = 0.19.
+        # confidence = mean of selected scores = (0.29 + 0.1) / 2.
+        assert decision.selected_agents[0].name == "a"
+        assert decision.confidence == pytest.approx((0.29 + 0.1) / 2)
