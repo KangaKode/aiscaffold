@@ -28,7 +28,8 @@ prometheus_client's multiprocess mode (PROMETHEUS_MULTIPROC_DIR + a
 shared CollectorRegistry) -- that is a "you add" extension, see
 docs/OPERATIONS.md.
 
-Keep this file under 200 lines.
+Keep this file under 220 lines. (Raised from 200 when the trust-guard
+counter landed; the context-pressure counter shares this headroom.)
 """
 
 import logging
@@ -103,6 +104,11 @@ if PROMETHEUS_AVAILABLE:
         "Correction lifecycle transitions by action",
         ["action"],
     )
+    _trust_events_total = Counter(
+        "trust_events_total",
+        "Trust-guard detection events by action",
+        ["action"],
+    )
 else:
     _noop = _NoopInstrument()
     _deliberations_total = _noop
@@ -112,6 +118,7 @@ else:
     _llm_tokens_total = _noop
     _llm_cost_dollars_total = _noop
     _corrections_lifecycle_total = _noop
+    _trust_events_total = _noop
 
 
 def record_deliberation(outcome: str, duration_seconds: float) -> None:
@@ -179,6 +186,18 @@ def record_correction_lifecycle(action: str) -> None:
         _corrections_lifecycle_total.labels(action=action or "unknown").inc()
     except Exception as exc:
         logger.warning(f"[Metrics] record_correction_lifecycle failed: {exc}")
+
+
+def record_trust_event(action: str) -> None:
+    """One trust-guard detection event (bounded enum: burst_flagged,
+    domination_flagged, checkin_created). No per-agent labels -- per-agent
+    visibility lives in the integrity_flags rows. Never raises."""
+    if not PROMETHEUS_AVAILABLE:
+        return
+    try:
+        _trust_events_total.labels(action=action or "unknown").inc()
+    except Exception as exc:
+        logger.warning(f"[Metrics] record_trust_event failed: {exc}")
 
 
 def render_prometheus() -> bytes:

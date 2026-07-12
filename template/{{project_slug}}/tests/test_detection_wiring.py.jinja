@@ -44,6 +44,8 @@ ALL_TOGGLES = (
     "MODEL_ROUTING_ENABLED",
     "STARTUP_CANARY_ENABLED",
     "SENTINEL_ENFORCEMENT_ENABLED",
+    "TRUST_DECAY_ENABLED",
+    "TRUST_BURST_DETECTION_ENABLED",
 )
 
 # Deterministic tier map for the routing tests (never depends on the
@@ -61,7 +63,7 @@ def store(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _toggles_unset(monkeypatch):
-    """Every test starts with all five toggles unset (the shipped default)."""
+    """Every test starts with every toggle unset (the shipped default)."""
     for var in ALL_TOGGLES:
         monkeypatch.delenv(var, raising=False)
 

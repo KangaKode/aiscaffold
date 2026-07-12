@@ -26,6 +26,7 @@ from .feedback_tracker import FeedbackTracker
 from .models import UserPreference
 from .rag.preference_retriever import PreferenceRetriever
 from .schema import DEFAULT_DB_PATH, dict_from_row, get_connection
+from .trust_guard import effective_trust_scores
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,10 @@ class UserProfileManager:
         """Build the full user profile from all learning data."""
         explicit = self._get_preferences(source="explicit")
         implicit = self._get_preferences(source="implicit")
-        trust_scores = self._trust.get_all_scores(self._project_id)
+        # Same guarded read as routing (TRUST_* flags apply; exact
+        # passthrough with flags unset) -- prompts and agent selection
+        # must never disagree on trust within one request.
+        trust_scores = effective_trust_scores(self._trust, self._project_id)
         total = self._feedback.get_total_count(self._project_id)
 
         return UserProfile(
@@ -102,7 +106,7 @@ class UserProfileManager:
             rules = [f"- {p.key}: {p.value}" for p in explicit[:20]]
             parts.append("User preferences:\n" + "\n".join(rules))
 
-        trust_scores = self._trust.get_all_scores(self._project_id)
+        trust_scores = effective_trust_scores(self._trust, self._project_id)
         if trust_scores:
             ranked = sorted(trust_scores.items(), key=lambda x: x[1], reverse=True)
             trust_lines = [f"- {name}: {score:.0%}" for name, score in ranked[:10]]

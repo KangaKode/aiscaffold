@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field
 
 from ...learning.feedback_tracker import FeedbackTracker
 from ...learning.models import FeedbackSignal
+from ...learning.store import get_learning_store
+from ...learning.trust_guard import check_feedback_burst, resolve_trust_flags
 from ...security import ValidationError, validate_length
 from ..middleware.auth import AuthContext, verify_api_key
 from ..middleware.rate_limit import check_rate_limit
@@ -99,6 +101,34 @@ async def record_feedback(
     trust_mgr = getattr(request.app.state, "trust_manager", None)
     if trust_mgr and signal.agent_id:
         await asyncio.to_thread(trust_mgr.update_from_signal, signal)
+
+    # Opt-in trust-guard burst scan (detect-only, fire-and-forget). The
+    # env check keeps the flag-off route byte-equivalent: no thread hop,
+    # no store access. The signal's own project scope is threaded through
+    # for the legacy-stack read; the flag lands in the caller's RESOLVED
+    # tenant so tenant-scoped anomaly listing surfaces it.
+    if signal.agent_id and resolve_trust_flags().burst_enabled:
+        try:
+            # app.state.learning_store is only set when activity-tracking
+            # init succeeded; fall back to the shared store factory and PIN
+            # it (same pattern as the anomalies route's _get_store) so
+            # burst detection works with activity tracking off without
+            # rebuilding the store per request.
+            store = getattr(request.app.state, "learning_store", None)
+            if store is None:
+                store = get_learning_store()
+                request.app.state.learning_store = store
+            await asyncio.to_thread(
+                check_feedback_burst,
+                store,
+                tracker,
+                signal.agent_id,
+                signal.project_id,
+                tenant_id=auth.tenant_id,
+                checkin_manager=getattr(request.app.state, "checkin_manager", None),
+            )
+        except Exception as exc:  # belt over the guard's own handler
+            logger.warning(f"[Feedback] trust burst check failed (non-fatal): {exc}")
 
     return FeedbackResponse(
         id=recorded.id,

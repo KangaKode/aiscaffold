@@ -32,7 +32,7 @@ These modules are not part of the dependency chain above. This table is measured
 | Module | Imports From | Imported By | Purpose |
 |--------|-------------|-------------|---------|
 | `security/` | (none) | All modules | Prompt guard, validators, SSRF protection |
-| `observability/` | (none) | `llm/`, `orchestration/`, `api/` | Optional Prometheus metrics (no-op shim without the `[metrics]` extra) |
+| `observability/` | (none) | `llm/`, `orchestration/`, `learning/`, `api/` | Optional Prometheus metrics (no-op shim without the `[metrics]` extra) |
 | `llm/` | `security/`, `observability/` | `orchestration/`, `agents/`, `enforcement/`, `api/` | LLM client with prompt caching + model router |
 | `enforcement/` | `llm/` | `orchestration/`, `agents/` | Evidence enforcement pipeline + output signing |
 | `agents/` | `security/`, `llm/`, `enforcement/`, `orchestration/` (protocol types) | `orchestration/`, `api/` | Agent implementations, registry, identity |
@@ -41,7 +41,7 @@ These modules are not part of the dependency chain above. This table is measured
 | `api/` | All modules except `enforcement/` | (external HTTP) | FastAPI gateway, routes, middleware |
 {% endif -%}
 {% if include_learning -%}
-| `learning/` | `security/` | `api/`, `harness/`, `orchestration/` | Feedback, trust, preferences, RAG |
+| `learning/` | `security/`, `observability/` (trust-guard counter) | `api/`, `harness/`, `orchestration/` | Feedback, trust, preferences, RAG |
 {% endif -%}
 | `harness/` | `learning/` (optional) | `api/` | Session lifecycle + sequence detector |
 

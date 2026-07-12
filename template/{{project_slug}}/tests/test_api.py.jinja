@@ -1,6 +1,8 @@
 {% if include_api_gateway -%}
 """API integration tests using FastAPI TestClient."""
 
+import uuid
+
 import pytest
 from fastapi import Request
 from httpx import AsyncClient, ASGITransport
@@ -9,6 +11,8 @@ from {{ project_slug }}.api.gateway import create_app
 from {{ project_slug }}.api.middleware.auth import AuthContext, verify_api_key
 from {{ project_slug }}.api.models.responses import RoundTableResultResponse
 from {{ project_slug }}.api.routes import round_table
+from {{ project_slug }}.learning.store import SqliteLearningStore
+from {{ project_slug }}.learning.trust_guard import TRUST_BURST_ENV
 
 
 @pytest.fixture
@@ -617,6 +621,146 @@ class TestFeedbackAPI:
         r = await client.get("/api/v1/feedback/rates")
         assert r.status_code == 200
         assert "rates" in r.json()
+
+
+# =============================================================================
+# TRUST GUARD ON THE FEEDBACK ROUTE (opt-in burst detection wiring)
+# =============================================================================
+
+
+class _RaisingStore:
+    """Raises on every op: AssertionError = leak canary, RuntimeError = down."""
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    def query(self, *a, **k):
+        raise self._exc
+
+    insert = update = query
+
+
+@pytest.fixture
+async def feedback_app(tmp_path):
+    """(app, client) pair so tests can pin app.state.learning_store."""
+    import os
+    from {{ project_slug }}.agents.registry import AgentRegistry
+    from {{ project_slug }}.api.middleware import rate_limit as rl_mod
+
+    os.environ.pop("API_KEY", None)
+    os.environ.pop("ENV", None)
+    registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+    app = create_app(registry=registry)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield app, c
+    rl_mod._request_log.clear()
+
+
+class TestTrustGuardFeedbackRoute:
+    @pytest.mark.asyncio
+    async def test_feedback_route_unchanged_flag_off(self, feedback_app, monkeypatch):
+        """T3: with TRUST_* unset the route behaves exactly as before --
+        the burst path is never entered and the store is never touched."""
+        monkeypatch.delenv(TRUST_BURST_ENV, raising=False)
+        app, client = feedback_app
+        app.state.learning_store = _RaisingStore(
+            AssertionError("learning store touched with TRUST_* off")
+        )
+        r = await client.post("/api/v1/feedback", json={
+            "signal_type": "accept",
+            "agent_id": "trusted_agent",
+            "context_type": "chat",
+        })
+        assert r.status_code == 200
+        assert r.json()["signal_type"] == "accept"
+
+    @pytest.mark.asyncio
+    async def test_feedback_route_nonfatal_when_store_down(
+        self, feedback_app, monkeypatch
+    ):
+        """T10 (route variant): burst enabled + broken portable store ->
+        feedback recording still succeeds (fire-and-forget seam)."""
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        app, client = feedback_app
+        app.state.learning_store = _RaisingStore(RuntimeError("store down"))
+        r = await client.post("/api/v1/feedback", json={
+            "signal_type": "accept",
+            "agent_id": "trusted_agent",
+            "context_type": "chat",
+        })
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_burst_flag_lands_in_resolved_tenant(
+        self, feedback_app, tmp_path, monkeypatch
+    ):
+        """Bugbot regression: the flag row is keyed to the caller's
+        RESOLVED tenant (auth), not the signal's default project, so
+        tenant-scoped anomaly listing surfaces it."""
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        app, client = feedback_app
+        store = SqliteLearningStore(db_path=tmp_path / "flags.db")
+        app.state.learning_store = store
+
+        async def auth_override(request: Request) -> AuthContext:
+            return AuthContext(
+                api_key="test-b", user_id="alice", tenant_id="tenant-b"
+            )
+
+        app.dependency_overrides[verify_api_key] = auth_override
+        agent = f"burst_agent_{uuid.uuid4().hex[:8]}"  # unique per run
+        for i in range(10):
+            r = await client.post("/api/v1/feedback", json={
+                "signal_type": "accept",
+                "agent_id": agent,
+                "session_id": f"s{i}",
+            })
+            assert r.status_code == 200
+        app.dependency_overrides.clear()
+        flags = store.query(
+            "integrity_flags",
+            {"flag_type": "trust_positive_burst", "tenant_id": "tenant-b"},
+        )
+        assert len(flags) == 1
+        assert flags[0]["subject_id"] == agent
+
+    @pytest.mark.asyncio
+    async def test_burst_falls_back_to_shared_store(
+        self, feedback_app, tmp_path, monkeypatch
+    ):
+        """Bugbot regressions: with activity tracking off (no
+        app.state.learning_store) the route falls back to the shared store
+        factory instead of no-opping, and PINS the result once."""
+        from {{ project_slug }}.api.routes import feedback as fb_mod
+        monkeypatch.setenv(TRUST_BURST_ENV, "true")
+        app, client = feedback_app
+        try:
+            del app.state.learning_store
+        except AttributeError:
+            pass
+        store = SqliteLearningStore(db_path=tmp_path / "shared.db")
+        factory_calls = []
+
+        def factory():
+            factory_calls.append(1)
+            return store
+
+        monkeypatch.setattr(fb_mod, "get_learning_store", factory)
+        agent = f"lazy_store_{uuid.uuid4().hex[:8]}"
+        for i in range(10):
+            r = await client.post("/api/v1/feedback", json={
+                "signal_type": "accept",
+                "agent_id": agent,
+                "session_id": f"s{i}",
+            })
+            assert r.status_code == 200
+        flags = store.query(
+            "integrity_flags", {"flag_type": "trust_positive_burst"}
+        )
+        assert [f for f in flags if f["subject_id"] == agent]
+        assert len(factory_calls) == 1  # pinned, not rebuilt per request
+        assert app.state.learning_store is store
 
 
 # =============================================================================

@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ...learning.trust_guard import effective_trust_scores
 from ...llm import create_client
 from ...orchestration.agent_router import AgentRouter
 from ...orchestration.chat_orchestrator import (
@@ -184,7 +185,7 @@ async def send_message(
     trust_scores = None
     trust_mgr = getattr(request.app.state, "trust_manager", None)
     if trust_mgr:
-        trust_scores = trust_mgr.get_all_scores()
+        trust_scores = effective_trust_scores(trust_mgr)
 
     profile_context = chat_request.context
     profile_mgr = getattr(request.app.state, "profile_manager", None)
@@ -259,7 +260,7 @@ async def send_message_stream(
     trust_scores = None
     trust_mgr = getattr(request.app.state, "trust_manager", None)
     if trust_mgr:
-        trust_scores = trust_mgr.get_all_scores()
+        trust_scores = effective_trust_scores(trust_mgr)
 
     profile_context = chat_request.context
     profile_mgr = getattr(request.app.state, "profile_manager", None)
