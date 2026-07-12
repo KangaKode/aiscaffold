@@ -244,6 +244,8 @@ async def audited_round_table(
     outcome = "consensus" if consensus else "no_consensus"
     if getattr(result, "premise_challenge", None) is not None:
         outcome = "premise_refused"
+    if getattr(result, "sentinel_refusal", None) is not None:
+        outcome = "sentinel_refused"
     chain_digest, chain_status = auditor.chain_digest(result)
     auditor.event(
         correlation_id,

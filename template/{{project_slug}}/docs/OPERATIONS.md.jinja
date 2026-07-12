@@ -14,7 +14,8 @@ incident, not during it.
 
 | Component | When it cannot run | Posture | What actually happens |
 |-----------|--------------------|---------|------------------------|
-| Sentinel (semantic injection screen) | No LLM / LLM call fails | **Fails CLOSED** | Sentinel dissents with a blocking observation instead of silently passing (`agents/core/sentinel.py`) |
+| Sentinel (semantic injection screen) | No LLM / LLM call fails | **Fails CLOSED** | Sentinel dissents with a blocking observation instead of silently passing (`agents/core/sentinel.py`). Advisory by default: the run itself still completes unless enforcement (next row) is on |
+| Sentinel enforcement (`SENTINEL_ENFORCEMENT_ENABLED`) | Flag on + Sentinel returns HIGH, refuses, or produced no analysis | **Refuses the run (opt-in)** | Off by default. When on, the round table halts after Phase 1 with a machine-readable refusal. Triage by reason: `sentinel_unavailable` = LLM outage or exhausted budget (recovers with the dependency); `sentinel_missing` = configuration fault (core roster disabled, core load failure, or the core Sentinel gated out at dispatch -- e.g. a registered agent named "sentinel" whose entry is suspended, or the name registered in more than one tenant) -- fix the config, waiting will not clear it. Rollback: unset the flag and restart (`orchestration/round_table.py`, `orchestration/round_table_helpers.py`) |
 | Premise / refusal gate (Phase 0.5) | LLM error, parse failure, or no LLM | **Fails OPEN** | A failed check counts as "proceed" for that agent; with no LLM the gate is skipped. The fail-closed backstop for hostile input is the Sentinel, not this gate (`orchestration/premise.py`) |
 {% if include_api_gateway -%}
 | Corrections API | No learning store / manager not wired | **503** | Every `/api/v1/corrections` endpoint returns 503 so callers can tell "learning not enabled" apart from "no corrections" (`api/routes/corrections.py`) |
@@ -67,7 +68,7 @@ Work top-down; each step is cheaper than the one below it.
 
 | Metric | Labels | Watch for |
 |--------|--------|-----------|
-| `deliberations_total` | `outcome` (completed / refused / failed) | Rising `failed` ratio; a spike in `refused` means the premise gate is turning work away |
+| `deliberations_total` | `outcome` (completed / refused / failed, plus `refused_sentinel` / `refused_sentinel_premise` / `refused_sentinel_unavailable` / `refused_sentinel_missing` when Sentinel enforcement is on) | Rising `failed` ratio; a spike in `refused` means the premise gate is turning work away. With enforcement on: sustained `refused_sentinel_unavailable` = provider outage or budget exhaustion; any `refused_sentinel_missing` = configuration fault, page whoever owns the config |
 | `deliberation_duration_seconds` | -- | p95 creep (histogram buckets reach 300s) |
 | `phase_duration_seconds` | `phase` | **Extension point -- empty out of the box.** No shipped code emits per-phase audit events; the histogram populates only when your orchestration extensions call `DeliberationAuditor.event(...)` with `phase` and `duration_seconds` set (see the docstring in `orchestration/deliberation_audit.py`) |
 | `llm_calls_total` | `provider`, `model` | Unexpected provider/model mix after config changes |

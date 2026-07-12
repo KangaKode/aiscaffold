@@ -11,6 +11,7 @@ Security:
 """
 
 import asyncio
+import dataclasses
 import logging
 import uuid
 from collections import OrderedDict
@@ -45,6 +46,27 @@ router = APIRouter()
 MAX_CONTENT_SIZE = 500_000
 MAX_CACHED_RESULTS = 1000
 
+# The only RoundTableConfig fields a caller may override per task.
+# Safety-relevant fields (sentinel_enforcement, enforce_evidence,
+# premise_challenge_enabled, include_core_agents, ...) are deliberately
+# NOT caller-tunable: they are operator policy, set in the app config.
+CALLER_TUNABLE_CONFIG_FIELDS = frozenset({
+    "enable_strategy_phase",
+    "enable_challenge_phase",
+    "consensus_threshold",
+    "require_human_approval",
+    "min_quorum",
+})
+
+# Bounded metric outcomes for Sentinel-enforcement refusals, keyed by
+# SentinelRefusal.reason. The bare "refused" outcome stays premise-gate-only.
+_SENTINEL_OUTCOMES = {
+    "sentinel_high_risk": "refused_sentinel",
+    "sentinel_premise": "refused_sentinel_premise",
+    "sentinel_unavailable": "refused_sentinel_unavailable",
+    "sentinel_missing": "refused_sentinel_missing",
+}
+
 _results_cache: OrderedDict[str, RoundTableResultResponse] = OrderedDict()
 
 
@@ -76,7 +98,9 @@ async def submit_task(
 
     All registered agents (or a subset via agent_ids) analyze the task through
     the phased protocol: Premise Gate -> Strategy -> Independent -> Challenge ->
-    Synthesis. A refused premise returns status="refused" with the gate outcome.
+    Synthesis. A refused premise returns status="refused" with the gate
+    outcome; with opt-in Sentinel enforcement on, a Sentinel refusal
+    returns status="refused" with refusal_source="sentinel".
     """
     registry = request.app.state.registry
     config: RoundTableConfig = request.app.state.round_table_config
@@ -132,22 +156,20 @@ async def submit_task(
         agents = list(visible.values())
 
     if task_request.config_overrides:
+        # Callers may tune ONLY the allowlisted fields. dataclasses.replace
+        # keeps every other field of the app config intact -- the previous
+        # full rebuild silently reset non-allowlisted fields (including
+        # safety settings like sentinel_enforcement and enforce_evidence)
+        # to their dataclass defaults. Unknown/non-allowlisted keys in the
+        # payload are ignored.
         overrides = task_request.config_overrides
-        config = RoundTableConfig(
-            enable_strategy_phase=overrides.get(
-                "enable_strategy_phase", config.enable_strategy_phase
-            ),
-            enable_challenge_phase=overrides.get(
-                "enable_challenge_phase", config.enable_challenge_phase
-            ),
-            consensus_threshold=overrides.get(
-                "consensus_threshold", config.consensus_threshold
-            ),
-            require_human_approval=overrides.get(
-                "require_human_approval", config.require_human_approval
-            ),
-            min_quorum=overrides.get("min_quorum", config.min_quorum),
-        )
+        tunable = {
+            key: overrides[key]
+            for key in CALLER_TUNABLE_CONFIG_FIELDS
+            if key in overrides
+        }
+        if tunable:
+            config = dataclasses.replace(config, **tunable)
 
     task_id = uuid.uuid4().hex[:16]
     task = RoundTableTask(
@@ -275,13 +297,27 @@ async def submit_task(
         metrics["total_agent_calls"] += len(agents) * 3
 
         pcr = result.premise_challenge
-        record_deliberation(
-            "refused" if pcr is not None else "completed",
-            result.duration_seconds,
-        )
+        sentinel_refusal = getattr(result, "sentinel_refusal", None)
+        if sentinel_refusal is not None:
+            refusal_source = "sentinel"
+            refusal_reason = sentinel_refusal.reason
+            outcome = _SENTINEL_OUTCOMES.get(
+                sentinel_refusal.reason, "refused_sentinel"
+            )
+        elif pcr is not None:
+            refusal_source = "premise_gate"
+            refusal_reason = "premise_challenged"
+            outcome = "refused"
+        else:
+            refusal_source = None
+            refusal_reason = None
+            outcome = "completed"
+        record_deliberation(outcome, result.duration_seconds)
         response = RoundTableResultResponse(
             task_id=task_id,
-            status="refused" if pcr is not None else "completed",
+            status="refused" if refusal_source is not None else "completed",
+            refusal_source=refusal_source,
+            refusal_reason=refusal_reason,
             premise_challenge=PremiseChallengeResponse(
                 what_is_wrong=pcr.what_is_wrong,
                 what_is_missing=pcr.what_is_missing,

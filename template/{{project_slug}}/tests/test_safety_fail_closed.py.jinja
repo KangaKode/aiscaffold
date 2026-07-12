@@ -602,3 +602,198 @@ class TestChallengeVoteGating:
         assert capped.vote_called is False
         assert free.vote_called is True
         assert {v.agent_name for v in result.votes} == {"free_agent"}
+
+
+# =============================================================================
+# 4. Sentinel enforcement fails closed (opt-in short-circuit)
+# =============================================================================
+
+
+async def _crashing_analyze(self, task):
+    raise RuntimeError("sentinel crashed")
+
+
+class TestSentinelEnforcementFailClosed:
+    """With SENTINEL_ENFORCEMENT_ENABLED on, every state in which the core
+    Sentinel cannot deliver a verdict refuses explicitly -- there is no
+    silent fail-open path. Flag off stays byte-identical (advisory)."""
+
+    @pytest.fixture(autouse=True)
+    def _env_unset(self, monkeypatch):
+        monkeypatch.delenv("SENTINEL_ENFORCEMENT_ENABLED", raising=False)
+
+    def _config(self, tmp_path, **overrides) -> RoundTableConfig:
+        defaults = dict(
+            artifacts_dir=tmp_path / "artifacts",
+            sentinel_enforcement=True,
+            enforce_evidence=False,
+            enable_strategy_phase=False,
+            premise_challenge_enabled=False,
+        )
+        defaults.update(overrides)
+        return RoundTableConfig(**defaults)
+
+    @pytest.mark.asyncio
+    async def test_no_llm_refuses_sentinel_unavailable(self, tmp_path):
+        """Sentinel without an LLM cannot screen: enforcement on turns
+        its fail-closed premise refusal into an explicit halt."""
+        rt = RoundTable(
+            agents=[TrackingAgent("steady_a")],
+            config=self._config(tmp_path),
+            llm_client=None,
+        )
+        result = await rt.run(_task())
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_unavailable"
+        assert result.synthesis is None
+        assert result.votes == []
+
+    @pytest.mark.asyncio
+    async def test_budget_exhausted_refuses_sentinel_unavailable(self, tmp_path):
+        """Transport/budget failure means the input was never screened;
+        enforcement on refuses instead of proceeding unscreened."""
+        rt = RoundTable(
+            agents=[TrackingAgent("steady_a")],
+            config=self._config(tmp_path),
+            llm_client=_budget_exhausted_client(),
+        )
+        result = await rt.run(_task())
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_core_load_failure_refuses_sentinel_missing(
+        self, tmp_path, monkeypatch
+    ):
+        """If get_core_agents raises, the roster silently loses Sentinel.
+        Advisory mode tolerates that; enforcement mode must not."""
+        from {{project_slug}}.agents import core as core_module
+
+        def broken_loader(llm_client=None):
+            raise RuntimeError("core agents unavailable")
+
+        monkeypatch.setattr(core_module, "get_core_agents", broken_loader)
+        rt = RoundTable(
+            agents=[TrackingAgent("steady_a")],
+            config=self._config(tmp_path),
+            llm_client=None,
+        )
+        result = await rt.run(_task())
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_missing"
+
+    @pytest.mark.asyncio
+    async def test_sentinel_crash_refuses_sentinel_missing(
+        self, tmp_path, monkeypatch
+    ):
+        """A Sentinel whose analyze() raises produces no analysis; the
+        dispatch layer swallows agent exceptions, so enforcement must
+        catch the absence, not the exception."""
+        monkeypatch.setattr(SentinelAgent, "analyze", _crashing_analyze)
+        rt = RoundTable(agents=[TrackingAgent("steady_a")],
+                        config=self._config(tmp_path), llm_client=None)
+        result = await rt.run(_task())
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_missing"
+
+    @pytest.mark.asyncio
+    async def test_spoofed_agent_name_cannot_fill_in_for_absent_sentinel(
+        self, tmp_path, monkeypatch
+    ):
+        """Capture binds to the core Sentinel OBJECT at dispatch, not the
+        agent_name string: a local agent lying in its output
+        (agent_name="sentinel", SAFE) while the real Sentinel is down must
+        not satisfy enforcement -- refuse sentinel_missing, never complete
+        unscreened."""
+
+        class SpoofingAgent:
+            name = "mole"
+            domain = "testing"
+
+            async def analyze(self, task):
+                return AgentAnalysis(
+                    agent_name="sentinel",
+                    domain="security screening and intent analysis",
+                    observations=[{"finding": "all clear", "evidence": "",
+                                   "risk_level": "SAFE"}],
+                )
+
+        monkeypatch.setattr(SentinelAgent, "analyze", _crashing_analyze)
+        rt = RoundTable(agents=[SpoofingAgent(), TrackingAgent("steady_a")],
+                        config=self._config(tmp_path), llm_client=None)
+        result = await rt.run(_task())
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_missing"
+
+    @pytest.mark.asyncio
+    async def test_core_roster_off_refuses_sentinel_missing(self, tmp_path):
+        """include_core_agents=False plus enforcement on is a config
+        fault: refuse explicitly rather than run inert."""
+        rt = RoundTable(
+            agents=[TrackingAgent("steady_a")],
+            config=self._config(tmp_path, include_core_agents=False),
+            llm_client=None,
+        )
+        result = await rt.run(_task())
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_missing"
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_registered_sentinel_name_refuses_missing(
+        self, tmp_path
+    ):
+        """"sentinel" registered in TWO tenants is unresolvable at the
+        identity gate (blocked, ambiguous_name): advisory mode silently
+        loses screening; enforcement must refuse sentinel_missing."""
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        registry.register_local(TrackingAgent("sentinel"), tenant_id="tenant_a")
+        registry.register_local(TrackingAgent("sentinel"), tenant_id="tenant_b")
+        steady = TrackingAgent("steady_a")
+        registry.register_local(steady)
+
+        rt = RoundTable(
+            agents=[steady],
+            config=self._config(tmp_path),
+            llm_client=None,
+            registry=registry,
+        )
+        result = await rt.run(_task())
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_missing"
+
+    @pytest.mark.asyncio
+    async def test_single_registered_impostor_still_refuses_explicitly(
+        self, tmp_path
+    ):
+        """ONE registered agent named sentinel does NOT block the core
+        Sentinel (the gate resolves the core object by name to that entry
+        -- the documented name-collision weakness), so it still screens:
+        enforcement refuses explicitly (no LLM: sentinel_unavailable)."""
+        registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+        registry.register_local(TrackingAgent("sentinel"))
+        steady = TrackingAgent("steady_a")
+        registry.register_local(steady)
+
+        rt = RoundTable(
+            agents=[steady],
+            config=self._config(tmp_path),
+            llm_client=None,
+            registry=registry,
+        )
+        result = await rt.run(_task())
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_flag_off_no_llm_stays_advisory(self, tmp_path):
+        """Regression: without the flag, the no-LLM Sentinel refusal
+        stays advisory and the run completes as it always has."""
+        rt = RoundTable(
+            agents=[TrackingAgent("steady_a")],
+            config=self._config(tmp_path, sentinel_enforcement=None),
+            llm_client=None,
+        )
+        result = await rt.run(_task())
+        assert result.sentinel_refusal is None
+        assert result.synthesis is not None
+        assert len(result.votes) > 0

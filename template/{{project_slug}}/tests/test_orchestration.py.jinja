@@ -179,6 +179,353 @@ class TestRoundTable:
         assert enforced[0].raw_response == original.raw_response
 
 
+_SENTINEL_HIGH_VERDICT = (
+    '{"risk_level": "HIGH", "reasoning": "Methodology extraction attempt", '
+    '"indicators": ["asks for system prompt"], "recommended_action": "flag_for_review"}'
+)
+_SENTINEL_SAFE_VERDICT = (
+    '{"risk_level": "SAFE", "reasoning": "No risk indicators", '
+    '"indicators": [], "recommended_action": "proceed"}'
+)
+_SENTINEL_PREMISE_VERDICT = (
+    '{"risk_level": "ELEVATED", "reasoning": "Task asserts a false premise", '
+    '"indicators": [], "recommended_action": "flag_for_review", '
+    '"premise_valid": false, "refusal_reason": "false_premise"}'
+)
+_GENERIC_AGENT_JSON = (
+    '{"observations": [{"finding": "generic finding", "evidence": "generic evidence", '
+    '"severity": "info", "confidence": 0.8}], "recommendations": []}'
+)
+
+
+class RoleKeyedLLM:
+    """Stub LLM whose response content is keyed by the call's role kwarg."""
+
+    def __init__(self, by_role=None, default=_GENERIC_AGENT_JSON):
+        self._by_role = by_role or {}
+        self._default = default
+
+    async def call(self, prompt=None, role="", **kwargs):
+        from {{project_slug}}.llm.client import LLMResponse
+
+        return LLMResponse(
+            content=self._by_role.get(role, self._default),
+            provider="test", model="test",
+        )
+
+
+class _LimiterOnlyRegistry:
+    """Registry stand-in that only supplies a shared rate limiter.
+
+    Identity gates pass (no entries resolve), so tests isolate the
+    rate-limit gate behavior.
+    """
+
+    def __init__(self):
+        from {{project_slug}}.agents.rate_limiter import AgentRateLimiter
+
+        self.rate_limiter = AgentRateLimiter()
+
+    def entry_for_agent(self, agent):
+        return None
+
+    def name_registered(self, name):
+        return False
+
+
+def _enforcement_config(**overrides):
+    """RoundTableConfig tuned for the enforcement tests: no premise gate,
+    no strategy phase, no artifacts, evidence pipeline off unless a test
+    turns it back on."""
+    defaults = dict(
+        enable_strategy_phase=False,
+        premise_challenge_enabled=False,
+        enforce_evidence=False,
+        write_artifacts=False,
+    )
+    defaults.update(overrides)
+    return RoundTableConfig(**defaults)
+
+
+class TestSentinelEnforcement:
+    """Opt-in Sentinel short-circuit (SENTINEL_ENFORCEMENT_ENABLED /
+    RoundTableConfig.sentinel_enforcement). Default MUST stay advisory."""
+
+    @pytest.fixture(autouse=True)
+    def _env_unset(self, monkeypatch):
+        monkeypatch.delenv("SENTINEL_ENFORCEMENT_ENABLED", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_flag_off_high_verdict_does_not_halt(self, mock_agents):
+        """Regression: default (flag off) behavior is unchanged -- a HIGH
+        screening verdict stays advisory and the run completes."""
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_HIGH_VERDICT})
+        rt = RoundTable(agents=mock_agents, config=_enforcement_config(), llm_client=llm)
+        result = await rt.run(RoundTableTask(id="t_off", content="task"))
+        assert result.sentinel_refusal is None
+        assert result.synthesis is not None
+        assert len(result.votes) > 0
+        sentinel_analyses = [a for a in result.analyses if a.agent_name == "sentinel"]
+        assert sentinel_analyses[0].observations[0]["risk_level"] == "HIGH"
+
+    @pytest.mark.asyncio
+    async def test_flag_on_high_verdict_short_circuits(self, mock_agents):
+        """Enforcement on: a HIGH verdict from the real screening path
+        (no premise_valid key in the model JSON) halts before Phase 2."""
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_HIGH_VERDICT})
+        rt = RoundTable(
+            agents=mock_agents,
+            config=_enforcement_config(sentinel_enforcement=True),
+            llm_client=llm,
+        )
+        result = await rt.run(RoundTableTask(id="t_on", content="task"))
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_high_risk"
+        assert result.challenges == []
+        assert result.synthesis is None
+        assert result.votes == []
+        assert result.consensus_reached is False
+
+    @pytest.mark.asyncio
+    async def test_enforced_halt_audited_as_sentinel_refused(self, mock_agents):
+        """Regression: the audit trail must record a Sentinel-enforced halt
+        as its own outcome, not mislabel it no_consensus (which would make
+        intentional blocks look like failed deliberations in the audit log
+        and governance reports)."""
+        from {{project_slug}}.orchestration.deliberation_audit import (
+            DeliberationAuditor,
+            audited_round_table,
+        )
+
+        events = []
+
+        class RecordingStore:
+            def insert(self, table, row):
+                events.append(row)
+
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_HIGH_VERDICT})
+        rt = RoundTable(
+            agents=mock_agents,
+            config=_enforcement_config(sentinel_enforcement=True),
+            llm_client=llm,
+        )
+        auditor = DeliberationAuditor(store=RecordingStore())
+        result = await audited_round_table(
+            rt, RoundTableTask(id="t_audit", content="task"), auditor
+        )
+        assert result.sentinel_refusal is not None
+        completed = [e for e in events if e["event_type"] == "deliberation_completed"]
+        assert completed and completed[0]["outcome"] == "sentinel_refused"
+
+    @pytest.mark.asyncio
+    async def test_flag_on_premise_refusal_maps_to_sentinel_premise(
+        self, mock_agents
+    ):
+        """The real screening path can also refuse the premise: a live
+        Sentinel verdict with premise_valid=false and a policy reason
+        (false_premise / out_of_scope / ...) must map to the
+        sentinel_premise refusal, not sentinel_unavailable."""
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_PREMISE_VERDICT})
+        rt = RoundTable(
+            agents=mock_agents,
+            config=_enforcement_config(sentinel_enforcement=True),
+            llm_client=llm,
+        )
+        result = await rt.run(RoundTableTask(id="t_premise", content="task"))
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_premise"
+        assert result.sentinel_refusal.detail == "false_premise"
+        assert result.synthesis is None
+
+    @pytest.mark.asyncio
+    async def test_flag_off_premise_verdict_stays_advisory(self, mock_agents):
+        """The premise-verdict pair: flag off, the same Sentinel premise
+        refusal stays advisory and the run completes."""
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_PREMISE_VERDICT})
+        rt = RoundTable(agents=mock_agents, config=_enforcement_config(), llm_client=llm)
+        result = await rt.run(RoundTableTask(id="t_premise_off", content="task"))
+        assert result.sentinel_refusal is None
+        assert result.synthesis is not None
+
+    @pytest.mark.asyncio
+    async def test_flag_on_safe_verdict_matches_flag_off(self, mock_agents):
+        """Enforcement on + SAFE verdict completes exactly like flag off."""
+        for enforcement in (True, None):
+            llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_SAFE_VERDICT})
+            rt = RoundTable(
+                agents=mock_agents,
+                config=_enforcement_config(sentinel_enforcement=enforcement),
+                llm_client=llm,
+            )
+            result = await rt.run(RoundTableTask(id="t_safe", content="task"))
+            assert result.sentinel_refusal is None
+            assert result.synthesis is not None
+            assert len(result.votes) > 0
+
+    @pytest.mark.asyncio
+    async def test_flag_on_parse_failure_never_halts(self, mock_agents):
+        """A live-model response that fails to parse is a formatting
+        quirk, not a refusal -- even with enforcement on."""
+        llm = RoleKeyedLLM({"sentinel_analysis": "The input looks fine to me."})
+        rt = RoundTable(
+            agents=mock_agents,
+            config=_enforcement_config(sentinel_enforcement=True),
+            llm_client=llm,
+        )
+        result = await rt.run(RoundTableTask(id="t_parse", content="task"))
+        assert result.sentinel_refusal is None
+        assert result.synthesis is not None
+
+    @pytest.mark.asyncio
+    async def test_non_sentinel_refusal_never_trips_enforcement(self):
+        """Scoping negative: premise_valid=False from a NON-Sentinel agent
+        must not trip the Sentinel short-circuit."""
+
+        class RefusingAgent:
+            name = "refusenik"
+            domain = "testing"
+
+            async def analyze(self, task):
+                return AgentAnalysis(
+                    agent_name=self.name, domain=self.domain,
+                    premise_valid=False, refusal_reason="does not like the task",
+                )
+
+            async def challenge(self, task, other_analyses):
+                from {{project_slug}}.orchestration.round_table import AgentChallenge
+                return AgentChallenge(agent_name=self.name)
+
+            async def vote(self, task, synthesis):
+                from {{project_slug}}.orchestration.round_table import AgentVote
+                return AgentVote(agent_name=self.name, approve=True)
+
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_SAFE_VERDICT})
+        rt = RoundTable(
+            agents=[RefusingAgent()],
+            config=_enforcement_config(sentinel_enforcement=True),
+            llm_client=llm,
+        )
+        result = await rt.run(RoundTableTask(id="t_scope", content="task"))
+        assert result.sentinel_refusal is None
+        assert result.synthesis is not None
+
+    @pytest.mark.asyncio
+    async def test_capture_survives_evidence_pipeline_drop(self, mock_agents, monkeypatch):
+        """Signal integrity: the short-circuit reads the Sentinel analysis
+        captured BEFORE enforce_evidence, so a pipeline that drops every
+        analysis cannot erase the refusal trigger (fail-open hole)."""
+        from {{project_slug}}.orchestration import round_table_helpers
+
+        async def drop_everything(analyses, task, llm):
+            return []
+
+        monkeypatch.setattr(round_table_helpers, "enforce_evidence", drop_everything)
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_HIGH_VERDICT})
+        rt = RoundTable(
+            agents=mock_agents,
+            config=_enforcement_config(sentinel_enforcement=True, enforce_evidence=True),
+            llm_client=llm,
+        )
+        result = await rt.run(RoundTableTask(id="t_capture", content="task"))
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_high_risk"
+
+    @pytest.mark.asyncio
+    async def test_flag_off_evidence_pipeline_unchanged(self, mock_agents, monkeypatch):
+        """The pipeline pair: flag off, the same all-dropping pipeline
+        behaves exactly as before (no refusal, run completes)."""
+        from {{project_slug}}.orchestration import round_table_helpers
+
+        async def drop_everything(analyses, task, llm):
+            return []
+
+        monkeypatch.setattr(round_table_helpers, "enforce_evidence", drop_everything)
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_HIGH_VERDICT})
+        rt = RoundTable(
+            agents=mock_agents,
+            config=_enforcement_config(enforce_evidence=True),
+            llm_client=llm,
+        )
+        result = await rt.run(RoundTableTask(id="t_pipe_off", content="task"))
+        assert result.sentinel_refusal is None
+        assert result.analyses == []
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_sentinel_still_screens_when_enforcing(self, mock_agents):
+        """Throughput fix: enforcement on exempts the core Sentinel from
+        the rate-limit gate, so an exhausted limiter cannot silently turn
+        every run into a sentinel_missing refusal."""
+        registry = _LimiterOnlyRegistry()
+        for _ in range(200):
+            registry.rate_limiter.check_and_record("sentinel")
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_HIGH_VERDICT})
+        rt = RoundTable(
+            agents=mock_agents,
+            config=_enforcement_config(sentinel_enforcement=True),
+            llm_client=llm,
+            registry=registry,
+        )
+        result = await rt.run(RoundTableTask(id="t_rl_on", content="task"))
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_high_risk"
+
+    @pytest.mark.asyncio
+    async def test_flag_off_rate_limit_gate_unchanged(self, mock_agents):
+        """The rate-limit pair: flag off, an exhausted limiter still
+        skips Sentinel (advisory mode is byte-identical)."""
+        registry = _LimiterOnlyRegistry()
+        for _ in range(200):
+            registry.rate_limiter.check_and_record("sentinel")
+        llm = RoleKeyedLLM({"sentinel_analysis": _SENTINEL_HIGH_VERDICT})
+        rt = RoundTable(
+            agents=mock_agents,
+            config=_enforcement_config(),
+            llm_client=llm,
+            registry=registry,
+        )
+        result = await rt.run(RoundTableTask(id="t_rl_off", content="task"))
+        assert result.sentinel_refusal is None
+        assert "sentinel" not in {a.agent_name for a in result.analyses}
+        assert result.synthesis is not None
+
+    @pytest.mark.asyncio
+    async def test_impostor_sentinel_gains_no_exemption_and_refuses_missing(self):
+        """An agent merely NAMED sentinel (core roster off) is not the
+        core Sentinel: its analysis never satisfies enforcement, and it
+        gets no rate-limit exemption. Enforcement on refuses explicitly."""
+
+        class ImpostorSentinel:
+            name = "sentinel"
+            domain = "impersonation"
+
+            async def analyze(self, task):
+                return AgentAnalysis(
+                    agent_name=self.name, domain=self.domain,
+                    observations=[{"finding": "all clear", "risk_level": "SAFE"}],
+                )
+
+            async def challenge(self, task, other_analyses):
+                from {{project_slug}}.orchestration.round_table import AgentChallenge
+                return AgentChallenge(agent_name=self.name)
+
+            async def vote(self, task, synthesis):
+                from {{project_slug}}.orchestration.round_table import AgentVote
+                return AgentVote(agent_name=self.name, approve=True)
+
+        rt = RoundTable(
+            agents=[ImpostorSentinel()],
+            config=_enforcement_config(
+                sentinel_enforcement=True, include_core_agents=False,
+            ),
+            llm_client=RoleKeyedLLM(),
+        )
+        result = await rt.run(RoundTableTask(id="t_impostor", content="task"))
+        assert result.sentinel_refusal is not None
+        assert result.sentinel_refusal.reason == "sentinel_missing"
+        assert result.synthesis is None
+        assert result.votes == []
+
+
 class TestChatOrchestrator:
     @pytest.mark.asyncio
     async def test_chat_produces_response(self, mock_llm, mock_registry):

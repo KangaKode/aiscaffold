@@ -212,6 +212,213 @@ class TestRoundTableAPI:
 
 
 # =============================================================================
+# ROUND TABLE: SENTINEL ENFORCEMENT MAPPING + CONFIG OVERRIDE INTEGRITY
+# =============================================================================
+
+
+class _LocalAgent:
+    name = "api_test_agent"
+    domain = "testing"
+
+    async def analyze(self, task):
+        raise NotImplementedError  # never dispatched (RoundTable is faked)
+
+    async def challenge(self, task, other_analyses):
+        raise NotImplementedError
+
+    async def vote(self, task, synthesis):
+        raise NotImplementedError
+
+
+class _FakeRoundTable:
+    """Captures the config the route built and returns a canned result."""
+
+    captured: dict = {}
+    canned_result = None
+
+    def __init__(self, agents, config, **kwargs):
+        _FakeRoundTable.captured["config"] = config
+        _FakeRoundTable.captured["agents"] = agents
+
+    async def run(self, task):
+        result = _FakeRoundTable.canned_result
+        result.task_id = task.id
+        return result
+
+
+@pytest.fixture
+async def enforcement_client(tmp_path, monkeypatch):
+    """Client wired to a fake RoundTable so mapping/override behavior is
+    tested without any LLM dispatch. Yields (client, app)."""
+    import os
+    from {{ project_slug }}.agents.registry import AgentRegistry
+    from {{ project_slug }}.api.middleware import rate_limit as rl_mod
+
+    os.environ.pop("API_KEY", None)
+    os.environ.pop("ENV", None)
+    registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+    registry.register_local(_LocalAgent(), capabilities=["testing"])
+    app = create_app(registry=registry)
+    app.state.deliberation_auditor = None
+    _FakeRoundTable.captured = {}
+    monkeypatch.setattr(round_table, "RoundTable", _FakeRoundTable)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c, app
+    # The API rate limiter is a module-global per-IP window shared by every
+    # test in the process; drain the requests these tests consumed so the
+    # full-suite budget for later files (e.g. test_e2e) is unchanged.
+    rl_mod._request_log.clear()
+
+
+class TestSentinelEnforcementAPI:
+    @pytest.mark.asyncio
+    async def test_sentinel_refusal_maps_to_refused_status(
+        self, enforcement_client, monkeypatch
+    ):
+        from {{ project_slug }}.orchestration.round_table import RoundTableResult
+        from {{ project_slug }}.orchestration.round_table_helpers import SentinelRefusal
+
+        client, _ = enforcement_client
+        outcomes = []
+        monkeypatch.setattr(
+            round_table, "record_deliberation",
+            lambda outcome, duration: outcomes.append(outcome),
+        )
+        _FakeRoundTable.canned_result = RoundTableResult(
+            task_id="pending",
+            sentinel_refusal=SentinelRefusal(
+                reason="sentinel_high_risk", detail="methodology extraction",
+            ),
+        )
+        r = await client.post("/api/v1/round-table/tasks", json={"content": "task"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "refused"
+        assert data["refusal_source"] == "sentinel"
+        assert data["refusal_reason"] == "sentinel_high_risk"
+        assert data["synthesis"] is None
+        assert data["premise_challenge"] is None
+        assert outcomes == ["refused_sentinel"]
+
+    @pytest.mark.asyncio
+    async def test_sentinel_missing_maps_distinct_metric_outcome(
+        self, enforcement_client, monkeypatch
+    ):
+        from {{ project_slug }}.orchestration.round_table import RoundTableResult
+        from {{ project_slug }}.orchestration.round_table_helpers import SentinelRefusal
+
+        client, _ = enforcement_client
+        outcomes = []
+        monkeypatch.setattr(
+            round_table, "record_deliberation",
+            lambda outcome, duration: outcomes.append(outcome),
+        )
+        _FakeRoundTable.canned_result = RoundTableResult(
+            task_id="pending",
+            sentinel_refusal=SentinelRefusal(reason="sentinel_missing"),
+        )
+        r = await client.post("/api/v1/round-table/tasks", json={"content": "task"})
+        assert r.status_code == 200
+        assert r.json()["refusal_reason"] == "sentinel_missing"
+        assert outcomes == ["refused_sentinel_missing"]
+
+    @pytest.mark.asyncio
+    async def test_sentinel_premise_maps_distinct_metric_outcome(
+        self, enforcement_client, monkeypatch
+    ):
+        from {{ project_slug }}.orchestration.round_table import RoundTableResult
+        from {{ project_slug }}.orchestration.round_table_helpers import SentinelRefusal
+
+        client, _ = enforcement_client
+        outcomes = []
+        monkeypatch.setattr(
+            round_table, "record_deliberation",
+            lambda outcome, duration: outcomes.append(outcome),
+        )
+        _FakeRoundTable.canned_result = RoundTableResult(
+            task_id="pending",
+            sentinel_refusal=SentinelRefusal(
+                reason="sentinel_premise", detail="false_premise",
+            ),
+        )
+        r = await client.post("/api/v1/round-table/tasks", json={"content": "task"})
+        assert r.status_code == 200
+        assert r.json()["refusal_reason"] == "sentinel_premise"
+        assert outcomes == ["refused_sentinel_premise"]
+
+    @pytest.mark.asyncio
+    async def test_premise_refusal_keeps_premise_gate_source_and_metric(
+        self, enforcement_client, monkeypatch
+    ):
+        """The pre-existing premise-gate mapping is unchanged: outcome
+        stays the bare "refused" and the source names the gate."""
+        from {{ project_slug }}.orchestration.premise import PremiseChallengeResult
+        from {{ project_slug }}.orchestration.round_table import RoundTableResult
+
+        client, _ = enforcement_client
+        outcomes = []
+        monkeypatch.setattr(
+            round_table, "record_deliberation",
+            lambda outcome, duration: outcomes.append(outcome),
+        )
+        _FakeRoundTable.canned_result = RoundTableResult(
+            task_id="pending",
+            premise_challenge=PremiseChallengeResult(
+                task_id="pending", premise_challenged=True,
+                what_is_wrong="flawed premise",
+            ),
+        )
+        r = await client.post("/api/v1/round-table/tasks", json={"content": "task"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "refused"
+        assert data["refusal_source"] == "premise_gate"
+        assert data["premise_challenge"] is not None
+        assert outcomes == ["refused"]
+
+    @pytest.mark.asyncio
+    async def test_config_overrides_cannot_drop_safety_fields(
+        self, enforcement_client
+    ):
+        """THE bypass finding: pre-fix, config_overrides rebuilt
+        RoundTableConfig from only five fields, silently resetting every
+        other field (sentinel_enforcement, enforce_evidence, ...) to its
+        dataclass default. Overrides must replace only the allowlisted
+        fields and ignore everything else in the payload."""
+        from {{ project_slug }}.orchestration.round_table import (
+            RoundTableConfig, RoundTableResult, SynthesisResult,
+        )
+
+        client, app = enforcement_client
+        app.state.round_table_config = RoundTableConfig(
+            sentinel_enforcement=True,
+            enforce_evidence=False,
+            refusal_threshold=4,
+        )
+        _FakeRoundTable.canned_result = RoundTableResult(
+            task_id="pending", synthesis=SynthesisResult(recommended_direction="ok"),
+        )
+        r = await client.post("/api/v1/round-table/tasks", json={
+            "content": "task",
+            "config_overrides": {
+                "consensus_threshold": 0.9,
+                "sentinel_enforcement": False,
+                "enforce_evidence": True,
+            },
+        })
+        assert r.status_code == 200
+        config = _FakeRoundTable.captured["config"]
+        # Allowlisted override applied.
+        assert config.consensus_threshold == 0.9
+        # Safety fields are NOT caller-tunable: payload values ignored.
+        assert config.sentinel_enforcement is True
+        assert config.enforce_evidence is False
+        # Non-allowlisted app config survives the rebuild.
+        assert config.refusal_threshold == 4
+
+
+# =============================================================================
 # CHAT
 # =============================================================================
 

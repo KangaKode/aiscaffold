@@ -68,12 +68,19 @@ class PremiseChallengeResponse(BaseModel):
 class RoundTableResultResponse(BaseModel):
     """Complete round table output returned to the client.
 
-    status is "refused" (with premise_challenge populated) when the
-    Phase 0.5 gate short-circuited the deliberation.
+    status is "refused" when a gate short-circuited the deliberation:
+    refusal_source says which one ("premise_gate" with premise_challenge
+    populated, or "sentinel" when opt-in Sentinel enforcement tripped)
+    and refusal_reason carries the machine-readable reason
+    ("premise_challenged", or a SentinelRefusal reason such as
+    "sentinel_high_risk" / "sentinel_unavailable" / "sentinel_premise" /
+    "sentinel_missing").
     """
 
     task_id: str
     status: str = "completed"
+    refusal_source: str | None = None
+    refusal_reason: str | None = None
     premise_challenge: PremiseChallengeResponse | None = None
     consensus_reached: bool = False
     approval_rate: float = 0.0
