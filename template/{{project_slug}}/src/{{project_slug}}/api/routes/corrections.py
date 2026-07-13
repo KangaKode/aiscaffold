@@ -360,6 +360,14 @@ async def approve_correction(
             )
         except Exception as e:
             logger.warning(f"[CorrectionsAPI] Pair check failed (non-fatal): {e}")
+        try:
+            from ...learning.loop_integrity import create_drift_check_hook
+
+            hook = create_drift_check_hook(store, tenant_id=auth.tenant_id)
+            if hook is not None:
+                await asyncio.to_thread(hook)
+        except Exception as e:
+            logger.warning(f"[CorrectionsAPI] Drift check failed (non-fatal): {e}")
 
     return _to_response(approved)
 

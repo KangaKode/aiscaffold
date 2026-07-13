@@ -23,6 +23,7 @@ incident, not during it.
 {% endif -%}
 | Budget tracking | No store (or store write fails) | **In-memory fallback** | Spend accumulates in process memory and caps live in process memory too; both **reset on restart** -- a restart silently refills every tenant's budget until a store is attached. With a store, spend (`budget_spend`) and caps (`budget_configs`) both survive restarts; changing a cap never resets recorded spend. Cap configs are cached per process and re-read at most every `BUDGET_CONFIG_TTL_SECONDS` (default 60s), so cross-replica cap changes converge within the TTL (`llm/budget_manager.py`) |
 | Context-pressure signal (`CONTEXT_PRESSURE_ENABLED`) | Flag unset, or any estimator failure | **Passthrough** (failure = debug-logged no-op) | Off by default. Detect-only check on every LLM call (wired in the LLM client itself, so it is active in every profile, gateway or not): warns once per (phase, reason) per process + increments `context_pressure_total` per event when the assembled prompt nears the configured window (`reason=window`, chars/4 heuristic) or a single field exceeds the client's per-field truncation cap (`reason=field_truncation`, exact -- the client truncates that field on the next line). The call is never delayed, blocked, or altered. WITHOUT the `[metrics]` extra the counter no-ops, so one warning per (phase, reason) per process lifetime is the ONLY signal -- install `[metrics]` where trend visibility matters (`llm/context_pressure.py`, `llm/client.py`) |
+| Loop-integrity detection (`LOOP_INTEGRITY_DETECTION_ENABLED`) | Flag unset, or store errors | **Detect-only, errors degrade to logged no-ops; a SLOW store slows the turn/approval** | Off by default. One flag, two detectors: correction drift on each corrections approval (cooldown: skipped while an unresolved `correction_drift` flag is open) and multi-turn poisoning on each chat turn (last `LOOP_INTEGRITY_SCAN_WINDOW_MESSAGES` messages, default 20; flags keyed by session, so session-id rotation spreads findings across rows -- bounded by chat rate limits). The chat call site is core (`orchestration/chat_helpers.py`, every profile); the approve-path auto-wiring is gateway-only -- library users wire `CorrectionsManager(on_approve=create_drift_check_hook(store))` themselves. No metric -- discover findings via {% if include_api_gateway %}`GET /activity/anomalies?flag_type=correction_drift` / `?flag_type=multi_turn_poisoning`{% else %}the store's `integrity_flags` table (`flag_type=correction_drift` / `multi_turn_poisoning`; no anomalies endpoint in this profile){% endif %} and the `[LoopIntegrity]` WARNING log pattern. Store ERRORS are swallowed (logged no-op); store SLOWNESS delays the turn/approval by the awaited check, exactly like the other wired detectors -- the flag is the rollback (`learning/loop_integrity.py`) |
 {% if include_api_gateway -%}
 | Rate limiting | Always in-memory | **Per-process, resets on restart** | The sliding window lives in process memory; multiple replicas each enforce the limit independently (`api/middleware/rate_limit.py`) |
 | Extraction detection | `ACTIVITY_TRACKING_ENABLED=false` or store unavailable | **Inert** | Timing analysis, read-volume guard, and burst checks all key off activity events; without tracking they observe nothing. The gateway logs a one-time warning (`api/gateway.py`, `learning/extraction_guard.py`) |
@@ -255,6 +256,25 @@ Both flags are detect-only (routing is never altered) and deduped per
 (agent, tenant) via the standard integrity-flag hit counter. Resolve via
 the anomalies endpoint{% if not include_api_gateway %} (not generated here -- update the store row directly){% endif %}; the `trust_events_total{action}` counter
 tracks new flags and check-ins.
+
+Loop-integrity flag triage (`LOOP_INTEGRITY_DETECTION_ENABLED`):
+
+- `correction_drift` (subject `corrections`) -- the recent window of
+  approved corrections skews toward "softening" language versus the
+  prior baseline. Review who proposed/approved the recent batch; the
+  cooldown means you see ONE unresolved flag, not one per approval --
+  resolving it re-arms detection.
+- `multi_turn_poisoning` (subject = the chat session key) -- setup and
+  action phrases spread across a session's recent user turns. Repeats
+  bump the flag's hit counter and escalate to error severity after ~10
+  hits. A client that rotates session ids creates one flag row per
+  session (bounded by chat rate limits) -- correlate by time window, not
+  by subject. Blind spot: setup/action pairs spaced wider than the scan
+  window (default 20 messages) are not detected.
+
+No dedicated metric for either -- the flags and the `[LoopIntegrity]`
+WARNING logs are the signal; query the anomalies endpoint by
+`flag_type`{% if not include_api_gateway %} (not generated here -- read the store's `integrity_flags` table directly){% endif %}.
 
 Context-pressure triage (`CONTEXT_PRESSURE_ENABLED`): warns are a
 capacity trend, never page. The counter is the durable signal and the

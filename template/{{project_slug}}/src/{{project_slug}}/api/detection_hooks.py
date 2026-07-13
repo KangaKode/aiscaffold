@@ -19,6 +19,10 @@ blocked or altered):
                                  threaded into round-table/chat dispatch;
                                  records phase-derivation hops, not
                                  agent-to-agent calls (learning/delegation.py).
+  LOOP_INTEGRITY_DETECTION_ENABLED -- wired at its call sites (corrections
+                                 approve + chat turn, learning/loop_integrity.py);
+                                 listed here ONLY so the store fallback below
+                                 runs when it is the sole enabled toggle.
 
 Everything here is fire-and-forget: failures are logged (and the canary
 failure recorded as an integrity flag) but never abort gateway startup
@@ -46,6 +50,7 @@ _TOGGLES = (
     "COLLUSION_DETECTION_ENABLED",
     "STARTUP_CANARY_ENABLED",
     "DELEGATION_RECORDS_ENABLED",
+    "LOOP_INTEGRITY_DETECTION_ENABLED",
 )
 
 
@@ -74,6 +79,16 @@ def init_detection_hooks(application) -> None:
                 f"({type(e).__name__}) -- enabled hooks degrade to no-ops"
             )
             store = None
+        # Publish the fallback so routes that read app.state.learning_store
+        # (chat poisoning scan, corrections drift check, identity-gate flag)
+        # see the same store the hooks got (feedback.py pins its store the
+        # same way). Only a RESOLVED store is published -- on failure the
+        # attribute stays absent so later initializers (corrections init
+        # retries get_learning_store itself) are the fallback of record.
+        # Not un-published mid-process by unsetting toggles; a restart with
+        # all toggles off skips this block entirely.
+        if store is not None:
+            application.state.learning_store = store
 
     application.state.baseline_tracker = create_baseline_tracker(store)
     if application.state.baseline_tracker is not None:

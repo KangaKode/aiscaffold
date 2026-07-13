@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ...learning.loop_integrity import loop_integrity_enabled
 from ...learning.trust_guard import effective_trust_scores
 from ...llm import create_client
 from ...orchestration.agent_router import AgentRouter
@@ -125,6 +126,16 @@ def _get_or_create_orchestrator(
     llm = getattr(request.app.state, "llm_client", None) or create_client()
     registry = request.app.state.registry
     agent_router = AgentRouter(registry=registry)
+    learning_store = getattr(request.app.state, "learning_store", None)
+    if learning_store is None and loop_integrity_enabled():
+        # Detection-hooks' store fallback can fail transiently at startup
+        # while corrections init later resolves its own store; mirror the
+        # corrections route's manager-store fallback so the opt-in poisoning
+        # scan is not silently log-only for this orchestrator's lifetime.
+        # Gated on the flag so default deployments stay byte-identical.
+        learning_store = getattr(
+            getattr(request.app.state, "corrections_manager", None), "store", None
+        )
     _orchestrators[key] = ChatOrchestrator(
         llm=llm,
         registry=registry,
@@ -133,8 +144,11 @@ def _get_or_create_orchestrator(
         # (None unless enabled); the store enables the identity-block
         # flag at the dispatch gates.
         baseline_tracker=getattr(request.app.state, "baseline_tracker", None),
-        learning_store=getattr(request.app.state, "learning_store", None),
+        learning_store=learning_store,
         delegation_recorder=getattr(request.app.state, "delegation_recorder", None),
+        # Keys the opt-in multi-turn-poisoning flag to this session, so
+        # sessions never collapse into one integrity-flag row.
+        session_key=key,
     )
 
     while len(_orchestrators) > MAX_SESSIONS:
