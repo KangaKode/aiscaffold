@@ -17,7 +17,7 @@ Security:
   - Documents are sanitized before indexing (size-limited)
   - Project isolation prevents cross-project data leakage
 
-Keep this file under 440 lines. (Raised from 250, then 400: the Chroma
+Keep this file under 445 lines. (Raised from 250, then 400: the Chroma
 persistence-preservation logic and the in-memory fallback both live here,
 and the fallback now carries two ranking paths -- BM25/RRF plus the
 verbatim legacy scorer kept for the LEXICAL_RANKING_ENABLED kill switch.
@@ -219,7 +219,14 @@ class VectorStore:
         where: dict | None = None,
         query_embedding: list[float] | None = None,
     ) -> SearchResults:
-        """Search for documents similar to the query."""
+        """Search for documents similar to the query.
+
+        CALLER CONTRACT: pass `query_embedding` only if it is semantic --
+        the store fuses whatever it is given. Non-semantic hash-fallback
+        vectors must be passed as None (the retrievers do; see
+        `EmbeddingService.is_semantic`) or their cosine noise joins the
+        hybrid ranking.
+        """
         limit = min(limit, MAX_RESULTS)
 
         if self._collection is not None:

@@ -692,6 +692,10 @@ has "OWASP map: ASI07 is the published Inter-Agent Communication row" 'ASI07 \| 
 has "OWASP map: ASI07 claims N/A by architecture" 'ASI07 \| Insecure Inter-Agent Communication \| \*\*Not applicable' docs/SECURITY_MAPPING.md
 has "OWASP map: ASI06 is the published Memory and Context Poisoning row" 'ASI06 \| Memory and Context Poisoning' docs/SECURITY_MAPPING.md
 has "OWASP map: annotates evals-gated rows" 'requires .include_evals.' docs/SECURITY_MAPPING.md
+# Retrieval ranking ships in every profile (learning modules are ungated);
+# the GOVERNANCE row and its kill switch must always be documented.
+has "GOVERNANCE: lexical/hybrid retrieval ranking row" 'Lexical . hybrid retrieval ranking' docs/GOVERNANCE.md
+has "GOVERNANCE: retrieval kill switch documented" 'LEXICAL_RANKING_ENABLED=false' docs/GOVERNANCE.md
 
 if [ "$INCLUDE_EVALS" = "true" ]; then
     exists "evals on: red-team config present" evals/redteam/redteam.yaml

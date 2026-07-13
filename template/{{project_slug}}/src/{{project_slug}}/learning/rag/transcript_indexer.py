@@ -147,8 +147,8 @@ class TranscriptIndexer:
             consensus_only: If True, only return results where consensus was reached.
             owner_key: Optional tenant/user key to restrict results.
         """
-        # Keyword matching when the provider is the hash fallback and the
-        # store supports it; Chroma queries always carry an embedding
+        # BM25 lexical ranking when the provider is the hash fallback and
+        # the store supports it; Chroma queries always carry an embedding
         # (see _use_embeddings).
         query_embedding = (
             self._embedder.embed(query).embedding

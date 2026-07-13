@@ -13,7 +13,17 @@ lists given, so cross-scope documents can never influence in-scope IDF.
 Tokenization is language-naive: NFKC fold + lowercase + `\\w+` word
 characters. Whole-token matching means no substring or prefix recall
 ("deploy" does not match "deployment") -- this trade-off is measured in
-tests/test_retrieval_ranking.py, not hidden.
+tests/test_retrieval_ranking.py, not hidden. The NFKC fold here is a
+RELEVANCE normalization, deliberately divergent from the security
+normalization stack (`security/injection_defense.py`): it provides no
+homoglyph defense -- a homoglyph-stuffed document simply loses rank
+because its tokens match nothing, which is the correct retrieval
+outcome, not a detection.
+
+Prior art: `learning/contradiction.py` carries its own private
+tokenizer + TF-IDF for contradiction similarity. Consolidating it onto
+this module is a sanctioned future cleanup, not done here (different
+tuning, different false-positive costs).
 
 Keep this file under 150 lines.
 """
