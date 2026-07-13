@@ -684,6 +684,13 @@ fi
 exists "OWASP map: docs/SECURITY_MAPPING.md ships in all profiles" docs/SECURITY_MAPPING.md
 has "OWASP map: cites LLM01 Prompt Injection" 'LLM01' docs/SECURITY_MAPPING.md
 has "OWASP map: cites Agentic ASI category" 'ASI0' docs/SECURITY_MAPPING.md
+# Pin the published ASI labels (2026 list) so silent label drift is caught,
+# including the two binding honest-gap rows (ASI05 not covered, ASI07 N/A).
+has "OWASP map: ASI05 is the published Unexpected Code Execution row" 'ASI05 \| Unexpected Code Execution' docs/SECURITY_MAPPING.md
+has "OWASP map: ASI05 claims 'Not covered'" 'ASI05 \| Unexpected Code Execution \| \*\*Not covered' docs/SECURITY_MAPPING.md
+has "OWASP map: ASI07 is the published Inter-Agent Communication row" 'ASI07 \| Insecure Inter-Agent Communication' docs/SECURITY_MAPPING.md
+has "OWASP map: ASI07 claims N/A by architecture" 'ASI07 \| Insecure Inter-Agent Communication \| \*\*Not applicable' docs/SECURITY_MAPPING.md
+has "OWASP map: ASI06 is the published Memory and Context Poisoning row" 'ASI06 \| Memory and Context Poisoning' docs/SECURITY_MAPPING.md
 has "OWASP map: annotates evals-gated rows" 'requires .include_evals.' docs/SECURITY_MAPPING.md
 
 if [ "$INCLUDE_EVALS" = "true" ]; then

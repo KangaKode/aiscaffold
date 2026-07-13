@@ -1,7 +1,7 @@
 # Security Mapping — OWASP LLM & Agentic Top 10
 
 How this scaffold's shipped controls map to the OWASP **Top 10 for LLM
-Applications (2025)** and the OWASP **Agentic Security / Agentic AI Top 10
+Applications (2025)** and the OWASP **Top 10 for Agentic Applications
 (2026)**. This is an honest coverage map, not a certification: entries state
 what the scaffold *does*, what is *opt-in*, and what it explicitly does **not**
 claim. Every "does not claim" here is the counterpart of a Non-Claim in
@@ -11,8 +11,10 @@ Rows tagged **(requires `include_evals`)** reference artifacts under `evals/`,
 which is only generated when the project opts into evals; the `tests/` and
 `src/` citations ship in every profile.
 
-Category names and numbering follow the published OWASP lists as of 2026. OWASP
-revises these lists; re-check the identifiers when you cite this map externally.
+Category names and numbering follow the published lists: OWASP Top 10 for LLM
+Applications v2025 (LLM01-LLM10) and OWASP Top 10 for Agentic Applications 2026
+(ASI01-ASI10, released 2025-12-09). OWASP revises these lists; re-check the
+identifiers when you cite this map externally.
 
 ---
 
@@ -33,23 +35,25 @@ revises these lists; re-check the identifiers when you cite this map externally.
 
 ---
 
-## OWASP Agentic AI Top 10 (2026)
+## OWASP Top 10 for Agentic Applications (2026)
 
 Applied to this scaffold's hub-and-spoke orchestration (an orchestrator
-dispatches phases; there is no direct agent-to-agent calling).
+dispatches phases; there is no direct agent-to-agent calling). Two categories
+are deliberately claimed as gaps, not mitigations: ASI05 (not covered) and
+ASI07 (not applicable by architecture).
 
 | ID | Category | Scaffold posture | Where |
 |----|----------|------------------|-------|
-| ASI01 | Agent Authorization & Control Hijacking | Agent identity tokens verified before every phase dispatch; per-agent rate limits and scope filtering; suspension/credential lifecycle; identity gate fails closed on ambiguous resolution. | `agents/identity.py`, `orchestration/dispatch_helpers.py`, `orchestration/scope_filter.py` |
-| ASI02 | Tool Misuse / Untrusted Tool Output | MCP tool output and remote-agent responses are sanitized and full Layer 1-2 scanned (log-only), so untrusted tool text cannot silently steer a downstream prompt undetected. | `orchestration/mcp_enrichment.py`, `agents/remote.py`, `security/injection_defense.py` |
-| ASI03 | Privilege / Identity Compromise | Control-plane tenant isolation: registry keyed by (tenant_id, name), cross-tenant access reads as 404, dispatch gates resolve by object identity. Real tenant/user resolution is your IdP integration (single-key default = one identity). | `agents/registry.py`, `api/routes/agents.py`, `api/middleware/auth.py` |
-| ASI04 | Resource & Service Exhaustion | Per-tenant budgets, rate limits, extraction-volume guard (opt-in enforcement), context-pressure signal. | `llm/budget_manager.py`, `learning/extraction_guard.py`, `llm/context_pressure.py` |
-| ASI05 | Cascading / Multi-Agent Failures | Fail-closed safety agents (Sentinel refuses, voters dissent on LLM errors); consensus computed over votes actually cast; collusion/lockstep detection (opt-in). | `llm/response_guard.py`, `orchestration/round_table.py`, `learning/collusion.py` |
-| ASI06 | Deception & Trust Manipulation | Trust-loop hardening (opt-in): read-time decay, min-interaction gate, burst + single-source-domination detection — flags only, routing never altered, scores never mutated. Session id is caller-supplied (see Non-Claims). | `learning/trust_guard.py`, `api/routes/feedback.py` |
-| ASI07 | Memory / Knowledge Poisoning | Human-approved corrections, content-policy screen, contradiction detection, knowledge aging/staleness signal, GDPR erasure. `analyze_correction_drift` (slow poisoning) ships as a library with no runtime call site. | `learning/corrections.py`, `learning/content_policy.py`, `learning/contradiction.py`, `learning/aging.py` |
-| ASI08 | Insufficient Observability / Auditability | Metadata-only deliberation audit trail with per-run reasoning-chain SHA-256; bounded Prometheus metrics; optional OpenTelemetry phase spans (exports nothing until you configure a provider). Tamper-evident within a run, not tamper-proof. | `orchestration/deliberation_audit.py`, `security/reasoning_chain_hash.py`, `observability/metrics.py`, `observability/tracing.py` |
-| ASI09 | Unsafe Autonomy / Human Oversight Gaps | Graduated autonomy with forced human check-ins at restricted levels; premise refusal short-circuit; Sentinel enforcement (opt-in) halts after Phase 1. | `orchestration/autonomy.py`, `learning/checkin_manager.py`, `orchestration/premise.py` |
-| ASI10 | Extraction & Exfiltration | Extraction guard (per-user + tenant-wide volume), timing-regularity + behavioral monitoring (opt-in), backward-chaining sequence detector for low-and-slow playbooks, approval-pair escalation. Several are detect-only and evadable (see Non-Claims). | `learning/extraction_guard.py`, `learning/timing_analysis.py`, `harness/sequence_detector.py`, `learning/approval_patterns.py` |
+| ASI01 | Agent Goal Hijack | Layered injection defense at ingestion boundaries (detect-only on user input; refuse on knowledge writes); boundary wrapping with fence-break neutralization on resolve/premise; premise refusal short-circuit; Sentinel semantic screen on deliberation, with opt-in enforcement that can halt a run. Per-surface gaps are stated Non-Claims. | `security/prompt_guard.py`, `security/injection_defense.py`, `orchestration/premise.py`, `orchestration/round_table_helpers.py` |
+| ASI02 | Tool Misuse and Exploitation | MCP tool output and remote-agent responses are sanitized and full Layer 1-2 scanned (log-only), so untrusted tool text cannot silently steer a downstream prompt undetected; per-agent rate limits and scope filtering bound what a misused dispatch can reach. | `orchestration/mcp_enrichment.py`, `agents/remote.py`, `agents/rate_limiter.py`, `orchestration/scope_filter.py` |
+| ASI03 | Identity and Privilege Abuse | Agent identity tokens verified before every phase dispatch, with suspension/credential lifecycle and a fail-closed gate on ambiguous resolution; control-plane tenant isolation (registry keyed by (tenant_id, name), cross-tenant access reads as 404). Real tenant/user resolution is your IdP integration (single-key default = one identity). | `agents/identity.py`, `orchestration/dispatch_helpers.py`, `agents/registry.py`, `api/middleware/auth.py` |
+| ASI04 | Agentic Supply Chain Vulnerabilities | **Partial.** Vendored red-team data carries pinned provenance (immutable upstream commit SHA + per-seed SHA-256 over exact code points), recomputed offline by a shipped test. The scaffold does NOT vet your models, MCP servers, or remote agents at runtime — their *output* is scanned (ASI02), but their provenance and update channel are yours to secure. | `tests/fixtures/provenance.json`, `tests/test_adversarial_open_corpus.py` |
+| ASI05 | Unexpected Code Execution | **Not covered.** The scaffold neither executes agent-generated code nor ships an execution sandbox; sandboxing is an Extension Point you own (see `GOVERNANCE.md`). No mitigation is claimed for this category. | `GOVERNANCE.md` (Extension Points) |
+| ASI06 | Memory and Context Poisoning | Human-approved corrections with an explicit four-eyes posture; content-policy screen; contradiction + override detection; knowledge aging/staleness signal; loop-integrity detection (opt-in) wires the correction-drift and multi-turn poisoning scans, detect-only; GDPR erasure. | `learning/corrections.py`, `learning/content_policy.py`, `learning/contradiction.py`, `learning/loop_integrity.py` |
+| ASI07 | Insecure Inter-Agent Communication | **Not applicable by architecture.** Hub-and-spoke: the orchestrator dispatches phases and there is no direct agent-to-agent channel to secure. Remote-agent responses back to the hub are sanitized + scanned (ASI02). This is claimed as N/A, never as "mitigated" — the surface does not exist here; if you add agent-to-agent dispatch, this row becomes yours. | `orchestration/` (hub-and-spoke), `agents/remote.py` |
+| ASI08 | Cascading Failures | Fail-closed safety agents (Sentinel refuses, voters dissent on LLM errors); consensus computed only over votes actually cast; collusion/lockstep detection (opt-in); per-tenant budgets and rate limits bound the blast radius of a runaway loop. | `llm/response_guard.py`, `orchestration/round_table.py`, `learning/collusion.py`, `llm/budget_manager.py` |
+| ASI09 | Human-Agent Trust Exploitation | Graduated autonomy forces human check-ins at restricted levels; four-eyes approval posture on knowledge writes; metadata-only deliberation audit with per-run reasoning-chain SHA-256 for post-hoc scrutiny; trust-loop hardening (opt-in) flags feedback-loop manipulation without mutating scores. Consensus is not truth. | `orchestration/autonomy.py`, `learning/four_eyes.py`, `orchestration/deliberation_audit.py`, `learning/trust_guard.py` |
+| ASI10 | Rogue Agents | **Detect-only signals, not containment.** Behavioral deviation check (operator-invoked), timing-regularity + behavioral monitoring (opt-in), backward-chaining sequence detector for low-and-slow playbooks, extraction-volume guard; agent suspension is a manual control, not an automatic response. Several detectors are evadable (see Non-Claims). | `learning/activity.py`, `learning/timing_analysis.py`, `harness/sequence_detector.py`, `learning/extraction_guard.py` |
 
 ---
 

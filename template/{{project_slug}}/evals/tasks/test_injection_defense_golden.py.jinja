@@ -24,10 +24,11 @@ tests/adversarial_payloads_open.py) -- one payload source, not copies. Benign
 look-alikes measure false positives.
 
 The open categories are baselined at their MEASURED values, not zero: the
-Layer 1-2 pattern defenses are English-centric, so open_injection (subtle
-English framings) and open_multilingual (non-English) largely PASS them
-(measured false negatives) -- the layer that could apply is the LLM-backed
-Layer 3 screen, whose multilingual efficacy is UNMEASURED (see GOVERNANCE
+Layer 1-2 pattern defenses are English-centric, and at baseline time EVERY
+open_injection (subtle English framings) and open_multilingual (non-English)
+seed PASSED them (14/14 and 18/18 recorded false negatives) -- the layer that
+could apply is the LLM-backed Layer 3 screen, whose multilingual efficacy is
+UNMEASURED (see GOVERNANCE
 Non-Claims). open_content_safety seeds are expected to PASS the injection
 layers; any residual Layer-1 trip is a measured false positive, not zero.
 
