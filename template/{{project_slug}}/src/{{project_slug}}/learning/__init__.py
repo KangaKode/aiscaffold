@@ -39,6 +39,12 @@ from .erasure import ErasureCapExceededError, erase_correction  # noqa: F401
 from .override_detector import OverrideDetector  # noqa: F401
 from .content_policy import ContentPolicy  # noqa: F401
 from .collusion import CollusionDetector, analyze_correction_drift  # noqa: F401
+from .loop_integrity import (  # noqa: F401
+    create_drift_check_hook,
+    loop_integrity_enabled,
+    scan_conversation_window,
+    scan_window_size,
+)
 from .activity import ActivityTracker, AgentBaselineTracker  # noqa: F401
 from .delegation import DelegationRecorder, create_delegation_recorder  # noqa: F401
 from .reflector import Reflection, ReflectionType, reflect  # noqa: F401
@@ -87,6 +93,10 @@ __all__ = [
     "ContentPolicy",
     "CollusionDetector",
     "analyze_correction_drift",
+    "create_drift_check_hook",
+    "loop_integrity_enabled",
+    "scan_conversation_window",
+    "scan_window_size",
     "ActivityTracker",
     "AgentBaselineTracker",
     "DelegationRecorder",
