@@ -696,8 +696,8 @@ if [ "$INCLUDE_EVALS" = "true" ]; then
     has "evals on: red-team config carries the data-egress warning" 'DATA EGRESS' evals/redteam/redteam.yaml
     has "evals on: golden set resolves the open corpus" 'corpus_open' evals/tasks/test_injection_defense_golden.py
 else
+    # (Step 11 already asserts evals/ is excluded entirely -- not repeated here.)
     absent "evals off: red-team config excluded" evals/redteam/redteam.yaml
-    absent "evals off: evals/ excluded entirely" evals
 fi
 
 if [ "$INCLUDE_API_GATEWAY" = "true" ]; then
