@@ -147,6 +147,22 @@ class TestDriftHook:
         hook()
         assert len(drift_flags(store)) == 1
 
+    def test_drift_finding_logs_discovery_pattern(
+        self, store, monkeypatch, caplog
+    ):
+        """The OPERATIONS runbook names the [LoopIntegrity] WARNING as a
+        no-metric discovery path -- it must fire on SUCCESSFUL detection,
+        not only on failures."""
+        monkeypatch.setenv(FLAG_ENV, "true")
+        for idx in range(12):
+            store.insert("corrections", softening_row(idx))
+        with caplog.at_level("WARNING"):
+            create_drift_check_hook(store)()
+        assert any(
+            "[LoopIntegrity]" in r.message and "drift" in r.message.lower()
+            for r in caplog.records
+        )
+
     def test_cooldown_no_flood_on_repeat_approvals(self, store, monkeypatch):
         """Two consecutive drift-positive runs -> exactly ONE unresolved
         flag row (the un-rate-limited approve route must not flood)."""
@@ -220,6 +236,43 @@ class TestPoisoningScan:
         flags = poisoning_flags(store)
         assert len(flags) == 1
         assert flags[0]["subject_id"] == "sess-1"
+
+    def test_finding_logs_discovery_pattern_with_store(
+        self, store, monkeypatch, caplog
+    ):
+        """[LoopIntegrity] WARNING fires on the store-present success path
+        (the runbook's no-metric discovery pattern), not only log-only."""
+        monkeypatch.setenv(FLAG_ENV, "true")
+        with caplog.at_level("WARNING"):
+            scan_conversation_window(
+                _history([SETUP_MSG, ACTION_MSG]), store=store, subject_id="s"
+            )
+        assert any(
+            "[LoopIntegrity]" in r.message and "flagged" in r.message
+            for r in caplog.records
+        )
+
+    def test_broken_store_scan_never_raises(self, monkeypatch):
+        """Direct library call with a store that raises on every access:
+        the finding is still returned and nothing propagates."""
+        monkeypatch.setenv(FLAG_ENV, "true")
+
+        class ExplodingStore:
+            def query(self, *a, **k):
+                raise RuntimeError("db down")
+
+            def insert(self, *a, **k):
+                raise RuntimeError("db down")
+
+            def update(self, *a, **k):
+                raise RuntimeError("db down")
+
+        findings = scan_conversation_window(
+            _history([SETUP_MSG, ACTION_MSG]),
+            store=ExplodingStore(),
+            subject_id="s",
+        )
+        assert findings
 
     def test_no_store_is_log_only(self, monkeypatch):
         monkeypatch.setenv(FLAG_ENV, "true")

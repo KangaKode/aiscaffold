@@ -507,7 +507,11 @@ The learning layer reshapes agent behavior, so it gets its own integrity control
   )
   ```
 
-  The hook derives the tenant from the approved `Correction` it receives. The same flag also activates the multi-turn poisoning scan on chat turns (see GOVERNANCE.md's Loop-integrity detection row); both are detect-only.
+  The flag is evaluated when the hook is CREATED -- set
+  `LOOP_INTEGRITY_DETECTION_ENABLED` before constructing the manager, or the
+  callback is silently `None` (the gateway re-creates the hook per approval,
+  so it picks up the flag live). The hook derives the tenant from the
+  approved `Correction` it receives. The same flag also activates the multi-turn poisoning scan on chat turns (see GOVERNANCE.md's Loop-integrity detection row); both are detect-only.
 - **User activity anomalies**: per-user request bursts, repeated auth failures, and agent-registration sprees trip configurable thresholds (`ACTIVITY_TRACKING_ENABLED` to opt out).
 - **Agent behavioral baselines** (opt-in, default off): each agent's refusal rate, confidence, latency, and scope discipline are compared against its own history -- an agent with valid credentials that stops behaving like itself still gets flagged. Set `BASELINE_TRACKING_ENABLED=true` and every round-table/chat dispatch records its stats (duration, refusal, confidence, scope violations) under the caller's tenant; `resolve`/single-shot dispatches are not covered. Recording is wired; run `AgentBaselineTracker.check_deviation` (or `compute_baseline`) from your review tooling to analyze drift.
 - **Delegation records** (opt-in, default off): set `DELEGATION_RECORDS_ENABLED=true` and every gated dispatch writes one `delegation_records` row -- task id, tenant, phase (`analyze`/`challenge`/`vote`), agent, and `derived_from_json` naming the upstream artifacts that fed that dispatch (analyze: nothing; challenge: the agents whose Phase-1 analyses were consumed; vote: the synthesis). **Be clear about what these document: phase-derivation hops in the hub-and-spoke orchestration.** Agents never call each other in this architecture, so there are no agent-to-agent calls to record -- the rows answer "whose output influenced this dispatch", which is what incident reconstruction actually needs. Writes are fire-and-forget off the event loop (a failing store never fails or slows a dispatch), and nothing analyzes the rows automatically -- they are query material for your review tooling (`learning/delegation.py`).
