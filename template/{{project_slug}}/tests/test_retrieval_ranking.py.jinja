@@ -361,7 +361,11 @@ class TestKillSwitch:
 
 
 class TestFilterClasses:
-    """T10a -- where-filters are pre-rank and cannot be outscored."""
+    """T10 -- filter classes. T10a: where-filters are pre-rank and cannot
+    be outscored. T10b: consumer filters (consensus/priority) are
+    POST-RANK, so filtered-out docs can crowd eligible ones out of a
+    capped list -- the documented crowd-out property (GOVERNANCE
+    Non-Claims), pinned here so a silent behavior change is caught."""
 
     def test_where_filtered_docs_never_appear(self, flag_on):
         store = VectorStore(project_id="scoped", use_chroma=False)
@@ -378,6 +382,46 @@ class TestFilterClasses:
             ).results
         ]
         assert ids == ["mine"]
+
+    def test_t10b_consensus_filter_is_post_rank_with_crowd_out(self, flag_on):
+        from {{ project_slug }}.learning.rag.embedding_service import (
+            EmbeddingService,
+        )
+        from {{ project_slug }}.learning.rag.transcript_indexer import (
+            TranscriptIndexer,
+        )
+
+        class FakeResult:
+            def __init__(self, task_id, finding, consensus):
+                self.task_id = task_id
+                self.analyses = []
+                self.synthesis = type(
+                    "S", (), {"recommended_direction": finding}
+                )()
+                self.consensus_reached = consensus
+                self.approval_rate = 1.0
+                self.duration_seconds = 1.0
+
+        indexer = TranscriptIndexer(
+            vector_store=VectorStore(project_id="crowd", use_chroma=False),
+            embedding_service=EmbeddingService(preferred_provider="fallback"),
+        )
+        # Two non-consensus docs outrank the consensus doc for the query
+        # (they repeat the query terms; BM25 still ranks them first at
+        # this fixture scale), so with limit=2 the capped list is
+        # consumed BEFORE the consensus filter runs.
+        indexer.index_result(
+            FakeResult("n1", "canary rollout canary rollout plan", False)
+        )
+        indexer.index_result(
+            FakeResult("n2", "canary rollout canary rollout draft", False)
+        )
+        indexer.index_result(FakeResult("c1", "canary rollout", True))
+
+        crowded = indexer.search("canary rollout", limit=2, consensus_only=True)
+        assert crowded.results == []  # crowd-out: eligible doc lost the cap
+        roomy = indexer.search("canary rollout", limit=10, consensus_only=True)
+        assert [r.id for r in roomy.results] == ["transcript_c1"]
 
 
 class TestScopedIDFInvariant:
