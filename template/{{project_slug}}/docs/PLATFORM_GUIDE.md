@@ -472,6 +472,8 @@ Because every caller goes through the protocol, enterprise deployments extend wi
 - **Alembic migrations**: the built-in forward-only `MIGRATIONS` list is fine for a handful of schema changes; swap in Alembic when schema churn justifies it.
 - **Bring your own store**: implement the six methods against anything (MySQL, DynamoDB, an internal storage service).
 
+**Retrieval ranking on the default in-memory store.** Out of the box (no embedding provider configured), preference and transcript search rank with pure-Python BM25 -- honest lexical ranking, resistant to the keyword-stuffing that gamed the old binary scorer. Set a real embedding provider (`EMBEDDING_PROVIDER=local|openai|auto`) to unlock the hybrid path: BM25 and cosine similarity fused with Reciprocal Rank Fusion, which is where retrieval quality actually comes from -- the deterministic hash fallback is filler, not semantics. Two integration notes: result `score` scales differ by path (raw BM25 when lexical-only, RRF sums when hybrid, 0-1 fractions on the legacy path), so compare scores only within one result set; and `LEXICAL_RANKING_ENABLED=false` restores the old scorer byte-identically if downstream code depended on it. The Chroma/pgvector paths are unaffected -- BM25 applies to the in-memory store only.
+
 ### Learning loops, honestly framed
 
 Every learning surface answers three questions -- what evolves, what feedback drives it, and where the loop closes. None of them closes on model-generated signal:

@@ -53,19 +53,21 @@ class PreferenceRetriever:
     @property
     def _use_embeddings(self) -> bool:
         """Attach embeddings unless they are non-semantic hash filler AND
-        the store can rank by keywords instead. The Chroma backend
-        always gets embeddings: it has no keyword path, and omitting
-        them would make Chroma compute default-model vectors that
-        mismatch the dimensions of previously stored hash vectors."""
+        the store can rank lexically (BM25) instead. This is the caller
+        contract the hybrid search relies on: passing no embedding keeps
+        hash-cosine out of ranking entirely. The Chroma backend always
+        gets embeddings: it has no lexical path, and omitting them would
+        make Chroma compute default-model vectors that mismatch the
+        dimensions of previously stored hash vectors."""
         return self._embedder.is_semantic or not self._store.supports_keyword_search
 
     def index_preference(self, pref: UserPreference) -> None:
         """Index a single preference into the vector store.
 
         With a non-semantic (hash fallback) provider AND the in-memory
-        store, no embedding is attached so keyword matching does the
-        ranking. Chroma has no keyword path and needs dimension-
-        consistent vectors, so there the hash embedding is still stored
+        store, no embedding is attached so BM25 lexical ranking does the
+        work. Chroma has no lexical path and needs dimension-consistent
+        vectors, so there the hash embedding is still stored
         (see _use_embeddings)."""
         doc_text = f"{pref.preference_type}: {pref.key} = {pref.value}"
 
@@ -150,10 +152,11 @@ class PreferenceRetriever:
         Returns:
             SearchResults with scored matches.
         """
-        # Hash-fallback vectors would defeat the in-memory store's keyword
-        # matching (measured: irrelevant docs can outrank keyword hits), so
-        # a query embedding is attached only when it is semantic -- or when
-        # the backend is Chroma, which cannot rank without one.
+        # Hash-fallback vectors would pollute the in-memory store's lexical
+        # ranking via the hybrid cosine arm (measured on the legacy scorer:
+        # irrelevant docs can outrank keyword hits), so a query embedding is
+        # attached only when it is semantic -- or when the backend is
+        # Chroma, which cannot rank without one.
         query_embedding = (
             self._embedder.embed(query).embedding
             if self._use_embeddings

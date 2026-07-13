@@ -1,0 +1,492 @@
+"""
+Tests for B6 hybrid multi-signal retrieval: BM25 lexical arm + RRF fusion.
+
+Covers the plan's T1-T12 (see the numbered test classes):
+  T1-T3  BM25 properties (IDF, TF saturation, length normalization)
+  T4     tokenizer behavior (case, NFKC, whole-token, empty)
+  T5     RRF fusion ordering + deterministic tiebreaks
+  T6     adversarial ranking regression (T6a broad-coverage stuffing beats
+         the legacy scorer and is defeated by BM25; T6b BM25's introduced
+         TF sensitivity is bounded)
+  T7     measured-gain pin: BM25 strictly beats legacy binary-presence on
+         MRR and P@3 over the labeled fixture (values pinned)
+  T8     kill switch LEXICAL_RANKING_ENABLED: flag-off is byte-identical to
+         the legacy algorithm (independent reimplementation), garbage
+         values follow the falsy-list parse (unset/garbage => ON)
+  T10    filter classes: where-filtered docs never appear regardless of
+         BM25 score (pre-rank impossibility)
+  T11    scoped-IDF invariant: flooding one owner scope leaves another
+         scope's ranking identical
+  T12    membership/total: zero-match queries return empty results under
+         both flag states; no zero-arm filler
+
+T9 (retriever-layer hash-embedding gate) lives in test_learning_hygiene.py
+next to the invariants it updates.
+
+The MEASURED-GAIN NUMBERS pinned in T7 are fixture-scale measurements, not
+benchmark claims -- see GOVERNANCE Non-Claims.
+"""
+
+import pytest
+
+from {{ project_slug }}.learning.rag.lexical import (
+    bm25_scores,
+    rrf_fuse,
+    tokenize,
+)
+from {{ project_slug }}.learning.rag.vector_store import VectorStore
+
+FLAG = "LEXICAL_RANKING_ENABLED"
+
+
+# ---------------------------------------------------------------------------
+# Labeled fixture: 25 docs, 12 queries. Constructed with clearly separated
+# relevance so no two docs score within float noise of each other (SRE
+# advisory: no near-ties). Includes one PREFIX-RECALL query (q12) where
+# whole-token BM25 loses the substring match legacy provided -- the loss is
+# priced into the measured metrics, not hidden.
+#
+# The three STUFFER docs (s01-s03) sit FIRST in insertion order: they are
+# broad-coverage dictionaries covering the full token sets of queries q1,
+# q4, q6, and q8. Under the legacy binary-presence scorer each stuffer ties
+# the genuine doc at 1.0 and insertion order breaks ties, so the genuine
+# doc lands at rank 4 (outside P@3). This is the documented legacy
+# weakness (broad-coverage stuffing) expressed in the measured metrics,
+# not a synthetic trick -- BM25's IDF + length normalization demote them.
+# ---------------------------------------------------------------------------
+_STUFFER_TERMS = (
+    "postgres connection pooling canary analysis before rollout cache "
+    "invalidation pricing index bloat vacuum tenant alert consensus "
+    "embedding backups timeout rollback schema secrets incident metric"
+)
+CORPUS = [
+    ("s01", _STUFFER_TERMS + " extra filler alpha"),
+    ("s02", _STUFFER_TERMS + " extra filler bravo"),
+    ("s03", _STUFFER_TERMS + " extra filler charlie"),
+    ("d01", "Postgres connection pooling keeps latency low under load"),
+    ("d02", "Use concise responses when the user asks short questions"),
+    ("d03", "Rotate API keys quarterly and store them in the vault"),
+    ("d04", "The deployment pipeline runs canary analysis before rollout"),
+    ("d05", "Prefer structured logging with correlation identifiers"),
+    ("d06", "Cache invalidation strategy for the pricing service"),
+    ("d07", "Timeout budgets: upstream calls get three second ceilings"),
+    ("d08", "Postgres index bloat is monitored with weekly vacuum stats"),
+    ("d09", "User prefers metric units in all measurement output"),
+    ("d10", "Incident retrospectives are blameless and time-boxed"),
+    ("d11", "Rate limiting uses a token bucket per tenant"),
+    ("d12", "Schema migrations require a rollback script in review"),
+    ("d13", "The style guide bans passive voice in error messages"),
+    ("d14", "Secrets never appear in logs or exception traces"),
+    ("d15", "Latency dashboards alert at the ninety ninth percentile"),
+    ("d16", "Consensus votes are recorded with agent identifiers"),
+    ("d17", "Embedding providers must be configured for semantic search"),
+    ("d18", "Backups run nightly and restores are tested monthly"),
+    ("d19", "Feature flags default off and expire after two releases"),
+    ("d20", "The pricing service rounds to two decimal places"),
+    ("d22", "Deployment freezes apply during the holiday change window"),
+    # TF-stuffed doc: one relevant rare term repeated many times (T6b target)
+    ("d25", "canary canary canary canary canary canary canary canary "
+            "canary canary canary canary canary canary canary canary"),
+]
+
+# (query, ordered relevant doc ids -- first is the single best answer)
+QUERIES = [
+    ("postgres connection pooling", ["d01"]),
+    ("concise responses to short questions", ["d02"]),
+    ("rotate api keys", ["d03"]),
+    ("canary analysis before rollout", ["d04"]),
+    ("structured logging correlation", ["d05"]),
+    ("cache invalidation pricing", ["d06"]),
+    ("timeout budgets upstream", ["d07"]),
+    ("postgres index bloat vacuum", ["d08"]),
+    ("metric units preference", ["d09"]),
+    ("schema migration rollback script", ["d12"]),
+    ("nightly backups restore testing", ["d18"]),
+    # prefix-recall case: legacy substring matching finds "deployment" for
+    # query token "deploy"; whole-token BM25 does not. d22 contains the
+    # token "deployment" too -- the intended answer d04 must win on the
+    # other terms.
+    ("deploy pipeline canary", ["d04"]),
+]
+
+
+def legacy_score(query: str, content: str) -> float:
+    """Independent reimplementation of the shipped binary-presence scorer
+    (vector_store legacy path): fraction of unique query words present as
+    substrings. Used to pin byte-equivalence without trusting the code
+    under test."""
+    query_words = set(query.lower().split())
+    doc_lower = content.lower()
+    matches = sum(1 for w in query_words if w in doc_lower)
+    return matches / max(len(query_words), 1)
+
+
+def make_store(docs=None) -> VectorStore:
+    store = VectorStore(project_id="ranking_test", use_chroma=False)
+    for doc_id, content in (docs or CORPUS):
+        store.add(doc_id, content)
+    return store
+
+
+def rank_ids(store: VectorStore, query: str, limit: int = 10) -> list[str]:
+    return [r.id for r in store.search(query, limit=limit).results]
+
+
+def mrr_and_p3(store: VectorStore) -> tuple[float, float]:
+    rr_total, hits3 = 0.0, 0
+    for query, relevant in QUERIES:
+        ids = rank_ids(store, query)
+        best = relevant[0]
+        if best in ids:
+            rr_total += 1.0 / (ids.index(best) + 1)
+        if best in ids[:3]:
+            hits3 += 1
+    return rr_total / len(QUERIES), hits3 / len(QUERIES)
+
+
+@pytest.fixture
+def flag_on(monkeypatch):
+    monkeypatch.setenv(FLAG, "true")
+
+
+@pytest.fixture
+def flag_off(monkeypatch):
+    monkeypatch.setenv(FLAG, "false")
+
+
+class TestBM25Properties:
+    """T1-T3."""
+
+    def test_t1_rare_terms_outrank_common(self):
+        docs = [
+            tokenize("the quick brown fox jumps over the lazy dog"),
+            tokenize("the the the the zyzzyva appears here"),
+            tokenize("the cat sat on the mat"),
+        ]
+        common = bm25_scores(tokenize("the"), docs)
+        rare = bm25_scores(tokenize("zyzzyva"), docs)
+        # "the" appears in all docs -> minimal IDF weight everywhere;
+        # "zyzzyva" appears in one doc -> that doc scores decisively higher.
+        assert rare[1] > max(common)
+
+    def test_t2_term_frequency_saturates(self):
+        base = tokenize("canary deploy check")
+        five = tokenize("canary " * 5 + "padding words here")
+        fifty = tokenize("canary " * 50 + "padding words here")
+        q = tokenize("canary")
+        s_one, s_five, s_fifty = bm25_scores(q, [base, five, fifty])
+        assert s_five > s_one
+        # 10x more repetitions must yield only marginal gain (saturation):
+        assert s_fifty < s_five * 1.5
+
+    def test_t3_length_normalization_penalizes_padding(self):
+        concise = tokenize("canary rollout analysis")
+        padded = tokenize(
+            "canary rollout analysis " + "unrelated filler words " * 30
+        )
+        q = tokenize("canary rollout")
+        s_concise, s_padded = bm25_scores(q, [concise, padded])
+        assert s_concise > s_padded
+
+
+class TestTokenizer:
+    """T4."""
+
+    def test_case_folding(self):
+        assert tokenize("Canary DEPLOY") == ["canary", "deploy"]
+
+    def test_nfkc_compatibility_fold(self):
+        # fullwidth latin folds to ascii under NFKC
+        assert tokenize("\uff43\uff41\uff54") == ["cat"]
+
+    def test_whole_token_no_substring_collision(self):
+        docs = [tokenize("category theory notes"), tokenize("the cat sat")]
+        scores = bm25_scores(tokenize("cat"), docs)
+        assert scores[0] == 0.0
+        assert scores[1] > 0.0
+
+    def test_punctuation_split_and_empty(self):
+        assert tokenize("a,b;c") == ["a", "b", "c"]
+        assert tokenize("") == []
+        assert tokenize("   ") == []
+
+
+class TestRRFFusion:
+    """T5."""
+
+    def test_dual_arm_winner_beats_single_arm(self):
+        fused = rrf_fuse(["a", "b", "c"], ["a", "d", "e"])
+        assert max(fused, key=lambda i: (fused[i], i)) == "a"
+
+    def test_tiebreak_is_deterministic_by_doc_id(self):
+        # b and c receive identical contributions -> doc-id breaks the tie
+        fused = rrf_fuse(["b", "c"], ["c", "b"])
+        assert fused["b"] == fused["c"]
+        ordered = sorted(fused, key=lambda i: (-fused[i], i))
+        assert ordered == ["b", "c"]
+
+
+class TestAdversarialRanking:
+    """T6a/T6b -- the memo's amplification amendment, redesigned per
+    security review: legacy is binary presence, so the genuine legacy
+    failure mode is BROAD-COVERAGE stuffing, and BM25's new TF surface
+    needs its own bound."""
+
+    def test_t6a_broad_coverage_stuffing_beats_legacy_loses_to_bm25(
+        self, monkeypatch
+    ):
+        store = make_store()
+        query = "postgres index bloat vacuum"
+        monkeypatch.setenv(FLAG, "false")
+        legacy_ids = rank_ids(store, query)
+        # the dictionary stuffers tie the genuine d08 at 1.0 and win on
+        # insertion order -- d08 is pushed out of the legacy top-3
+        assert legacy_ids[0] == "s01"
+        assert legacy_ids.index("d08") == 3
+        monkeypatch.setenv(FLAG, "true")
+        bm25_ids = rank_ids(store, query)
+        # BM25's IDF + length penalty demote the stuffed docs below the
+        # genuinely relevant d08
+        assert bm25_ids[0] == "d08"
+        assert bm25_ids.index("s01") > bm25_ids.index("d08")
+
+    def test_t6b_single_term_repetition_bounded(self, flag_on):
+        store = make_store()
+        # d25 repeats "canary" 16x; d04 is the genuinely relevant doc
+        ids = rank_ids(store, "canary analysis before rollout")
+        assert "d04" in ids[:3]
+        assert ids.index("d04") < ids.index("d25")
+
+
+class TestMeasuredGain:
+    """T7 -- fixture-scale measurement, pinned. NOT a benchmark claim."""
+
+    def test_bm25_strictly_beats_legacy_on_both_metrics(self, monkeypatch):
+        store = make_store()
+        monkeypatch.setenv(FLAG, "false")
+        legacy_mrr, legacy_p3 = mrr_and_p3(store)
+        monkeypatch.setenv(FLAG, "true")
+        bm25_mrr, bm25_p3 = mrr_and_p3(store)
+        assert bm25_mrr > legacy_mrr
+        assert bm25_p3 > legacy_p3
+
+    def test_measured_values_pinned(self, monkeypatch):
+        """Frozen-baseline style: review these numbers downward never
+        silently. Update requires editing this pin in a reviewed PR."""
+        store = make_store()
+        monkeypatch.setenv(FLAG, "false")
+        legacy_mrr, legacy_p3 = mrr_and_p3(store)
+        monkeypatch.setenv(FLAG, "true")
+        bm25_mrr, bm25_p3 = mrr_and_p3(store)
+        assert legacy_mrr == pytest.approx(PINNED["legacy_mrr"], abs=1e-9)
+        assert legacy_p3 == pytest.approx(PINNED["legacy_p3"], abs=1e-9)
+        assert bm25_mrr == pytest.approx(PINNED["bm25_mrr"], abs=1e-9)
+        assert bm25_p3 == pytest.approx(PINNED["bm25_p3"], abs=1e-9)
+
+
+# Measured on the shipped fixture (12 queries, 25 docs) at implementation
+# time. FIXTURE-SCALE numbers, not a benchmark claim. The legacy scorer
+# loses reciprocal rank and top-3 precision to the broad-coverage stuffers
+# on queries q1/q4/q6/q8; BM25 answers every query at rank 1 here.
+PINNED = {
+    "legacy_mrr": 0.75,
+    "legacy_p3": 8 / 12,
+    "bm25_mrr": 1.0,
+    "bm25_p3": 1.0,
+}
+
+
+class TestKillSwitch:
+    """T8."""
+
+    def test_flag_off_matches_independent_legacy_reimplementation(
+        self, flag_off
+    ):
+        store = make_store()
+        for query, _ in QUERIES:
+            results = store.search(query, limit=10).results
+            expected = sorted(
+                (
+                    (legacy_score(query, content), doc_id)
+                    for doc_id, content in CORPUS
+                    if legacy_score(query, content) > 0
+                ),
+                key=lambda t: -t[0],
+            )
+            assert [r.id for r in results] == [
+                doc_id for _, doc_id in expected[:10]
+            ]
+            for r, (score, _) in zip(results, expected):
+                assert r.score == pytest.approx(score, abs=1e-12)
+
+    def test_flag_off_mixed_embedding_branch_preserved(self, flag_off):
+        store = VectorStore(project_id="mixed", use_chroma=False)
+        store.add("with_emb", "alpha beta", embedding=[1.0, 0.0])
+        store.add("no_emb", "alpha beta gamma")
+        results = store.search(
+            "alpha", limit=10, query_embedding=[1.0, 0.0]
+        ).results
+        by_id = {r.id: r.score for r in results}
+        # legacy per-doc branch: embedded doc scored by cosine (1.0),
+        # unembedded doc scored by keyword fraction (1.0 here)
+        assert by_id["with_emb"] == pytest.approx(1.0)
+        assert by_id["no_emb"] == pytest.approx(1.0)
+
+    @pytest.mark.parametrize(
+        ("value", "expect_bm25"),
+        [
+            (None, True),        # unset -> ON
+            ("true", True),
+            ("garbage", True),   # falsy-list parse: garbage preserves ON
+            ("1", True),
+            ("false", False),
+            ("0", False),
+            ("no", False),
+        ],
+    )
+    def test_flag_parse_falsy_list(self, monkeypatch, value, expect_bm25):
+        if value is None:
+            monkeypatch.delenv(FLAG, raising=False)
+        else:
+            monkeypatch.setenv(FLAG, value)
+        store = make_store()
+        # discriminator: whole-token BM25 gives "cat" no hit on "category"
+        # (d-x below); legacy substring matching does.
+        store.add("dx_category", "category theory notes")
+        ids = rank_ids(store, "cat")
+        if expect_bm25:
+            assert "dx_category" not in ids
+        else:
+            assert "dx_category" in ids
+
+
+class TestFilterClasses:
+    """T10 -- filter classes. T10a: where-filters are pre-rank and cannot
+    be outscored. T10b: consumer filters (consensus/priority) are
+    POST-RANK, so filtered-out docs can crowd eligible ones out of a
+    capped list -- the documented crowd-out property (GOVERNANCE
+    Non-Claims), pinned here so a silent behavior change is caught."""
+
+    def test_where_filtered_docs_never_appear(self, flag_on):
+        store = VectorStore(project_id="scoped", use_chroma=False)
+        store.add("mine", "canary rollout notes", metadata={"owner": "a"})
+        store.add(
+            "theirs",
+            "canary " * 30 + "rollout " * 30,
+            metadata={"owner": "b"},
+        )
+        ids = [
+            r.id
+            for r in store.search(
+                "canary rollout", limit=10, where={"owner": "a"}
+            ).results
+        ]
+        assert ids == ["mine"]
+
+    def test_t10b_consensus_filter_is_post_rank_with_crowd_out(self, flag_on):
+        from {{ project_slug }}.learning.rag.embedding_service import (
+            EmbeddingService,
+        )
+        from {{ project_slug }}.learning.rag.transcript_indexer import (
+            TranscriptIndexer,
+        )
+
+        class FakeResult:
+            def __init__(self, task_id, finding, consensus):
+                self.task_id = task_id
+                self.analyses = []
+                self.synthesis = type(
+                    "S", (), {"recommended_direction": finding}
+                )()
+                self.consensus_reached = consensus
+                self.approval_rate = 1.0
+                self.duration_seconds = 1.0
+
+        indexer = TranscriptIndexer(
+            vector_store=VectorStore(project_id="crowd", use_chroma=False),
+            embedding_service=EmbeddingService(preferred_provider="fallback"),
+        )
+        # Two non-consensus docs outrank the consensus doc for the query
+        # (they repeat the query terms; BM25 still ranks them first at
+        # this fixture scale), so with limit=2 the capped list is
+        # consumed BEFORE the consensus filter runs.
+        indexer.index_result(
+            FakeResult("n1", "canary rollout canary rollout plan", False)
+        )
+        indexer.index_result(
+            FakeResult("n2", "canary rollout canary rollout draft", False)
+        )
+        indexer.index_result(FakeResult("c1", "canary rollout", True))
+
+        crowded = indexer.search("canary rollout", limit=2, consensus_only=True)
+        assert crowded.results == []  # crowd-out: eligible doc lost the cap
+        roomy = indexer.search("canary rollout", limit=10, consensus_only=True)
+        assert [r.id for r in roomy.results] == ["transcript_c1"]
+
+
+class TestScopedIDFInvariant:
+    """T11 -- BM25 corpus statistics are computed only over the
+    where-passing candidate set (security invariant)."""
+
+    def test_flooding_one_scope_leaves_other_scope_ranking_identical(
+        self, flag_on
+    ):
+        def scope_a_docs(store):
+            store.add("a1", "canary rollout analysis", metadata={"owner": "a"})
+            store.add("a2", "canary in the coal mine", metadata={"owner": "a"})
+            store.add("a3", "rollout freeze window", metadata={"owner": "a"})
+
+        baseline = VectorStore(project_id="idf_base", use_chroma=False)
+        scope_a_docs(baseline)
+        base_results = baseline.search(
+            "canary rollout", limit=10, where={"owner": "a"}
+        )
+
+        flooded = VectorStore(project_id="idf_flood", use_chroma=False)
+        scope_a_docs(flooded)
+        for i in range(40):
+            flooded.add(
+                f"b{i}", "canary canary rollout rollout",
+                metadata={"owner": "b"},
+            )
+        flood_results = flooded.search(
+            "canary rollout", limit=10, where={"owner": "a"}
+        )
+
+        assert [r.id for r in flood_results.results] == [
+            r.id for r in base_results.results
+        ]
+        for got, want in zip(flood_results.results, base_results.results):
+            assert got.score == pytest.approx(want.score, abs=1e-12)
+
+
+class TestMembershipAndTotal:
+    """T12 -- RRF must not admit zero-arm filler; totals are eligible-only."""
+
+    @pytest.mark.parametrize("flag", ["true", "false"])
+    def test_zero_match_query_returns_empty(self, monkeypatch, flag):
+        monkeypatch.setenv(FLAG, flag)
+        store = make_store()
+        results = store.search("xylophone quixotic zephyr", limit=10)
+        assert results.results == []
+        assert results.total == 0
+
+    def test_hybrid_membership_requires_positive_arm(self, flag_on):
+        store = VectorStore(project_id="member", use_chroma=False)
+        store.add("lex_hit", "canary rollout", embedding=[0.0, 1.0])
+        store.add("sem_hit", "unrelated words", embedding=[1.0, 0.0])
+        store.add("no_hit", "unrelated words", embedding=[-1.0, 0.0])
+        results = store.search(
+            "canary", limit=10, query_embedding=[1.0, 0.0]
+        )
+        ids = {r.id for r in results.results}
+        # lex_hit: lexical > 0. sem_hit: cosine > 0. no_hit: neither.
+        assert ids == {"lex_hit", "sem_hit"}
+        assert results.total == 2
+
+    def test_total_counts_eligible_not_corpus(self, flag_on):
+        store = make_store()
+        results = store.search("canary", limit=2)
+        # s01-s03, d04, d25 contain the token -> eligible 5, results capped
+        assert len(results.results) == 2
+        assert results.total == 5

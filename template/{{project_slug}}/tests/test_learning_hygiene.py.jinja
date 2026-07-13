@@ -372,11 +372,20 @@ class TestFallbackRetrievalHonesty:
         assert fallback_embedder.provider == "fallback"
         assert fallback_embedder.is_semantic is False
 
-    def test_hash_vectors_defeat_keyword_ranking(self, fallback_embedder):
+    def test_hash_vectors_defeat_keyword_ranking(
+        self, fallback_embedder, monkeypatch
+    ):
         """The measured bug this guards against: querying with hash
         embeddings ranks by meaningless cosine noise instead of keyword
-        overlap, so the keyword-relevant doc can lose to an unrelated
-        one."""
+        overlap, so the keyword-relevant doc can lose to an unrelated one.
+
+        Deliberately re-pinned under LEXICAL_RANKING_ENABLED=false when the
+        BM25 arm shipped: the noise demonstration targets the legacy scorer
+        the bug was measured on. The store-level guarantee is now the
+        CALLER CONTRACT (retrievers pass query_embedding=None for
+        non-semantic embedders -- next test); with the flag on, a passed
+        hash embedding still joins RRF fusion by design."""
+        monkeypatch.setenv("LEXICAL_RANKING_ENABLED", "false")
         store = VectorStore(project_id="t1", use_chroma=False)
         for doc_id, text in self.DOCS.items():
             store.add(doc_id, text, {},
@@ -392,6 +401,25 @@ class TestFallbackRetrievalHonesty:
         # And hash-cosine scores are noise, not keyword-aligned ranking
         # (scores exist but do not reflect term overlap).
         assert hash_ranked.results != keyword_ranked.results
+
+    def test_retriever_layer_never_ranks_by_hash_cosine(self, fallback_embedder):
+        """Store half of the caller contract (BM25/hybrid era):
+        query_embedding=None runs the pure lexical arm -- identical ids
+        AND scores to an embedding-free query, so hash-cosine never
+        influences ranking. The retriever half (both retrievers actually
+        SEND None with a non-semantic embedder) is pinned by
+        test_retrievers_never_send_hash_embeddings_to_store below."""
+        store = VectorStore(project_id="t1b", use_chroma=False)
+        for doc_id, text in self.DOCS.items():
+            store.add(doc_id, text, {},
+                      embedding=fallback_embedder.embed(text).embedding)
+        query = "how concise should responses be"
+        via_none = store.search(query, query_embedding=None)
+        plain = store.search(query)
+        assert [(r.id, r.score) for r in via_none.results] == [
+            (r.id, r.score) for r in plain.results
+        ]
+        assert via_none.results[0].id == "style_pref"
 
     def test_transcript_indexer_uses_keywords_with_fallback(self, fallback_embedder):
         from {{project_slug}}.learning.rag.transcript_indexer import TranscriptIndexer
@@ -417,6 +445,63 @@ class TestFallbackRetrievalHonesty:
         results = indexer.search("concise summaries")
         assert results.results
         assert results.results[0].id.endswith("t-2")
+
+    def test_retrievers_never_send_hash_embeddings_to_store(self, fallback_embedder):
+        """Retriever half of the caller contract: with a non-semantic
+        embedder and the in-memory store, BOTH retrievers pass
+        embedding=None to add() and query_embedding=None to search().
+        Asserted at the store boundary with spies -- a regression that
+        starts forwarding hash vectors fails HERE even though result ids
+        would not change (fallback-indexed docs carry no embeddings, so
+        the hybrid cosine arm would stay empty either way)."""
+        from {{project_slug}}.learning.models import UserPreference
+        from {{project_slug}}.learning.rag.preference_retriever import (
+            PreferenceRetriever,
+        )
+        from {{project_slug}}.learning.rag.transcript_indexer import TranscriptIndexer
+
+        class SpyStore(VectorStore):
+            def __init__(self):
+                super().__init__(project_id="spy", use_chroma=False)
+                self.add_embeddings = []
+                self.search_embeddings = []
+
+            def add(self, doc_id, content, metadata=None, embedding=None):
+                self.add_embeddings.append(embedding)
+                super().add(doc_id, content, metadata, embedding)
+
+            def search(self, query, limit=10, where=None, query_embedding=None):
+                self.search_embeddings.append(query_embedding)
+                return super().search(query, limit, where, query_embedding)
+
+        pref_store = SpyStore()
+        retriever = PreferenceRetriever(
+            vector_store=pref_store, embedding_service=fallback_embedder
+        )
+        retriever.index_preference(
+            UserPreference(preference_type="style", key="verbosity", value="concise")
+        )
+        retriever.search("concise responses")
+        assert pref_store.add_embeddings == [None]
+        assert pref_store.search_embeddings == [None]
+
+        class FakeResult:
+            def __init__(self, task_id, finding):
+                self.task_id = task_id
+                self.analyses = []
+                self.synthesis = type("S", (), {"recommended_direction": finding})()
+                self.consensus_reached = True
+                self.approval_rate = 1.0
+                self.duration_seconds = 1.0
+
+        ts_store = SpyStore()
+        indexer = TranscriptIndexer(
+            vector_store=ts_store, embedding_service=fallback_embedder
+        )
+        indexer.index_result(FakeResult("t-1", "prefer concise summaries"))
+        indexer.search("concise summaries")
+        assert ts_store.add_embeddings == [None]
+        assert ts_store.search_embeddings == [None]
 
     def test_chroma_backend_still_gets_hash_embeddings(
         self, fallback_embedder, monkeypatch, tmp_path
