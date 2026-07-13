@@ -1,0 +1,198 @@
+"""
+Open adversarial corpus -- provenance, isolation, and sanity tests.
+
+Deterministic, offline, no-LLM. Guards the vendored CC-BY-4.0 subset in
+tests/adversarial_payloads_open.py:
+
+  * provenance    -- every seed's exact code points hash to its manifest entry,
+                     and the fixture <-> manifest mapping is a bijection.
+  * isolation     -- no src/ module imports the fixture (AST), and neither the
+                     fixture module name nor provenance.json appears as a string
+                     literal under src/ (catches importlib / path-read bypasses).
+                     Guarantee = "no static import + no name/path reference," NOT
+                     provable unreachability.
+  * sanity        -- >= 6 multilingual languages; every seed carries meta; no raw
+                     jinja-significant sequences in the fixture source.
+
+Evals-off safe: checks that touch evals/ paths skip when evals/ is absent, so a
+project generated with include_evals=false still passes `pytest tests/`.
+
+Keep this file under 250 lines.
+"""
+
+import ast
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from tests.adversarial_payloads_open import (
+    OPEN_ATTACK_TYPES,
+    OPEN_CORPUS,
+    open_payloads,
+)
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_SRC = _PROJECT_ROOT / "src" / "{{ project_slug }}"
+_FIXTURE = _PROJECT_ROOT / "tests" / "adversarial_payloads_open.py"
+_MANIFEST = _PROJECT_ROOT / "tests" / "fixtures" / "provenance.json"
+_FIXTURE_MODULE = "adversarial_payloads_open"
+
+_MIN_LANGS = 6
+
+
+def _manifest() -> dict:
+    return json.loads(_MANIFEST.read_text(encoding="utf-8"))
+
+
+def _all_seeds() -> list[tuple[str, dict]]:
+    return [seed for seeds in OPEN_CORPUS.values() for seed in seeds]
+
+
+# --------------------------------------------------------------------------
+# Provenance / tamper-evidence
+# --------------------------------------------------------------------------
+
+
+def test_every_seed_hash_matches_manifest():
+    """SHA-256 over EXACT code points (UTF-8, no normalization) == manifest."""
+    records = {r["id"]: r for r in _manifest()["records"]}
+    for _cat, seeds in OPEN_CORPUS.items():
+        for payload, meta in seeds:
+            digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            assert meta["id"] in records, f"seed {meta['id']} missing from manifest"
+            assert records[meta["id"]]["sha256"] == digest, (
+                f"hash drift for {meta['id']} -- a payload was edited without "
+                f"updating provenance.json"
+            )
+
+
+def test_fixture_manifest_is_a_bijection():
+    fixture_ids = {meta["id"] for _p, meta in _all_seeds()}
+    manifest_ids = {r["id"] for r in _manifest()["records"]}
+    assert fixture_ids == manifest_ids
+    assert len(fixture_ids) == len(_all_seeds()), "duplicate seed id in fixture"
+
+
+def test_manifest_categories_match_fixture():
+    records = {r["id"]: r for r in _manifest()["records"]}
+    for cat, seeds in OPEN_CORPUS.items():
+        for _payload, meta in seeds:
+            assert records[meta["id"]]["category"] == cat
+
+
+def test_manifest_is_offline_metadata_only():
+    """source_url / upstream_revision are recorded, never fetched here."""
+    for rec in _manifest()["records"]:
+        assert rec["license"] == "CC-BY-4.0"
+        assert rec["upstream_revision"] and len(rec["upstream_revision"]) >= 40
+        assert rec["source_url"].startswith("https://")
+
+
+# --------------------------------------------------------------------------
+# Seeds-are-data: import isolation from every runtime module
+# --------------------------------------------------------------------------
+
+
+def _iter_src_py() -> list[Path]:
+    return list(_SRC.rglob("*.py"))
+
+
+def test_no_src_module_statically_imports_the_fixture():
+    """AST scan: no module under src/ imports adversarial_payloads[_open]."""
+    offenders: list[str] = []
+    for path in _iter_src_py():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            if any("adversarial_payloads" in n for n in names):
+                offenders.append(str(path.relative_to(_PROJECT_ROOT)))
+    assert not offenders, f"runtime modules import the corpus fixture: {offenders}"
+
+
+def test_no_src_reference_to_fixture_name_or_manifest():
+    """Belt-and-braces: catches importlib(dynamic) / open()-by-path bypasses the
+    AST import scan cannot see. Guarantee is 'no static import + no name/path
+    reference', not provable unreachability."""
+    needles = (_FIXTURE_MODULE, "provenance.json")
+    offenders: list[str] = []
+    for path in _iter_src_py():
+        text = path.read_text(encoding="utf-8")
+        if any(needle in text for needle in needles):
+            offenders.append(str(path.relative_to(_PROJECT_ROOT)))
+    assert not offenders, f"src/ references the fixture by name/path: {offenders}"
+
+
+# --------------------------------------------------------------------------
+# Corpus sanity
+# --------------------------------------------------------------------------
+
+
+def test_categories_are_the_expected_three():
+    assert OPEN_ATTACK_TYPES == frozenset(
+        {"open_injection", "open_multilingual", "open_content_safety"}
+    )
+
+
+def test_every_seed_has_meta():
+    for _cat, seeds in OPEN_CORPUS.items():
+        for payload, meta in seeds:
+            assert isinstance(payload, str) and payload
+            assert meta.get("id") and meta.get("lang")
+
+
+def test_multilingual_spans_enough_languages():
+    langs = {meta["lang"] for _p, meta in OPEN_CORPUS["open_multilingual"]}
+    assert len(langs) >= _MIN_LANGS, f"only {len(langs)} langs: {sorted(langs)}"
+
+
+def test_fixture_source_has_no_raw_jinja_sequences():
+    """The fixture is plain .py copier never renders; a raw double-brace or
+    brace-percent sequence would be mangled if it ever were. Brace chars in
+    seeds must be \\u-escaped."""
+    src = _FIXTURE.read_text(encoding="utf-8")
+    {% raw %}assert "{{" not in src and "{%" not in src{% endraw %}
+
+
+def test_fixture_source_is_ascii():
+    """Non-ASCII must be \\uXXXX-escaped so editor/OS renormalization cannot
+    silently alter a seed (which would break its hash)."""
+    _FIXTURE.read_text(encoding="utf-8").encode("ascii")
+
+
+def test_open_payloads_helper_drops_meta():
+    for cat in OPEN_CORPUS:
+        payloads = open_payloads(cat)
+        assert payloads == [p for p, _m in OPEN_CORPUS[cat]]
+
+
+# --------------------------------------------------------------------------
+# Evals-off resilience: evals/ artifacts only checked when present
+# --------------------------------------------------------------------------
+
+_EVALS = _PROJECT_ROOT / "evals"
+
+
+@pytest.mark.skipif(not _EVALS.exists(), reason="evals/ excluded (include_evals=false)")
+def test_evals_attribution_present_when_evals_shipped():
+    assert (_EVALS / "fixtures" / "ATTRIBUTION.md").exists()
+
+
+@pytest.mark.skipif(not _EVALS.exists(), reason="evals/ excluded (include_evals=false)")
+def test_redteam_config_present_when_evals_shipped():
+    assert (_EVALS / "redteam" / "redteam.yaml").exists()
+
+
+def test_tests_fixtures_attribution_ships_everywhere():
+    """Unconditional: tests/ is not gated by include_evals."""
+    assert (_PROJECT_ROOT / "tests" / "fixtures" / "ATTRIBUTION.md").exists()
+    assert _MANIFEST.exists()

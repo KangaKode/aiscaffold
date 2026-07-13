@@ -36,3 +36,5 @@ logs/
 
 # Generated
 repomix-output.txt
+# Red-team case CSV generated from the shared corpus (see evals/redteam/README.md)
+evals/redteam/redteam_cases.csv

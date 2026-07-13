@@ -29,6 +29,21 @@
     "false_positive": 0,
     "total": 5
   },
+  "open_content_safety": {
+    "false_negative": 0,
+    "false_positive": 0,
+    "total": 8
+  },
+  "open_injection": {
+    "false_negative": 14,
+    "false_positive": 0,
+    "total": 14
+  },
+  "open_multilingual": {
+    "false_negative": 18,
+    "false_positive": 0,
+    "total": 18
+  },
   "poisoning": {
     "false_negative": 0,
     "false_positive": 0,
