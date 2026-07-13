@@ -389,4 +389,70 @@ class TestGatewayStoreFallback:
         application = SimpleNamespace(state=SimpleNamespace())
         init_detection_hooks(application)
         assert not hasattr(application.state, "learning_store")
+
+    def test_failed_fallback_publishes_nothing(self, monkeypatch):
+        """A failed store fallback must NOT pin learning_store=None on app
+        state -- later initializers (corrections init resolves its own
+        store) remain the fallback of record."""
+        from types import SimpleNamespace
+
+        from {{project_slug}}.api.detection_hooks import init_detection_hooks
+        from {{project_slug}}.learning import store as store_module
+
+        def boom():
+            raise RuntimeError("db unavailable at startup")
+
+        monkeypatch.setenv(FLAG_ENV, "true")
+        monkeypatch.setattr(store_module, "get_learning_store", boom)
+        application = SimpleNamespace(state=SimpleNamespace())
+        init_detection_hooks(application)
+        assert not hasattr(application.state, "learning_store")
+
+
+class TestChatRouteStoreFallback:
+    """Bugbot regression: with the flag on and app.state.learning_store
+    absent (detection-hooks fallback failed at startup), the chat route
+    must fall back to the corrections manager's store -- otherwise drift
+    persists flags while the poisoning scan silently degrades to log-only
+    for the cached orchestrator's lifetime."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_orchestrator_cache(self):
+        from {{project_slug}}.api.routes import chat as chat_route
+
+        chat_route._orchestrators.clear()
+        yield
+        chat_route._orchestrators.clear()
+
+    def _fake_request(self, store):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        return SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    llm_client=MagicMock(),
+                    registry=None,
+                    corrections_manager=SimpleNamespace(store=store),
+                )
+            )
+        )
+
+    def test_flag_on_falls_back_to_manager_store(self, store, monkeypatch):
+        from {{project_slug}}.api.routes.chat import _get_or_create_orchestrator
+
+        monkeypatch.setenv(FLAG_ENV, "true")
+        orchestrator = _get_or_create_orchestrator(
+            "sess-fb", self._fake_request(store)
+        )
+        assert orchestrator._learning_store is store
+
+    def test_flag_off_keeps_prior_behavior(self, store):
+        """Default deployments stay byte-identical: no flag, no fallback."""
+        from {{project_slug}}.api.routes.chat import _get_or_create_orchestrator
+
+        orchestrator = _get_or_create_orchestrator(
+            "sess-off", self._fake_request(store)
+        )
+        assert orchestrator._learning_store is None
 {% endif -%}
