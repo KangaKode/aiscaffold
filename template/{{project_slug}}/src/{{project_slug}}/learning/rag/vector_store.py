@@ -17,9 +17,11 @@ Security:
   - Documents are sanitized before indexing (size-limited)
   - Project isolation prevents cross-project data leakage
 
-Keep this file under 400 lines. (Raised from 250: the Chroma
-persistence-preservation logic and the in-memory fallback both live
-here; if a third backend is added, split the adapters apart.)
+Keep this file under 440 lines. (Raised from 250, then 400: the Chroma
+persistence-preservation logic and the in-memory fallback both live here,
+and the fallback now carries two ranking paths -- BM25/RRF plus the
+verbatim legacy scorer kept for the LEXICAL_RANKING_ENABLED kill switch.
+If a third backend is added, split the adapters apart.)
 """
 
 import logging
@@ -33,6 +35,21 @@ from typing import Any
 from ...security.prompt_guard import sanitize_for_prompt
 
 logger = logging.getLogger(__name__)
+
+try:
+    from .lexical import (
+        bm25_scores,
+        lexical_ranking_enabled,
+        rrf_fuse,
+        tokenize,
+    )
+    _LEXICAL_AVAILABLE = True
+except Exception:  # pragma: no cover -- defensive: module ships in-package
+    _LEXICAL_AVAILABLE = False
+    logger.warning(
+        "[VectorStore] lexical ranking module unavailable; "
+        "in-memory search uses the legacy keyword scorer"
+    )
 
 MAX_DOCUMENT_LENGTH = 10_000
 MAX_RESULTS = 50
@@ -149,14 +166,15 @@ class VectorStore:
 
     @property
     def supports_keyword_search(self) -> bool:
-        """True when search() can rank by keyword overlap (in-memory store).
+        """True when search() can rank lexically (in-memory store: BM25,
+        or the legacy keyword scorer with the kill switch off).
 
-        Chroma has no keyword path -- every stored document and every
+        Chroma has no lexical path -- every stored document and every
         query needs an embedding (omitting one makes Chroma compute its
         own default-model embedding, which breaks dimension consistency
         with previously stored vectors). Retrievers use this to decide
         whether skipping non-semantic hash embeddings is safe: only the
-        in-memory store can fall back to keyword ranking.
+        in-memory store can rank without an embedding.
         """
         return self._collection is None
 
@@ -285,10 +303,82 @@ class VectorStore:
         where: dict | None,
         query_embedding: list[float] | None,
     ) -> SearchResults:
-        """Simple keyword + cosine similarity fallback search."""
+        """BM25 lexical ranking with optional RRF hybrid fusion.
+
+        The semantic arm runs only when the CALLER passes `query_embedding`
+        (caller contract: retrievers pass None for non-semantic hash
+        embeddings, so hash-cosine never ranks). Flag-off falls back to the
+        legacy binary-presence scorer, byte-identically. Membership: docs
+        need lexical > 0 or cosine > 0; `total` counts eligible docs.
+        Scores are raw BM25 (lexical-only) or RRF sums (hybrid), a
+        different scale from the legacy 0-1 fraction.
+        """
         if not self._fallback_store:
             return SearchResults(query=query)
+        if not _LEXICAL_AVAILABLE or not lexical_ranking_enabled():
+            return self._search_fallback_legacy(
+                query, limit, where, query_embedding
+            )
 
+        candidates = [
+            d for d in self._fallback_store
+            if self._matches_where(d.get("metadata", {}), where)
+        ]
+        if not candidates:
+            return SearchResults(query=query)
+
+        # Scoped-IDF invariant: BM25 corpus statistics are computed only
+        # over the where-passing candidates (see lexical.py docstring).
+        lex = bm25_scores(
+            tokenize(query), [tokenize(d["content"]) for d in candidates]
+        )
+        by_id = {d["id"]: d for d in candidates}
+        lex_ranked = [
+            d["id"]
+            for score, d in sorted(
+                zip(lex, candidates), key=lambda t: (-t[0], t[1]["id"])
+            )
+            if score > 0
+        ]
+
+        if query_embedding is None:
+            eligible = lex_ranked
+            score_of = {d["id"]: score for score, d in zip(lex, candidates)}
+        else:
+            cos: dict[str, float] = {}
+            for d in candidates:
+                if d.get("embedding"):
+                    sim = self._cosine_similarity(query_embedding, d["embedding"])
+                    if sim > 0:
+                        cos[d["id"]] = sim
+            sem_ranked = sorted(cos, key=lambda i: (-cos[i], i))
+            score_of = rrf_fuse(lex_ranked, sem_ranked)
+            eligible = sorted(score_of, key=lambda i: (-score_of[i], i))
+
+        return SearchResults(
+            results=[
+                SearchResult(
+                    id=doc_id,
+                    content=by_id[doc_id]["content"],
+                    metadata=by_id[doc_id].get("metadata", {}),
+                    score=score_of[doc_id],
+                )
+                for doc_id in eligible[:limit]
+            ],
+            total=len(eligible),
+            query=query,
+        )
+
+    def _search_fallback_legacy(
+        self,
+        query: str,
+        limit: int,
+        where: dict | None,
+        query_embedding: list[float] | None,
+    ) -> SearchResults:
+        """Legacy binary keyword-presence + cosine scorer (kill-switch
+        path). Preserved verbatim: LEXICAL_RANKING_ENABLED=false must be
+        byte-identical to the pre-BM25 release."""
         scored = []
         query_lower = query.lower()
         query_words = set(query_lower.split())

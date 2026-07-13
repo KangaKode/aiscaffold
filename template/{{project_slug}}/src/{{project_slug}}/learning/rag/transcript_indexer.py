@@ -45,7 +45,7 @@ class TranscriptIndexer:
     @property
     def _use_embeddings(self) -> bool:
         """Attach embeddings unless they are non-semantic hash filler AND
-        the store can rank by keywords instead (Chroma cannot -- see
+        the store can rank lexically (BM25) instead (Chroma cannot -- see
         PreferenceRetriever._use_embeddings for the full rationale)."""
         return self._embedder.is_semantic or not self._store.supports_keyword_search
 
@@ -104,8 +104,8 @@ class TranscriptIndexer:
         duration = getattr(result, "duration_seconds", 0.0)
 
         # With the in-memory store, meaningless hash-fallback vectors are
-        # skipped so keyword matching ranks results; Chroma always gets an
-        # embedding (see _use_embeddings).
+        # skipped so BM25 lexical ranking scores results; Chroma always
+        # gets an embedding (see _use_embeddings).
         embedding = (
             self._embedder.embed(doc_text).embedding
             if self._use_embeddings

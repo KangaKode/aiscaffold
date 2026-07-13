@@ -231,8 +231,9 @@ The adversarial corpus has two parts, both DATA (never imported by `src/`, asser
 - `reflector.py` -- Deterministic process-level lessons after each round table (agent effectiveness, evidence patterns, challenge impact, dissent value); capped, structured-fields-only, read via `GET /api/v1/reflections`
 - `error_schemata.py` -- Generalizes clusters of approved corrections (>= 3, >= 2 distinct proposers) into reusable error schemas injected into single-shot context
 - `contradiction.py` -- Pure-Python TF-IDF + negation heuristic flagging approved corrections that likely disagree; findings go to integrity flags
-- `rag/` -- Vector store adapter, embeddings, semantic preference search. Search is truly semantic only with a real embedding provider (`EMBEDDING_PROVIDER=local|openai|auto`); the default hash fallback is deterministic filler whose vectors carry no meaning, so with the in-memory store retrieval then uses keyword matching instead of pretending cosine similarity works (Chroma has no keyword path -- hash vectors are stored as-is there, and ranking stays noise until a real provider is set)
-- `rag/transcript_indexer.py` -- Indexes round table results for search over past deliberations (semantic with a real provider, keyword with the default fallback)
+- `rag/` -- Vector store adapter, embeddings, semantic preference search. Search is truly semantic only with a real embedding provider (`EMBEDDING_PROVIDER=local|openai|auto`); the default hash fallback is deterministic filler whose vectors carry no meaning, so with the in-memory store retrieval then ranks lexically (BM25) instead of pretending cosine similarity works. With a real provider, the in-memory store fuses the BM25 arm with cosine similarity via Reciprocal Rank Fusion. (Chroma has no lexical path -- hash vectors are stored as-is there, and ranking stays noise until a real provider is set)
+- `rag/lexical.py` -- Pure-Python BM25 scoring + RRF fusion for the in-memory store (no persisted index; `LEXICAL_RANKING_ENABLED=false` restores the legacy binary keyword scorer byte-identically). Post-rank consumer filters such as consensus-only can still crowd relevant results out of a capped list -- see GOVERNANCE Non-Claims
+- `rag/transcript_indexer.py` -- Indexes round table results for search over past deliberations (hybrid BM25+cosine with a real provider, BM25 lexical with the default fallback)
 {% endif -%}
 
 ---
@@ -255,7 +256,7 @@ The adversarial corpus has two parts, both DATA (never imported by `src/`, asser
 - **FastAPI over Flask/Django** -- Async-native, automatic OpenAPI docs, Pydantic validation built in
 - **SSE over WebSockets** -- Simpler protocol, works through proxies, sufficient for chat streaming
 - **SQLite for dev, Postgres for prod** -- Zero-config locally, production-grade when deployed
-- **Vector storage defaults lightweight** -- In-memory search for dev/testing; pgvector is the recommended production path when using Postgres, with other stores behind the vector-store adapter
+- **Vector storage defaults lightweight** -- In-memory search for dev/testing; pgvector is the recommended production path when using Postgres, with other stores behind the vector-store adapter. The in-memory path ranks with BM25 out of the box (hybrid BM25+cosine via Reciprocal Rank Fusion when a real embedding provider is set); `LEXICAL_RANKING_ENABLED=false` is the kill switch back to the legacy keyword scorer
 - **Adapter pattern for agents** -- `RemoteAgent` implements `AgentProtocol` over HTTP; round table/chat don't know the difference
 - **String categories over enums** -- Signal types, preference types, and check-in types are strings so projects define their own taxonomy without modifying scaffold code
 - **Security at boundaries** -- Every function that accepts external input sanitizes it; every SQL query is parameterized; every URL is validated
