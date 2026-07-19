@@ -243,6 +243,15 @@ class TestSupersessionApproveHappyPath:
             )
         assert analyze_correction_drift(store, window=10, baseline=20) is None
 
+    def test_revalidate_rejects_invalidated_ancestor(self, manager):
+        """Superseded rows must not refresh last_validated_* / report counts."""
+        ancestor = propose_approved(manager)
+        successor = propose_supersession(manager, ancestor.id)
+        manager.approve(successor.id, approved_by="bob")
+        with pytest.raises(ValueError, match="currently-valid"):
+            manager.revalidate(ancestor.id, validated_by="carol")
+        assert manager.get(ancestor.id).last_validated_at == ""
+
     def test_supersede_writes_audit_event(self, store, manager):
         """T15: `correction_superseded` audit event on successful approve."""
         ancestor = propose_approved(manager)

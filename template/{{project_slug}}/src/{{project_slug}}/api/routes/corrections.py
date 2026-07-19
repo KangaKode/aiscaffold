@@ -463,10 +463,11 @@ async def revalidate_correction(
     request: Request,
     auth: AuthContext = Depends(verify_api_key),
 ) -> CorrectionResponse:
-    """Re-confirm an approved correction (knowledge aging).
+    """Re-confirm a currently-valid approved correction (knowledge aging).
 
-    Sets last_validated_at/by to the caller/now; status unchanged. The
-    governance report flags self-revalidations (validator == proposer).
+    Sets last_validated_at/by to the caller/now; status unchanged.
+    Superseded (invalidated) rows return 409. The governance report flags
+    self-revalidations (validator == proposer).
     """
     manager = _get_manager(request)
     await _get_tenant_correction(manager, correction_id, auth.tenant_id)

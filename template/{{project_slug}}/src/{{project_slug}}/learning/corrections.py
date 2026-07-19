@@ -367,20 +367,22 @@ class CorrectionsManager:
 
     def revalidate(self, correction_id: str, validated_by: str) -> Correction:
         """
-        Re-validate an APPROVED correction: a human confirms it is still
-        true, refreshing its staleness clock (last_validated_at/by) while
-        leaving status AND updated_at untouched -- updated_at must stay a
-        pure lifecycle-change timestamp or it would zero the governance
-        report's fresh_only_via_revalidation metric and drag old approvals
-        back into updated_at-windowed pattern checks (approval_patterns).
+        Re-validate a currently-valid APPROVED correction: a human confirms
+        it is still true, refreshing its staleness clock
+        (last_validated_at/by) while leaving status AND updated_at
+        untouched -- updated_at must stay a pure lifecycle-change timestamp
+        or it would zero the governance report's
+        fresh_only_via_revalidation metric and drag old approvals back into
+        updated_at-windowed pattern checks (approval_patterns).
 
-        Raises ValueError if the correction is missing or not APPROVED.
+        Raises ValueError if the correction is missing, not APPROVED, or
+        already invalidated (superseded / compensated).
         """
         correction = self._get_or_raise(correction_id)
-        if correction.status != STATUS_APPROVED:
+        if correction.status != STATUS_APPROVED or correction.invalid_at:
             raise ValueError(
-                f"Correction {correction_id} is '{correction.status}', "
-                f"only '{STATUS_APPROVED}' corrections can be revalidated"
+                f"Correction {correction_id} is not currently-valid "
+                f"approved knowledge and cannot be revalidated"
             )
         now = datetime.now().isoformat()
         correction.last_validated_at = now
