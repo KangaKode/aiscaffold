@@ -133,6 +133,19 @@ class TestValidateAncestor:
         ancestor = propose_approved(manager)
         validate_ancestor_for_supersession(manager.get(ancestor.id), "default")
 
+    def test_propose_with_supersedes_id_also_validates(self, manager):
+        """Library propose(supersedes_id=...) must not bypass ancestor checks."""
+        with pytest.raises(ValueError, match="not found"):
+            manager.propose(
+                agent_id="analyst",
+                original_claim="a",
+                corrected_claim="b",
+                reason="r",
+                evidence_level="documented",
+                created_by="alice",
+                supersedes_id="no-such-id",
+            )
+
 
 # --- Supersession approve happy path (T5, T8, T11, T15) ---------------------
 
@@ -182,6 +195,28 @@ class TestSupersessionApproveHappyPath:
         block = manager.get_approved_for_context()
         assert "SUCCESSOR_VALUE" in block
         assert "ANCESTOR_VALUE" not in block
+
+    def test_error_schemata_ignore_invalidated_ancestors(self, store, manager):
+        """Post-approve schema extraction must not mine superseded text."""
+        from {{project_slug}}.learning.error_schemata import extract_error_schemas
+
+        for i in range(3):
+            propose_approved(
+                manager,
+                original=f"old-{i}",
+                corrected=f"UNIQUE_SUPERSEDED_TOKEN_{i}",
+                created_by=f"proposer-{i}",
+                approved_by="approver",
+            )
+        for row in store.query(
+            "corrections", {"status": STATUS_APPROVED, "invalid_at": ""}
+        ):
+            store.update(
+                "corrections", row["id"], {"invalid_at": "2026-07-01T00:00:00"}
+            )
+        schemas = extract_error_schemas(store, tenant_id="default")
+        blob = json.dumps([s.__dict__ for s in schemas], default=str)
+        assert "UNIQUE_SUPERSEDED_TOKEN" not in blob
 
     def test_supersede_writes_audit_event(self, store, manager):
         """T15: `correction_superseded` audit event on successful approve."""
@@ -346,17 +381,22 @@ class TestFourEyesOnSupersession:
 
 class TestFinalizeHelperDirect:
     def test_finalize_on_missing_ancestor_compensates(self, store):
-        # Approve a successor row directly (no ancestor) so we can drive
-        # finalize with a nonsense ancestor id and observe compensation.
+        # Drive finalize with a nonsense ancestor id after a raw status
+        # promote. propose(supersedes_id=...) rejects missing ancestors, so
+        # the dangling pointer is written via store.update (store-level
+        # fault injection for the compensator path).
         mgr = CorrectionsManager(store)
         successor = mgr.propose(
             agent_id="analyst", original_claim="a", corrected_claim="b",
             reason="", evidence_level="documented", created_by="alice",
-            supersedes_id="no-such-ancestor",
         )
         mgr.store.update(
             "corrections", successor.id,
-            {"status": STATUS_APPROVED, "invalid_at": ""},
+            {
+                "status": STATUS_APPROVED,
+                "invalid_at": "",
+                "supersedes_id": "no-such-ancestor",
+            },
         )
         with pytest.raises(SupersessionConflictError):
             finalize_supersession_approve(

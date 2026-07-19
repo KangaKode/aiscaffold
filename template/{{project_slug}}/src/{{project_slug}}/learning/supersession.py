@@ -8,7 +8,7 @@ Concurrency uses update_if + compensating path (no multi-statement txn).
 update_if is REQUIRED (unlike lifecycle.transition). Stores without it
 raise MissingUpdateIfError before any status change; API maps to 501.
 
-Keep this file under 160 lines.
+Keep this file under 170 lines.
 """
 
 from __future__ import annotations
@@ -87,10 +87,16 @@ def _compensate(
     store, update_if, successor_id, tenant_id, now, ancestor_id, reason
 ) -> None:
     try:
-        update_if(
+        demoted = update_if(
             "corrections", successor_id, {"invalid_at": now},
             {"status": "approved", "invalid_at": "", "tenant_id": tenant_id},
         )
+        if not demoted:
+            logger.critical(
+                "[Supersession] Compensator update_if matched zero rows "
+                f"(ancestor={ancestor_id} successor={successor_id} "
+                f"reason={reason}); successor may still be currently valid"
+            )
         insert_flag_once(
             store,
             flag_type=PARTIAL_FAILURE_FLAG,
@@ -100,6 +106,7 @@ def _compensate(
                 "ancestor_id": ancestor_id,
                 "successor_id": successor_id,
                 "reason": reason,
+                "successor_demoted": bool(demoted),
             },
             severity="error",
         )

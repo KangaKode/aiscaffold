@@ -242,20 +242,23 @@ def _corrections_section(
         if stamp is not None and from_dt <= stamp < to_dt:
             revalidations_in_window += 1
     approved = [r for r in all_fetched if r.get("status") == "approved"]
-    currently_valid_approved = sum(1 for r in approved if not r.get("invalid_at"))
-    stale_now = [r for r in approved if row_is_stale(r)]
+    currently_valid = [r for r in approved if not r.get("invalid_at")]
+    currently_valid_approved = len(currently_valid)
+    # Stale/fresh snapshots follow the API stale=true default: currently
+    # valid only (invalidated ancestors are historical, not review queue).
+    stale_now = [r for r in currently_valid if row_is_stale(r)]
     # Fresh purely because someone revalidated: would be stale on the
     # updated_at fallback alone.
     revalidation_carried = [
         r
-        for r in approved
+        for r in currently_valid
         if r.get("last_validated_at")
         and not row_is_stale(r)
         and row_is_stale({**r, "last_validated_at": ""})
     ]
     self_revalidated_ids = sorted(
         str(r.get("id") or "")
-        for r in approved
+        for r in currently_valid
         if r.get("last_validated_by")
         and r.get("last_validated_by") == r.get("created_by")
     )

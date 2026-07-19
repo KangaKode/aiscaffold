@@ -224,6 +224,11 @@ class CorrectionsManager:
                     "reasons": reasons,
                 }
 
+        if supersedes_id:
+            validate_ancestor_for_supersession(
+                self.get(supersedes_id), tenant_id
+            )
+
         correction = Correction(
             agent_id=agent_id,
             original_claim=original_claim,

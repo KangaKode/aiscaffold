@@ -106,7 +106,7 @@ def extract_error_schemas(store: LearningStore, tenant_id: str = "default") -> l
     """
     rows = store.query(
         "corrections",
-        {"tenant_id": tenant_id, "status": STATUS_APPROVED},
+        {"tenant_id": tenant_id, "status": STATUS_APPROVED, "invalid_at": ""},
         order_by="created_at DESC",
     )
 
