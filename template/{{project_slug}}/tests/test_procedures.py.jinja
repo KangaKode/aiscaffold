@@ -163,6 +163,9 @@ class TestConsumerContamination:
         # Procedure-only tenant: claim lifecycle must read as empty.
         assert section["lifecycle_activity_by_status"] == {}
         assert section["currently_valid_approved"] == 0
+        health = report["sections"]["approval_health"]
+        assert health.get("lifecycle_by_status", {}) == {}
+        assert health.get("self_approval_count", 0) == 0
 
 
 class TestSameTypeSupersession:

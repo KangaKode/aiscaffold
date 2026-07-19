@@ -335,7 +335,7 @@ def build_governance_report(
                 claim_rows, claim_all, corr_cov, from_dt, to_dt
             ),
             "approval_health": approval_health.build_section(
-                corr_rows, flag_rows, corr_cov, flag_cov
+                claim_rows, flag_rows, corr_cov, flag_cov
             ),
             "reflections": {
                 "count": len(refl_rows),
