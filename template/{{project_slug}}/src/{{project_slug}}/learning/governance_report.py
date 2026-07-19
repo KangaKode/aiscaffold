@@ -25,7 +25,8 @@ Rate cap: report generation is capped per user per day
 same way erasure caps are (learning/erasure.py), so the cap survives
 restarts. Every generated report leaves an audit event.
 
-Keep this file under 350 lines.
+Keep this file under 360 lines. (Raised from 350: one-line dispatch to
+approval_health.build_section for the human-gate health-check subsection.)
 """
 
 import json
@@ -34,6 +35,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 
+from . import approval_health
 from .aging import row_is_stale, stale_days
 from .erasure import ERASURE_EVENT_TYPE
 from .store import LearningStore
@@ -328,6 +330,9 @@ def build_governance_report(
             "integrity_flags": _flags_section(flag_rows, flag_cov),
             "corrections": _corrections_section(
                 corr_rows, corr_all, corr_cov, from_dt, to_dt
+            ),
+            "approval_health": approval_health.build_section(
+                corr_rows, flag_rows, corr_cov, flag_cov
             ),
             "reflections": {
                 "count": len(refl_rows),

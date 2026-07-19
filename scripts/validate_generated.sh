@@ -717,6 +717,18 @@ has "PLATFORM_GUIDE: /revalidate API row" \
     '/corrections/.*/revalidate' docs/PLATFORM_GUIDE.md
 has "PLATFORM_GUIDE: stale default behavior change note" \
     'Behavior change for upgraders' docs/PLATFORM_GUIDE.md
+# A5 -- approval-health (human-gate health check): capability + Non-Claim
+# + PLATFORM_GUIDE bullet; never claim we "detect rubber-stamping".
+has "GOVERNANCE: approval-health human-gate row" \
+    'human-gate health check' docs/GOVERNANCE.md
+has "GOVERNANCE: not a rubber-stamping detector Non-Claim" \
+    'not a rubber-stamping detector' docs/GOVERNANCE.md
+has "PLATFORM_GUIDE: approval-health human gate bullet" \
+    'health check on the human gate' docs/PLATFORM_GUIDE.md
+lacks "GOVERNANCE: no detects-rubber-stamping claim" \
+    'detects rubber-stamping' docs/GOVERNANCE.md
+lacks "GOVERNANCE: no collusion-score claim" \
+    'collusion score' docs/GOVERNANCE.md
 
 if [ "$INCLUDE_EVALS" = "true" ]; then
     exists "evals on: red-team config present" evals/redteam/redteam.yaml
