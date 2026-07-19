@@ -175,6 +175,26 @@ An unexplained rise in false negatives means a defense regressed.
 
 ---
 
+## Public-corpus harness (pinned subsets)
+
+`tasks/test_public_corpus_harness.py` grades offline fixtures
+(`fixtures/public_corpus_*.json`): 60 InjecAgent + 60 AgentDojo + 30
+open-corpus continuity cases through the same Layer 1–2 detectors. Hybrid
+compare vs `public_corpus_baseline.json`: landmark FN/FP freezes, non-landmark
+FN rise only fails above 5pp, any FP rise fails.
+
+**Non-Claim:** Not a security benchmark; does not measure Layer 3; not an
+end-to-end AgentDojo or InjecAgent score; absolute catch rates are advisory
+until graduation (3 consecutive green CI runs on `main` at the same baseline
+SHA with variance ≤2pp). Attribution: `fixtures/ATTRIBUTION.md`.
+
+```bash
+python evals/tasks/test_public_corpus_harness.py
+python evals/tasks/test_public_corpus_harness.py --update-baseline  # intentional only
+```
+
+---
+
 ## Directory Structure
 
 ```
@@ -189,10 +209,15 @@ evals/
     test_reliability_evals.py  # Reliability and consistency evals
     test_system_evals.py       # System integration evals
     test_injection_defense_golden.py  # Deterministic injection-defense regression smoke set
+    test_public_corpus_harness.py     # Pinned public-corpus Layer 1-2 measurement
+    corpus_resolve.py                 # Public-corpus schema helpers (local)
   fixtures/
     sample_inputs.json  # Example inputs for evals
     injection_defense_dataset.json    # Labeled golden-set cases (corpus refs + benign look-alikes)
     injection_defense_baseline.json   # Frozen per-category FP/FN baseline
+    public_corpus_manifest.json       # Pinned SHAs + licenses + stratification
+    public_corpus_cases.json          # 150 offline cases (per-case sha256)
+    public_corpus_baseline.json       # Frozen per-category FP/FN baseline
   regression/           # Graduated evals (must pass)
   results/              # Eval run results
   human_review/         # Pending human reviews

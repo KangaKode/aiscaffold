@@ -1,0 +1,72 @@
+"""
+Public-corpus fixture isolation -- static checks, no evals payload load.
+
+Guarantees (evals-on and evals-off safe):
+  * no src/ module imports public_corpus_* / corpus_resolve / harness names
+  * no string reference to those fixture/module names under src/
+  * this module never loads evals/fixtures JSON (evals-off safe; no payload IO)
+
+Keep under 200 lines.
+"""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_SRC = _PROJECT_ROOT / "src" / "{{ project_slug }}"
+_FORBIDDEN_NAMES = (
+    "public_corpus_cases",
+    "public_corpus_manifest",
+    "public_corpus_baseline",
+    "corpus_resolve",
+    "test_public_corpus_harness",
+)
+
+
+def _iter_src_py() -> list[Path]:
+    return list(_SRC.rglob("*.py"))
+
+
+def test_no_src_imports_public_corpus_names():
+    offenders: list[str] = []
+    for path in _iter_src_py():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            blob = " ".join(names)
+            if any(f in blob for f in _FORBIDDEN_NAMES):
+                offenders.append(str(path.relative_to(_PROJECT_ROOT)))
+    assert not offenders, f"src imports public-corpus symbols: {offenders}"
+
+
+def test_no_src_string_literals_name_public_corpus_fixtures():
+    offenders: list[str] = []
+    for path in _iter_src_py():
+        text = path.read_text(encoding="utf-8")
+        for name in _FORBIDDEN_NAMES:
+            if name in text:
+                offenders.append(f"{path.relative_to(_PROJECT_ROOT)}:{name}")
+    assert not offenders, f"src references public-corpus names: {offenders}"
+
+
+def test_isolation_module_does_not_import_evals_harness():
+    """This file must stay importable when evals/ is absent."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            assert "corpus_resolve" not in mod
+            assert not mod.startswith("evals")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                assert "corpus_resolve" not in alias.name
+                assert not alias.name.startswith("evals")

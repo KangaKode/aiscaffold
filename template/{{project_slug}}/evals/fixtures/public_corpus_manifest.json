@@ -1,0 +1,48 @@
+{
+  "_about": "Pinned offline subsets of InjecAgent and AgentDojo plus open-corpus continuity for Layer 1-2 regression measurement. Not a benchmark score. Refresh only via repo-root scripts/refresh_public_corpus.py.",
+  "schema_version": 1,
+  "sources": {
+    "agentdojo": {
+      "case_count": 60,
+      "commit_sha": "089ed468cf3ed0322acc66b0211f26d9d90dbf60",
+      "license": "MIT",
+      "license_url": "https://github.com/ethz-spylab/agentdojo/blob/main/LICENSE",
+      "repo": "https://github.com/ethz-spylab/agentdojo",
+      "selection_rubric": "Injection-relevant jailbreak template strings filled with suite injection-task GOALs plus vector defaults as pass controls; not agent task-success scoring. Brace-free payloads.",
+      "stratification": {
+        "direct": 10,
+        "ignore_previous": 10,
+        "important_instructions": 10,
+        "injecagent_style": 10,
+        "system_message": 10,
+        "vector_default": 10
+      }
+    },
+    "injecagent": {
+      "case_count": 60,
+      "commit_sha": "f19c9f2c79a41046eb13c03c51a24c567a8ffa07",
+      "license": "MIT",
+      "license_url": "https://github.com/uiuc-kang-lab/InjecAgent/blob/main/LICENSE",
+      "repo": "https://github.com/uiuc-kang-lab/InjecAgent",
+      "selection_rubric": "English-primary attacker instructions and brace-free indirect framings; no CSAM-adjacent, no operational uplift, no real PII/credentials; direct/indirect 30/30.",
+      "stratification": {
+        "direct": 30,
+        "indirect": 30
+      }
+    },
+    "open_continuity": {
+      "case_count": 30,
+      "commit_sha": "5f94941f5943d49cc2ef9370c1d1d4a030bfcc0b",
+      "license": "CC-BY-4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "pin_note": "git hash-object of tests/adversarial_payloads_open.py at vendoring time",
+      "repo": "tests/adversarial_payloads_open.py",
+      "selection_rubric": "Sample of existing open corpus for continuity with the golden set.",
+      "stratification": {
+        "open_content_safety": 6,
+        "open_injection": 14,
+        "open_multilingual": 10
+      }
+    }
+  }
+}

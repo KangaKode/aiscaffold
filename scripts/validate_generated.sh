@@ -515,7 +515,7 @@ elif [ -d "$GEN_ROOT/tests" ]; then
 
     # Run all test files (all use mocks/in-process testing, no external deps)
     UNIT_FILES=""
-    for f in tests/test_security.py tests/test_injection_defense.py tests/test_ingest_scan.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_supersession.py tests/test_extraction_defense.py tests/test_procedures.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_safety_fail_closed.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py tests/test_learning_hygiene.py tests/test_retrieval_ranking.py tests/test_trust_guard.py tests/test_context_pressure.py tests/test_loop_integrity.py tests/test_adversarial_open_corpus.py tests/test_tenant_integrity.py tests/test_detection_wiring.py tests/test_credential_currency.py tests/test_detection_regressions.py; do
+    for f in tests/test_security.py tests/test_injection_defense.py tests/test_ingest_scan.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_supersession.py tests/test_extraction_defense.py tests/test_procedures.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_safety_fail_closed.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py tests/test_learning_hygiene.py tests/test_retrieval_ranking.py tests/test_trust_guard.py tests/test_context_pressure.py tests/test_loop_integrity.py tests/test_adversarial_open_corpus.py tests/test_public_corpus_isolation.py tests/test_tenant_integrity.py tests/test_detection_wiring.py tests/test_credential_currency.py tests/test_detection_regressions.py; do
         if [ -f "$f" ]; then
             UNIT_FILES="$UNIT_FILES $f"
         fi
@@ -595,6 +595,29 @@ elif [ "$INCLUDE_EVALS" = "false" ]; then
     pass "Golden set correctly absent (include_evals=false)"
 else
     fail "Golden set missing although include_evals=true"
+fi
+
+# =========================================================================
+# Step 9b: Public-corpus harness (deterministic, no LLM; NOT in UNIT_FILES)
+# =========================================================================
+section "Step 9b: Public-corpus harness"
+PUBLIC_CORPUS_HARNESS="$GEN_ROOT/evals/tasks/test_public_corpus_harness.py"
+if [ -f "$PUBLIC_CORPUS_HARNESS" ]; then
+    cd "$GEN_ROOT"
+    # Capture stdout+stderr so import/schema failures are visible on CI fail.
+    PUBLIC_OUT=$(python3 evals/tasks/test_public_corpus_harness.py 2>&1)
+    PUBLIC_EXIT=$?
+    echo "$PUBLIC_OUT" | sed 's/^/    /'
+    if [ "$PUBLIC_EXIT" -eq 0 ]; then
+        pass "Public-corpus harness: no regressions vs baseline"
+    else
+        fail "Public-corpus harness: regression or schema error (exit $PUBLIC_EXIT)"
+    fi
+    cd "$REPO_ROOT"
+elif [ "$INCLUDE_EVALS" = "false" ]; then
+    pass "Public-corpus harness correctly absent (include_evals=false)"
+else
+    fail "Public-corpus harness missing although include_evals=true"
 fi
 
 # =========================================================================
@@ -762,9 +785,51 @@ if [ "$INCLUDE_EVALS" = "true" ]; then
     has "evals on: red-team config keeps literal promptfoo {{prompt}} var" '\{\{prompt\}\}' evals/redteam/redteam.yaml
     has "evals on: red-team config carries the data-egress warning" 'DATA EGRESS' evals/redteam/redteam.yaml
     has "evals on: golden set resolves the open corpus" 'corpus_open' evals/tasks/test_injection_defense_golden.py
+    exists "evals on: public corpus manifest" evals/fixtures/public_corpus_manifest.json
+    exists "evals on: public corpus cases" evals/fixtures/public_corpus_cases.json
+    exists "evals on: public corpus baseline" evals/fixtures/public_corpus_baseline.json
+    exists "evals on: public corpus harness" evals/tasks/test_public_corpus_harness.py
+    exists "evals on: public corpus resolve helper" evals/tasks/corpus_resolve.py
+    lacks "evals on: public corpus cases lack jinja open braces" '\{\{' evals/fixtures/public_corpus_cases.json
+    lacks "evals on: public corpus manifest lack jinja open braces" '\{\{' evals/fixtures/public_corpus_manifest.json
+    lacks "evals on: public corpus baseline lack jinja open braces" '\{\{' evals/fixtures/public_corpus_baseline.json
+    # ASCII parity with open-corpus fixtures (defense in depth if Step 9b skipped).
+    if python3 -c "import pathlib,sys; [pathlib.Path(p).read_text(encoding='ascii') for p in sys.argv[1:]]" \
+        "$GEN_ROOT/evals/fixtures/public_corpus_cases.json" \
+        "$GEN_ROOT/evals/fixtures/public_corpus_manifest.json" \
+        "$GEN_ROOT/evals/fixtures/public_corpus_baseline.json" 2>/dev/null; then
+        pass "evals on: public corpus JSON fixtures are ASCII"
+    else
+        fail "evals on: public corpus JSON fixtures must be ASCII-encodable"
+    fi
+    has "evals on: ATTRIBUTION cites InjecAgent" 'InjecAgent' evals/fixtures/ATTRIBUTION.md
+    has "evals on: ATTRIBUTION cites AgentDojo" 'AgentDojo' evals/fixtures/ATTRIBUTION.md
 else
     # (Step 11 already asserts evals/ is excluded entirely -- not repeated here.)
     absent "evals off: red-team config excluded" evals/redteam/redteam.yaml
+    absent "evals off: public corpus manifest excluded" evals/fixtures/public_corpus_manifest.json
+    absent "evals off: public corpus cases excluded" evals/fixtures/public_corpus_cases.json
+    absent "evals off: public corpus baseline excluded" evals/fixtures/public_corpus_baseline.json
+    absent "evals off: public corpus harness excluded" evals/tasks/test_public_corpus_harness.py
+    absent "evals off: public corpus resolve helper excluded" evals/tasks/corpus_resolve.py
+fi
+
+# Public-corpus docs claims (ship in all profiles; must not overclaim)
+has "SECURITY_MAPPING: pinned subsets phrasing" 'pinned subsets' docs/SECURITY_MAPPING.md
+has "SECURITY_MAPPING: public corpus requires include_evals" 'requires .include_evals.' docs/SECURITY_MAPPING.md
+lacks "SECURITY_MAPPING: no leaderboard claim" 'leaderboard' docs/SECURITY_MAPPING.md
+lacks "SECURITY_MAPPING: no SOTA claim" 'SOTA' docs/SECURITY_MAPPING.md
+lacks "SECURITY_MAPPING: no AgentDojo score claim" 'AgentDojo score' docs/SECURITY_MAPPING.md
+lacks "SECURITY_MAPPING: no beats AgentDojo claim" 'beats AgentDojo' docs/SECURITY_MAPPING.md
+lacks "GOVERNANCE: no beats AgentDojo claim" 'beats AgentDojo' docs/GOVERNANCE.md
+has "SECURITY_MAPPING: ASI05 Not covered" 'ASI05 .*Not covered' docs/SECURITY_MAPPING.md
+has "SECURITY_MAPPING: ASI07 Not applicable" 'ASI07 .*Not applicable' docs/SECURITY_MAPPING.md
+
+# Refresh helper must stay at repo root (never under generated project scripts/)
+if [ -f "$GEN_ROOT/scripts/refresh_public_corpus.py" ]; then
+    fail "refresh_public_corpus.py must not ship into generated projects"
+else
+    pass "refresh helper absent from generated project scripts/"
 fi
 
 if [ "$INCLUDE_API_GATEWAY" = "true" ]; then

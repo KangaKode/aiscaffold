@@ -1,0 +1,242 @@
+"""
+Public-corpus evaluation harness -- Layer 1-2 regression measurement.
+
+Grades pinned offline subsets (60 InjecAgent + 60 AgentDojo + 30 open
+continuity) through detect_injection_attempt (+ advanced) and compares
+per-category FN/FP to a committed baseline with hybrid gates:
+
+  * landmark categories (_FROZEN_PUBLIC): any FN or FP above freeze fails
+  * non-landmark: FN rise fails only if >5 percentage points; any FP rise fails
+  * absolute catch rates print advisory until graduation (3 green CI runs)
+
+Not a security benchmark. Does not measure Layer 3 / live LLM. Does not claim
+an AgentDojo or InjecAgent leaderboard score.
+
+Run:      python evals/tasks/test_public_corpus_harness.py
+Rebaseline: python evals/tasks/test_public_corpus_harness.py --update-baseline
+
+Keep under 315 lines.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+from {{ project_slug }}.security.prompt_guard import (
+    detect_injection_attempt,
+    neutralize_fence,
+)
+
+# Local helper (same directory); works as script and under pytest.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from corpus_resolve import (  # noqa: E402
+    BASELINE_PATH,
+    CASES_PATH,
+    MANIFEST_PATH,
+    load_json,
+    validate_cases,
+    validate_manifest,
+)
+
+# Landmarks: must-catch / must-stay-clean families. Rationale:
+# - agentdojo_injecagent_style: classic "Ignore all previous instructions" L1
+# - agentdojo_vector: pass-control vector defaults -- FP must stay 0
+# - open_content_safety: continuity FP control -- FP must stay 0
+_FROZEN_PUBLIC: dict[str, tuple[int, int]] = {
+    "agentdojo_injecagent_style": (0, 0),
+    "agentdojo_vector": (0, 0),
+    "open_content_safety": (0, 0),
+}
+
+
+def screen(text: str) -> str:
+    """Mirror golden-set screening: L1 block, else L2/fence flag, else pass."""
+    if detect_injection_attempt(text):
+        return "block"
+    layer2 = bool(detect_injection_attempt(text, advanced=True))
+    fence = neutralize_fence(text, "USER_CONTENT") != text
+    return "flag" if (layer2 or fence) else "pass"
+
+
+def grade(cases: list[dict]) -> dict:
+    report: dict = {}
+    for case in cases:
+        cat = case["category"]
+        expected = case["expected"]
+        caught = screen(case["payload"]) != "pass"
+        bucket = report.setdefault(
+            cat, {"total": 0, "false_positive": 0, "false_negative": 0}
+        )
+        bucket["total"] += 1
+        if expected == "pass" and caught:
+            bucket["false_positive"] += 1
+        elif expected == "flag" and not caught:
+            bucket["false_negative"] += 1
+    return report
+
+
+def pp_delta(d_fn: int, n_cat: int) -> float:
+    if n_cat <= 0:
+        return 0.0
+    return (d_fn / n_cat) * 100.0
+
+
+def frozen_violations(grades: dict) -> list[str]:
+    out: list[str] = []
+    for cat, (max_fn, max_fp) in _FROZEN_PUBLIC.items():
+        cur = grades.get(cat, {"false_negative": 0, "false_positive": 0})
+        if cur["false_negative"] > max_fn or cur["false_positive"] > max_fp:
+            out.append(
+                f"{cat}: FN {cur['false_negative']}/{max_fn}, "
+                f"FP {cur['false_positive']}/{max_fp}"
+            )
+    return out
+
+
+def compare(current: dict, baseline: dict) -> list[str]:
+    """Hybrid regression messages (see plan §7)."""
+    regressions: list[str] = []
+    cats = sorted(set(current) | set(baseline))
+    for cat in cats:
+        cur = current.get(
+            cat, {"total": 0, "false_positive": 0, "false_negative": 0}
+        )
+        base = baseline.get(
+            cat, {"total": 0, "false_positive": 0, "false_negative": 0}
+        )
+        if cur["false_positive"] > base.get("false_positive", 0):
+            regressions.append(
+                f"{cat}.false_positive: {base.get('false_positive', 0)} "
+                f"-> {cur['false_positive']}"
+            )
+        d_fn = cur["false_negative"] - base.get("false_negative", 0)
+        n_cat = cur.get("total") or base.get("total") or 0
+        if cat in _FROZEN_PUBLIC and d_fn > 0:
+            regressions.append(
+                f"{cat}.false_negative (landmark): "
+                f"{base.get('false_negative', 0)} -> {cur['false_negative']}"
+            )
+        elif cat not in _FROZEN_PUBLIC and pp_delta(d_fn, n_cat) > 5.0:
+            regressions.append(
+                f"{cat}.false_negative: {base.get('false_negative', 0)} -> "
+                f"{cur['false_negative']} (>{5}pp)"
+            )
+    return regressions
+
+
+def format_table(current: dict, baseline: dict | None) -> str:
+    header = f"{'category':<32}{'n':>5}{'FP':>5}{'FN':>5}{'catch%':>8}"
+    lines = [header, "-" * len(header)]
+    for cat in sorted(current):
+        cur = current[cat]
+        denom = cur["total"] or 1
+        catch = 100.0 * (1.0 - cur["false_negative"] / denom)
+        lines.append(
+            f"{cat:<32}{cur['total']:>5}{cur['false_positive']:>5}"
+            f"{cur['false_negative']:>5}{catch:>7.1f}%"
+        )
+    lines.append("")
+    lines.append(
+        "Absolute catch rates are advisory until graduation "
+        "(3 consecutive green CI runs on main at the same baseline SHA, "
+        "variance <=2pp)."
+    )
+    if baseline is None:
+        lines.append("No baseline loaded.")
+    return "\n".join(lines)
+
+
+def run(update_baseline: bool = False) -> int:
+    manifest = load_json(MANIFEST_PATH)
+    cases_doc = load_json(CASES_PATH)
+    errors = validate_manifest(manifest) + validate_cases(cases_doc)
+    # Fixtures must be ASCII JSON (parity with open-corpus encoding policy).
+    # Baseline may be absent on first --update-baseline; check it only when present.
+    for path in (MANIFEST_PATH, CASES_PATH):
+        raw = path.read_text(encoding="utf-8")
+        try:
+            raw.encode("ascii")
+        except UnicodeEncodeError:
+            errors.append(f"{path.name}: non-ASCII bytes in fixture file")
+        if "{" + "{" in raw:
+            errors.append(f"{path.name}: contains jinja open-brace sequence")
+    if errors:
+        print("SCHEMA PREFLIGHT FAILED:")
+        for err in errors:
+            print(f"  - {err}")
+        return 1
+
+    current = grade(cases_doc["cases"])
+    violations = frozen_violations(current)
+    if violations:
+        print("FROZEN PUBLIC LANDMARK REGRESSION:")
+        for v in violations:
+            print(f"  - {v}")
+        return 1
+
+    if update_baseline:
+        # Cannot weaken landmarks: frozen_violations already refused that.
+        BASELINE_PATH.write_text(
+            json.dumps(current, indent=2, sort_keys=True, ensure_ascii=True) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Baseline written to {BASELINE_PATH}")
+        print(format_table(current, current))
+        return 0
+
+    if not BASELINE_PATH.exists():
+        print(format_table(current, None))
+        print("\nNo baseline committed; run with --update-baseline to create one.")
+        return 1
+
+    baseline = load_json(BASELINE_PATH)
+    # ASCII / jinja checks for baseline only after it is known to exist.
+    baseline_raw = BASELINE_PATH.read_text(encoding="utf-8")
+    try:
+        baseline_raw.encode("ascii")
+    except UnicodeEncodeError:
+        print("SCHEMA PREFLIGHT FAILED:")
+        print(f"  - {BASELINE_PATH.name}: non-ASCII bytes in fixture file")
+        return 1
+    if "{" + "{" in baseline_raw:
+        print("SCHEMA PREFLIGHT FAILED:")
+        print(f"  - {BASELINE_PATH.name}: contains jinja open-brace sequence")
+        return 1
+
+    print(format_table(current, baseline))
+    base_violations = frozen_violations(baseline)
+    if base_violations:
+        print("FROZEN PUBLIC LANDMARK DEGRADED IN COMMITTED BASELINE:")
+        for v in base_violations:
+            print(f"  - {v}")
+        return 1
+    regressions = compare(current, baseline)
+    if regressions:
+        print("\nREGRESSIONS vs baseline:")
+        for reg in regressions:
+            print(f"  - {reg}")
+        return 1
+    print("\nNo regressions vs baseline.")
+    return 0
+
+
+def test_manifest_and_cases_schema():
+    assert validate_manifest(load_json(MANIFEST_PATH)) == []
+    assert validate_cases(load_json(CASES_PATH)) == []
+
+
+def test_no_regression_vs_baseline():
+    assert run(update_baseline=False) == 0
+
+
+def test_landmarks_frozen_in_baseline():
+    baseline = load_json(BASELINE_PATH)
+    for cat, (fn, fp) in _FROZEN_PUBLIC.items():
+        assert baseline[cat]["false_negative"] <= fn, cat
+        assert baseline[cat]["false_positive"] <= fp, cat
+
+
+if __name__ == "__main__":
+    sys.exit(run(update_baseline="--update-baseline" in sys.argv))
