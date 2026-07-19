@@ -604,7 +604,8 @@ section "Step 9b: Public-corpus harness"
 PUBLIC_CORPUS_HARNESS="$GEN_ROOT/evals/tasks/test_public_corpus_harness.py"
 if [ -f "$PUBLIC_CORPUS_HARNESS" ]; then
     cd "$GEN_ROOT"
-    PUBLIC_OUT=$(python3 evals/tasks/test_public_corpus_harness.py 2>/dev/null)
+    # Capture stdout+stderr so import/schema failures are visible on CI fail.
+    PUBLIC_OUT=$(python3 evals/tasks/test_public_corpus_harness.py 2>&1)
     PUBLIC_EXIT=$?
     echo "$PUBLIC_OUT" | sed 's/^/    /'
     if [ "$PUBLIC_EXIT" -eq 0 ]; then
@@ -792,6 +793,15 @@ if [ "$INCLUDE_EVALS" = "true" ]; then
     lacks "evals on: public corpus cases lack jinja open braces" '\{\{' evals/fixtures/public_corpus_cases.json
     lacks "evals on: public corpus manifest lack jinja open braces" '\{\{' evals/fixtures/public_corpus_manifest.json
     lacks "evals on: public corpus baseline lack jinja open braces" '\{\{' evals/fixtures/public_corpus_baseline.json
+    # ASCII parity with open-corpus fixtures (defense in depth if Step 9b skipped).
+    if python3 -c "import pathlib,sys; [pathlib.Path(p).read_text(encoding='ascii') for p in sys.argv[1:]]" \
+        "$GEN_ROOT/evals/fixtures/public_corpus_cases.json" \
+        "$GEN_ROOT/evals/fixtures/public_corpus_manifest.json" \
+        "$GEN_ROOT/evals/fixtures/public_corpus_baseline.json" 2>/dev/null; then
+        pass "evals on: public corpus JSON fixtures are ASCII"
+    else
+        fail "evals on: public corpus JSON fixtures must be ASCII-encodable"
+    fi
     has "evals on: ATTRIBUTION cites InjecAgent" 'InjecAgent' evals/fixtures/ATTRIBUTION.md
     has "evals on: ATTRIBUTION cites AgentDojo" 'AgentDojo' evals/fixtures/ATTRIBUTION.md
 else

@@ -5,11 +5,12 @@ Maintainer-only refresh helper for public-corpus eval fixtures.
 Repo-root only -- never ships into generated projects. Refuses unless
 PUBLIC_CORPUS_REFRESH=1 and not running under CI/GITHUB_ACTIONS.
 
-Default is --dry-run (print plan). --confirm writes after verify.
+v1: verify local fixtures + optional upstream probe only. Never writes
+fixture JSON; case reselection is manual.
 
 Usage (from roundtable repo root, never in CI):
   PUBLIC_CORPUS_REFRESH=1 python scripts/refresh_public_corpus.py --dry-run
-  PUBLIC_CORPUS_REFRESH=1 python scripts/refresh_public_corpus.py --confirm
+  PUBLIC_CORPUS_REFRESH=1 python scripts/refresh_public_corpus.py --confirm --probe-network
 
 Keep under 250 lines.
 """

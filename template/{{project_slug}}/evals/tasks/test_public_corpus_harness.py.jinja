@@ -153,7 +153,8 @@ def run(update_baseline: bool = False) -> int:
     cases_doc = load_json(CASES_PATH)
     errors = validate_manifest(manifest) + validate_cases(cases_doc)
     # Fixtures must be ASCII JSON (parity with open-corpus encoding policy).
-    for path in (MANIFEST_PATH, CASES_PATH, BASELINE_PATH):
+    # Baseline may be absent on first --update-baseline; check it only when present.
+    for path in (MANIFEST_PATH, CASES_PATH):
         raw = path.read_text(encoding="utf-8")
         try:
             raw.encode("ascii")
@@ -191,6 +192,19 @@ def run(update_baseline: bool = False) -> int:
         return 1
 
     baseline = load_json(BASELINE_PATH)
+    # ASCII / jinja checks for baseline only after it is known to exist.
+    baseline_raw = BASELINE_PATH.read_text(encoding="utf-8")
+    try:
+        baseline_raw.encode("ascii")
+    except UnicodeEncodeError:
+        print("SCHEMA PREFLIGHT FAILED:")
+        print(f"  - {BASELINE_PATH.name}: non-ASCII bytes in fixture file")
+        return 1
+    if "{" + "{" in baseline_raw:
+        print("SCHEMA PREFLIGHT FAILED:")
+        print(f"  - {BASELINE_PATH.name}: contains jinja open-brace sequence")
+        return 1
+
     print(format_table(current, baseline))
     base_violations = frozen_violations(baseline)
     if base_violations:
