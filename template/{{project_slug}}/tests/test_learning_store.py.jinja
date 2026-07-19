@@ -130,14 +130,16 @@ class TestSqliteStore:
 
 
 class TestSchemaMigrations:
-    def test_fresh_install_has_aging_columns(self, store, tmp_path):
-        """Fresh DB: baseline creates the v1 shape, the ALTER adds aging."""
+    def test_fresh_install_has_all_alter_columns(self, store, tmp_path):
+        """Fresh DB: baseline creates v1, the ALTERs add aging + v9 validity
+        (T16 freeze two-sided -- ALTERs land after every migration)."""
         import sqlite3
 
         conn = sqlite3.connect(str(tmp_path / "learning_store.db"))
         cols = {r[1] for r in conn.execute("PRAGMA table_info(corrections)")}
         conn.close()
-        assert {"last_validated_at", "last_validated_by"} <= cols
+        assert {"last_validated_at", "last_validated_by",
+                "valid_at", "invalid_at", "supersedes_id"} <= cols
 
         row = correction_row(1, "fresh install")
         row["last_validated_at"] = "2026-01-02T00:00:00"
@@ -152,8 +154,53 @@ class TestSchemaMigrations:
         from {{project_slug}}.learning.tables import MIGRATIONS
 
         baseline = " ".join(MIGRATIONS[0])
-        assert "last_validated_at" not in baseline
-        assert "last_validated_by" not in baseline
+        for col in ("last_validated_at", "last_validated_by",
+                    "valid_at", "invalid_at", "supersedes_id"):
+            assert col not in baseline, f"v1 baseline unexpectedly mentions {col}"
+
+    def test_v9_upgrade_from_v8_preserves_legacy_valid(self, tmp_path):
+        """T2 / T3: v8 DB gains the v9 columns + filter index; legacy
+        rows are still currently valid (invalid_at='')."""
+        import sqlite3
+
+        from {{project_slug}}.learning.store import SqliteLearningStore
+        from {{project_slug}}.learning.tables import MIGRATIONS, SCHEMA_VERSION_DDL
+
+        db_path = tmp_path / "pre_b7.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(SCHEMA_VERSION_DDL)
+        for version, statements in enumerate(MIGRATIONS[:8], start=1):
+            for stmt in statements:
+                conn.execute(stmt)
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (version, "2026-01-01T00:00:00"),
+            )
+        legacy = correction_row(1, "pre-B7 claim")
+        legacy["source_surface"] = ""
+        conn.execute(
+            f"INSERT INTO corrections ({', '.join(legacy)})"
+            f" VALUES ({', '.join('?' for _ in legacy)})",
+            list(legacy.values()),
+        )
+        idx_q = "SELECT name FROM sqlite_master WHERE type='index'"
+        assert "idx_corrections_tenant_status_valid" not in {
+            r[0] for r in conn.execute(idx_q)
+        }
+        conn.commit()
+        conn.close()
+
+        upgraded = SqliteLearningStore(db_path=db_path)  # applies v9
+        fetched = upgraded.query("corrections", {"id": "corr-0001"})[0]
+        assert fetched["corrected_claim"] == "pre-B7 claim"
+        assert fetched["valid_at"] == fetched["invalid_at"] == fetched["supersedes_id"] == ""
+
+        conn = sqlite3.connect(str(db_path))
+        idx_after = {r[0] for r in conn.execute(idx_q)}
+        versions = {r[0] for r in conn.execute("SELECT version FROM schema_version")}
+        conn.close()
+        assert "idx_corrections_tenant_status_valid" in idx_after
+        assert len(MIGRATIONS) in versions
 
     def test_upgrade_path_adds_columns_without_error(self, tmp_path):
         """A pre-aging DB (stamped at v4) upgrades cleanly via ensure_schema."""

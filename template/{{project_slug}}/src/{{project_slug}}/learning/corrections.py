@@ -7,15 +7,17 @@ get rendered into a prompt-injectable block so agents stop repeating the
 original claim.
 
 Lifecycle: PROPOSED -> APPROVED -> RETIRED (REJECTED is a terminal branch).
-APPROVED corrections can additionally be REVALIDATED in place: a human
-confirms the knowledge still holds, refreshing last_validated_at/by without
-changing status (learning/aging.py derives staleness from them).
+APPROVED corrections can be REVALIDATED in place (refresh last_validated_at/by
+without changing status) or INVALIDATED by approval of a successor that
+sets supersedes_id (ancestor keeps status=approved but invalid_at is set
+and grounding excludes it -- see learning/supersession.py).
 
 Four-eyes rule: the approver should differ from the proposer (policy in
 learning/four_eyes.py): require_four_eyes=None (the default) defers to
 CORRECTIONS_FOUR_EYES ("strict" rejects self-approval; "warn", the
 default, allows it but logs loudly and flags once). True/False pin the
-historical strict/off semantics.
+historical strict/off semantics. Supersession uses the same posture on
+the successor's proposer/approver pair.
 
 Security: PII is redacted before persistence (security.pii); rendered
 text passes through sanitize_for_prompt so stored content cannot inject
@@ -26,7 +28,9 @@ Concurrency: status transitions (approve/reject/retire) are conditional
 writes (learning/lifecycle.py) that only land while the row still holds
 the expected prior status; a lost race raises ValueError (409 at API).
 
-Keep this file under 500 lines.
+Keep this file under 560 lines. (Raised from 500: validity fields on the
+dataclass/serde plus supersession hooks in approve; heavy lifting lives
+in learning/supersession.py.)
 """
 
 import json
@@ -43,6 +47,11 @@ from ..security.prompt_guard import sanitize_for_prompt
 from .four_eyes import check_four_eyes
 from .lifecycle import transition
 from .store import LearningStore
+from .supersession import (
+    finalize_supersession_approve,
+    require_update_if,
+    validate_ancestor_for_supersession,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +122,9 @@ class Correction:
     last_validated_at: str = ""
     last_validated_by: str = ""
     source_surface: str = ""
+    valid_at: str = ""
+    invalid_at: str = ""
+    supersedes_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:12])
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -171,6 +183,7 @@ class CorrectionsManager:
         session_id: str = "",
         created_by: str = "",
         source_surface: str = "library",
+        supersedes_id: str = "",
     ) -> Correction:
         """
         Persist a PROPOSED correction and (if configured) open a check-in.
@@ -179,6 +192,8 @@ class CorrectionsManager:
         (counts land in metadata). A content policy may reject the text
         (ValueError) or flag it (recorded, still proposed). source_surface
         records provenance: "library" (default) or "api" (the API route).
+        When supersedes_id is set, the ancestor must be currently-valid
+        approved knowledge in the same tenant (see propose_supersession).
         """
         metadata: dict[str, Any] = {}
 
@@ -219,6 +234,7 @@ class CorrectionsManager:
             session_id=session_id,
             created_by=created_by,
             source_surface=source_surface,
+            supersedes_id=supersedes_id,
             metadata=metadata,
         )
         self._store.insert("corrections", self._to_row(correction))
@@ -243,6 +259,13 @@ class CorrectionsManager:
 
         return correction
 
+    def propose_supersession(self, ancestor_id: str, **kwargs) -> Correction:
+        """Propose a successor that will invalidate ancestor_id on approve."""
+        tenant_id = kwargs.get("tenant_id", "default")
+        validate_ancestor_for_supersession(self.get(ancestor_id), tenant_id)
+        kwargs["supersedes_id"] = ancestor_id
+        return self.propose(**kwargs)
+
     def approve(self, correction_id: str, approved_by: str) -> Correction:
         """
         Approve a PROPOSED correction.
@@ -264,15 +287,33 @@ class CorrectionsManager:
             tenant_id=correction.tenant_id, require=self._require_four_eyes,
         )
 
+        now = datetime.now().isoformat()
+        if correction.supersedes_id:
+            # Fail closed before transition if store lacks update_if (T17).
+            require_update_if(self._store)
+
+        valid_at = correction.valid_at or now
         correction.status = STATUS_APPROVED
         correction.approved_by = approved_by
-        correction.updated_at = datetime.now().isoformat()
+        correction.updated_at = now
+        correction.valid_at = valid_at
         transition(self._store, correction_id, {
             "status": STATUS_APPROVED,
             "approved_by": approved_by,
-            "updated_at": correction.updated_at,
+            "updated_at": now,
+            "valid_at": valid_at,
         }, expected_status=STATUS_PROPOSED)
         logger.info(f"[Corrections] Approved {correction_id} by '{approved_by}'")
+
+        if correction.supersedes_id:
+            finalize_supersession_approve(
+                self._store,
+                successor_id=correction_id,
+                ancestor_id=correction.supersedes_id,
+                tenant_id=correction.tenant_id,
+                approved_by=approved_by,
+                now=now,
+            )
 
         if self._on_approve is not None:
             try:
@@ -403,7 +444,11 @@ class CorrectionsManager:
         if env_budget.strip().isdigit():
             budget_chars = int(env_budget.strip())
 
-        filters: dict[str, Any] = {"tenant_id": tenant_id, "status": STATUS_APPROVED}
+        filters: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "status": STATUS_APPROVED,
+            "invalid_at": "",
+        }
         if agent_id:
             filters["agent_id"] = agent_id
         fetch_cap = _context_fetch_cap()
@@ -465,6 +510,9 @@ class CorrectionsManager:
             "last_validated_at": correction.last_validated_at,
             "last_validated_by": correction.last_validated_by,
             "source_surface": correction.source_surface,
+            "valid_at": correction.valid_at,
+            "invalid_at": correction.invalid_at,
+            "supersedes_id": correction.supersedes_id,
             "created_at": correction.created_at,
             "updated_at": correction.updated_at,
             "metadata_json": json.dumps(correction.metadata, default=str),
@@ -492,6 +540,9 @@ class CorrectionsManager:
             last_validated_at=row.get("last_validated_at") or "",
             last_validated_by=row.get("last_validated_by") or "",
             source_surface=row.get("source_surface") or "",
+            valid_at=row.get("valid_at") or "",
+            invalid_at=row.get("invalid_at") or "",
+            supersedes_id=row.get("supersedes_id") or "",
             metadata=metadata,
             created_at=row.get("created_at", ""),
             updated_at=row.get("updated_at", ""),

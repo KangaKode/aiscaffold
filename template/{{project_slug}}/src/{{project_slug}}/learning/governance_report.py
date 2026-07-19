@@ -242,6 +242,7 @@ def _corrections_section(
         if stamp is not None and from_dt <= stamp < to_dt:
             revalidations_in_window += 1
     approved = [r for r in all_fetched if r.get("status") == "approved"]
+    currently_valid_approved = sum(1 for r in approved if not r.get("invalid_at"))
     stale_now = [r for r in approved if row_is_stale(r)]
     # Fresh purely because someone revalidated: would be stale on the
     # updated_at fallback alone.
@@ -264,6 +265,7 @@ def _corrections_section(
         "lifecycle_activity_by_status": _count_by(windowed, "status"),
         "revalidations_in_window": revalidations_in_window,
         "stale_days_threshold": stale_days(),
+        "currently_valid_approved": currently_valid_approved,
         "stale_approved_now": len(stale_now),
         "fresh_only_via_revalidation": len(revalidation_carried),
         "self_revalidated_ids": self_revalidated_ids,

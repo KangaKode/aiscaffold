@@ -1,35 +1,28 @@
 """
 Corrections API -- the full correction lifecycle over HTTP.
 
-  POST   /api/v1/corrections                    -- Propose a correction
-  GET    /api/v1/corrections                    -- List (filter by status/agent,
-                                                   ?stale=true for aging review)
-  POST   /api/v1/corrections/{id}/approve       -- Approve (four-eyes)
-  POST   /api/v1/corrections/{id}/reject        -- Reject (terminal)
-  POST   /api/v1/corrections/{id}/retire        -- Retire an approved one
-  POST   /api/v1/corrections/{id}/revalidate    -- Re-confirm an approved one
-                                                   (refreshes staleness clock)
-  DELETE /api/v1/corrections/{id}               -- GDPR Art. 17 hard-delete
+Endpoints: POST /corrections (propose), POST /corrections/{id}/supersede
+(propose a successor), GET /corrections (?status, ?agent_id, ?stale,
+?currently_valid), and per-id POST /approve, /reject, /retire,
+/revalidate plus DELETE /{id} (GDPR Art. 17).
 
-API-first: this is the only write path a non-Python client needs to
-participate in the learning loop. The manager is expected at
-app.state.corrections_manager (wired at startup); 503 when absent so
-callers can tell "learning not enabled" apart from "no corrections".
+API-first: the only write path a non-Python client needs to participate
+in the learning loop. Manager expected at app.state.corrections_manager
+(503 when absent).
 
-Security:
-  - All endpoints require API key; tenant comes from AuthContext, never
-    from the request body.
-  - created_by / approved_by are the authenticated caller's user id, so
-    the four-eyes rule cannot be spoofed by naming someone else.
-  - Proposals are screened by the override detector (results returned to
-    the caller and flagged for review) on top of the manager's built-in
-    PII redaction and content-policy gate.
-  - Status-transition violations (including a lifecycle write lost to a
-    concurrent operator) map to 409, not 500.
+Security: API key on every endpoint; tenant from AuthContext (never
+request body); created_by / approved_by from the authenticated caller;
+propose + supersede run the same defense stack (PII redaction, content
+policy, override detector). Status-transition losses -> 409. Approving
+a successor when the store lacks update_if -> 501 BEFORE any status
+change (successor stays proposed); the compensator surfaces a lost race
+as 409 with a supersession_partial_failure integrity flag. Erasing an
+ancestor with a live successor -> 409 naming the blockers; store-down
+on that check -> 503 (fail closed rather than pretend "no blockers").
 
-Event loop: the manager and store are synchronous (SQLite by default),
-so every store-touching call below runs via asyncio.to_thread -- the
-loop stays responsive while rows are read and written.
+Store calls run via asyncio.to_thread so the loop stays responsive.
+
+Keep this file under 520 lines.
 """
 
 import asyncio
@@ -48,12 +41,20 @@ from ...learning.corrections import (
     Correction,
     CorrectionsManager,
 )
-from ...learning.erasure import ErasureCapExceededError, erase_correction
+from ...learning.erasure import (
+    ErasureBlockedBySuccessorError,
+    ErasureCapExceededError,
+    erase_correction,
+)
 from ...learning.extraction_guard import (
     MODE_CAPPED,
     enforcement_enabled,
     evaluate_extraction_mode,
     retry_after_seconds,
+)
+from ...learning.supersession import (
+    MissingUpdateIfError,
+    SupersessionConflictError,
 )
 from ...observability.metrics import record_correction_lifecycle
 from ...security import ValidationError, validate_identifier, validate_in_choices
@@ -64,11 +65,8 @@ router = APIRouter()
 
 MAX_CLAIM_CHARS = 4000
 MAX_REASON_CHARS = 2000
-
 VALID_STATUSES = [STATUS_PROPOSED, STATUS_APPROVED, STATUS_REJECTED, STATUS_RETIRED]
-
-# Correction ids are short uuid prefixes; anything else can 404 early
-# without touching the store.
+# Correction ids are short uuid prefixes; anything else 404s without a store hit.
 _CORRECTION_ID_RE = re.compile(r"^[a-zA-Z0-9-]{1,64}$")
 
 
@@ -84,7 +82,7 @@ class CorrectionProposal(BaseModel):
 
 
 class CorrectionResponse(BaseModel):
-    """A correction as returned by the API."""
+    """A correction as returned by the API (validity fields '' on pre-B7 rows)."""
 
     id: str
     agent_id: str
@@ -97,15 +95,16 @@ class CorrectionResponse(BaseModel):
     approved_by: str
     last_validated_at: str
     last_validated_by: str
+    valid_at: str = ""
+    invalid_at: str = ""
+    supersedes_id: str = ""
     created_at: str
     updated_at: str
     override_flags: list[str] = []
 
 
 class ErasureResponse(BaseModel):
-    """Result of a GDPR erasure, including derived-artifact cleanup:
-    error schemas citing the correction (rebuilt counts only the
-    clusters that lost one) and approval check-ins embedding its text."""
+    """GDPR erasure result + derived-artifact cleanup counts."""
 
     correction_id: str
     erased: bool
@@ -122,7 +121,7 @@ def _get_manager(request: Request) -> CorrectionsManager:
             status_code=503,
             detail=(
                 "Corrections are not enabled: no corrections manager is "
-                "configured on this deployment (app.state.corrections_manager)"
+                "configured (app.state.corrections_manager)"
             ),
         )
     return manager
@@ -143,6 +142,9 @@ def _to_response(
         approved_by=correction.approved_by,
         last_validated_at=correction.last_validated_at,
         last_validated_by=correction.last_validated_by,
+        valid_at=correction.valid_at,
+        invalid_at=correction.invalid_at,
+        supersedes_id=correction.supersedes_id,
         created_at=correction.created_at,
         updated_at=correction.updated_at,
         override_flags=override_flags or [],
@@ -163,6 +165,22 @@ async def _get_tenant_correction(
     if correction is None or correction.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Correction not found")
     return correction
+
+
+async def _run_override_screen(
+    request: Request, correction: Correction, tenant_id: str
+) -> list[str]:
+    """Screen a newly proposed correction; never fail the write."""
+    detector = getattr(request.app.state, "override_detector", None)
+    if detector is None:
+        return []
+    try:
+        return await asyncio.to_thread(
+            detector.screen_and_flag, correction, tenant_id=tenant_id
+        )
+    except Exception as e:
+        logger.warning(f"[CorrectionsAPI] Override screening failed: {e}")
+        return []
 
 
 @router.post("/corrections", response_model=CorrectionResponse, status_code=201)
@@ -194,18 +212,58 @@ async def propose_correction(
         # Content-policy rejection: refuse the write, tell the caller why.
         raise HTTPException(status_code=422, detail=str(e))
     record_correction_lifecycle("propose")
-
-    override_flags: list[str] = []
-    detector = getattr(request.app.state, "override_detector", None)
-    if detector is not None:
-        try:
-            override_flags = await asyncio.to_thread(
-                detector.screen_and_flag, correction, tenant_id=auth.tenant_id
-            )
-        except Exception as e:
-            logger.warning(f"[CorrectionsAPI] Override screening failed: {e}")
-
+    override_flags = await _run_override_screen(request, correction, auth.tenant_id)
     return _to_response(correction, override_flags)
+
+
+@router.post(
+    "/corrections/{correction_id}/supersede",
+    response_model=CorrectionResponse,
+    status_code=201,
+)
+async def supersede_correction(
+    correction_id: str,
+    proposal: CorrectionProposal,
+    request: Request,
+    auth: AuthContext = Depends(verify_api_key),
+) -> CorrectionResponse:
+    """Propose a successor row that will replace {correction_id} on approve.
+
+    Creates a proposed correction with supersedes_id={correction_id};
+    ancestor invalidation happens only when the successor is approved
+    (see supersession.py). Same defense stack as POST /corrections
+    (content policy + PII in manager, override detector after). 404 for
+    missing / cross-tenant (no existence leak); 409 when ancestor is
+    not currently-valid approved.
+    """
+    manager = _get_manager(request)
+    ancestor = await _get_tenant_correction(manager, correction_id, auth.tenant_id)
+    try:
+        validate_identifier(proposal.agent_id, "agent_id")
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        successor = await asyncio.to_thread(
+            manager.propose_supersession,
+            ancestor.id,
+            agent_id=proposal.agent_id,
+            original_claim=proposal.original_claim,
+            corrected_claim=proposal.corrected_claim,
+            reason=proposal.reason,
+            evidence_level=proposal.evidence_level,
+            tenant_id=auth.tenant_id,
+            session_id=proposal.session_id,
+            created_by=auth.user_id,
+            source_surface="api",
+        )
+    except ValueError as e:
+        message = str(e)
+        if "not currently-valid" in message or "not found" in message:
+            raise HTTPException(status_code=409, detail=message)
+        raise HTTPException(status_code=422, detail=message)
+    record_correction_lifecycle("propose_supersession")
+    override_flags = await _run_override_screen(request, successor, auth.tenant_id)
+    return _to_response(successor, override_flags)
 
 
 @router.get("/corrections", response_model=list[CorrectionResponse])
@@ -215,25 +273,22 @@ async def list_corrections(
     agent_id: str = "",
     limit: int = 100,
     stale: bool = False,
+    currently_valid: bool | None = None,
     auth: AuthContext = Depends(verify_api_key),
 ) -> list[CorrectionResponse]:
     """List this tenant's corrections, newest first.
 
-    stale=true restricts the listing to APPROVED corrections whose
-    freshness timestamp (last_validated_at, falling back to updated_at
-    for rows that predate revalidation) is older than
-    CORRECTION_STALE_DAYS -- the knowledge-aging review queue, sorted
-    stalest-first by that same freshness key over a capped fetch (500
-    rows, oldest lifecycle activity first). Filtering and sorting
-    happen in Python, so a page may contain fewer than `limit` entries,
-    and tenants with more than 500 approved corrections have rows
-    beyond the fetch horizon that this page cannot see.
+    currently_valid=true keeps invalid_at=''; false keeps only history.
+    stale=true restricts to APPROVED rows older than CORRECTION_STALE_DAYS
+    (freshness = last_validated_at, else updated_at), sorted stalest-first
+    over a capped 500-row fetch.
 
-    The extraction guard evaluates knowledge-read volume on every call
-    (detection-only: elevated/capped write integrity flags). The ONLY
-    enforcement is opt-in: with EXTRACTION_GUARD_ENFORCE=true a capped
-    caller gets 429 + Retry-After. The listing is never silently
-    truncated -- callers get everything or an explicit 429.
+    Intersection (see PLATFORM_GUIDE): stale=true defaults to currently
+    valid (invalidated ancestors excluded from the review queue);
+    stale=true&currently_valid=false surfaces invalidated history.
+
+    Extraction guard runs on every call (detection-only by default;
+    EXTRACTION_GUARD_ENFORCE=true returns 429 + Retry-After).
     """
     manager = _get_manager(request)
     guard_mode = ""
@@ -274,35 +329,33 @@ async def list_corrections(
                 detail="stale=true only applies to approved corrections",
             )
         status = STATUS_APPROVED
+    # Intersection: stale=true defaults to currently-valid.
+    effective_valid = True if (stale and currently_valid is None) else currently_valid
     page_limit = max(1, min(limit, 500))
     corrections = await asyncio.to_thread(
         manager.list,
         tenant_id=auth.tenant_id,
         status=status,
         agent_id=agent_id,
-        # The stale review queue fetches the full 500-row horizon from
-        # the stale end (a newest-first page would drop the stalest rows
-        # entirely once the tenant exceeds the limit) and pages in
-        # Python below. Residual caveat: rows past the 500-row fetch
-        # horizon are invisible to this page, and the fetch order is
-        # updated_at ASC (the store cannot ORDER BY the coalesced
-        # freshness key), so revalidated rows consume fetch budget.
+        # Stale review queue fetches the full 500-row horizon from the
+        # stale end and pages in Python (see docstring for caveats).
         limit=500 if stale else page_limit,
         order_by="updated_at ASC" if stale else "created_at DESC",
     )
+    if effective_valid is True:
+        corrections = [c for c in corrections if not c.invalid_at]
+    elif effective_valid is False:
+        corrections = [c for c in corrections if c.invalid_at]
     if stale:
-        # Staleness is keyed on last_validated_at falling back to
-        # updated_at; sort by that key so a row revalidated long ago
-        # (stale again, but with a newer updated_at) still pages before
-        # fresher rows, then filter and clamp to the requested page.
+        # Sort by freshness key (last_validated_at, else updated_at) so a
+        # long-ago-revalidated row still pages before newer ones.
         corrections.sort(
             key=lambda c: freshness_timestamp(
                 c.last_validated_at, c.updated_at, c.created_at
             )
         )
         corrections = [
-            c
-            for c in corrections
+            c for c in corrections
             if is_stale(c.last_validated_at, c.updated_at, c.created_at)
         ][:page_limit]
     return [_to_response(c) for c in corrections]
@@ -316,13 +369,9 @@ async def approve_correction(
 ) -> CorrectionResponse:
     """Approve a proposed correction. Approver is the authenticated caller.
 
-    Approval auto-triggers three maintenance passes over the tenant's
-    approved corrections (all best-effort, never failing the approval):
-    error-schema extraction (recurring corrections generalize into
-    reusable warnings), a contradiction scan (conflicting corrections
-    become integrity flags), and a proposer->approver pair check
-    (directed pairs that dominate recent approvals become integrity
-    flags).
+    Auto-triggers best-effort maintenance passes over the tenant
+    (schema extraction, contradiction scan, proposer/approver pair
+    dominance, drift check). None can fail the approval.
     """
     manager = _get_manager(request)
     await _get_tenant_correction(manager, correction_id, auth.tenant_id)
@@ -330,46 +379,44 @@ async def approve_correction(
         approved = await asyncio.to_thread(
             manager.approve, correction_id, approved_by=auth.user_id
         )
+    except MissingUpdateIfError as e:
+        # T17: fire BEFORE any status change; successor stays proposed.
+        raise HTTPException(status_code=501, detail=str(e))
+    except SupersessionConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     record_correction_lifecycle("approve")
 
     store = getattr(request.app.state, "learning_store", None) or manager.store
     if store is not None:
-        try:
-            from ...learning.error_schemata import extract_error_schemas
-
-            await asyncio.to_thread(
-                extract_error_schemas, store, tenant_id=auth.tenant_id
-            )
-        except Exception as e:
-            logger.warning(f"[CorrectionsAPI] Schema extraction failed (non-fatal): {e}")
-        try:
-            from ...learning.contradiction import scan_corrections
-
-            await asyncio.to_thread(
-                scan_corrections, store, tenant_id=auth.tenant_id
-            )
-        except Exception as e:
-            logger.warning(f"[CorrectionsAPI] Contradiction scan failed (non-fatal): {e}")
-        try:
-            from ...learning.approval_patterns import check_pair_dominance
-
-            await asyncio.to_thread(
-                check_pair_dominance, store, tenant_id=auth.tenant_id
-            )
-        except Exception as e:
-            logger.warning(f"[CorrectionsAPI] Pair check failed (non-fatal): {e}")
-        try:
-            from ...learning.loop_integrity import create_drift_check_hook
-
-            hook = create_drift_check_hook(store, tenant_id=auth.tenant_id)
-            if hook is not None:
-                await asyncio.to_thread(hook)
-        except Exception as e:
-            logger.warning(f"[CorrectionsAPI] Drift check failed (non-fatal): {e}")
-
+        await _run_post_approve_passes(store, auth.tenant_id)
     return _to_response(approved)
+
+
+async def _run_post_approve_passes(store, tenant_id: str) -> None:
+    """Best-effort maintenance passes after an approval; none may fail the write."""
+    from ...learning.approval_patterns import check_pair_dominance
+    from ...learning.contradiction import scan_corrections
+    from ...learning.error_schemata import extract_error_schemas
+    from ...learning.loop_integrity import create_drift_check_hook
+
+    passes = (
+        ("schema_extraction", lambda: extract_error_schemas(store, tenant_id=tenant_id)),
+        ("contradiction_scan", lambda: scan_corrections(store, tenant_id=tenant_id)),
+        ("pair_check", lambda: check_pair_dominance(store, tenant_id=tenant_id)),
+    )
+    for name, fn in passes:
+        try:
+            await asyncio.to_thread(fn)
+        except Exception as e:
+            logger.warning(f"[CorrectionsAPI] {name} failed (non-fatal): {e}")
+    try:
+        hook = create_drift_check_hook(store, tenant_id=tenant_id)
+        if hook is not None:
+            await asyncio.to_thread(hook)
+    except Exception as e:
+        logger.warning(f"[CorrectionsAPI] Drift check failed (non-fatal): {e}")
 
 
 @router.post("/corrections/{correction_id}/reject", response_model=CorrectionResponse)
@@ -416,12 +463,10 @@ async def revalidate_correction(
     request: Request,
     auth: AuthContext = Depends(verify_api_key),
 ) -> CorrectionResponse:
-    """Re-confirm an approved correction is still true (knowledge aging).
+    """Re-confirm an approved correction (knowledge aging).
 
-    Sets last_validated_at/by to the authenticated caller and now,
-    resetting the staleness clock. Status is unchanged. Note the
-    governance report flags corrections whose last validator is their
-    own proposer (self-revalidation echoes the four-eyes concern).
+    Sets last_validated_at/by to the caller/now; status unchanged. The
+    governance report flags self-revalidations (validator == proposer).
     """
     manager = _get_manager(request)
     await _get_tenant_correction(manager, correction_id, auth.tenant_id)
@@ -450,12 +495,24 @@ async def erase_correction_endpoint(
             _validated_id(correction_id),
             tenant_id=auth.tenant_id,
             actor=auth.user_id,
-            # The same manager that opened the approval check-ins (they
-            # embed the correction text verbatim) sweeps them here.
             checkin_manager=manager.checkin_manager,
         )
     except ErasureCapExceededError as e:
         raise HTTPException(status_code=429, detail=str(e))
+    except ErasureBlockedBySuccessorError as e:
+        # Operable payload naming the blockers; erase top-down.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": str(e),
+                "correction_id": e.correction_id,
+                "successor_ids": e.successor_ids,
+            },
+        )
+    except RuntimeError as e:
+        # Store-down on the successor check -- fail closed to 503.
+        logger.warning(f"[CorrectionsAPI] Successor check failed: {e}")
+        raise HTTPException(status_code=503, detail=str(e))
     except ValueError:
         raise HTTPException(status_code=404, detail="Correction not found")
     return ErasureResponse(**result)

@@ -11,6 +11,7 @@ from {{project_slug}}.learning.corrections import (
 )
 from {{project_slug}}.learning.erasure import (
     ERASURE_EVENT_TYPE,
+    ErasureBlockedBySuccessorError,
     ErasureCapExceededError,
     erase_correction,
 )
@@ -406,4 +407,173 @@ class TestCorrectionsAPI:
         client, _ = api
         r = await client.get("/api/v1/corrections?status=bogus")
         assert r.status_code == 400
+
+    async def test_response_carries_validity_fields(self, api):
+        """T10 (fields): new v9 fields ship in every response payload."""
+        client, _ = api
+        r = await client.post("/api/v1/corrections", json=PROPOSAL)
+        assert r.status_code == 201
+        body = r.json()
+        assert body["valid_at"] == ""
+        assert body["invalid_at"] == ""
+        assert body["supersedes_id"] == ""
+
+    async def test_supersede_propose_and_approve_via_api(self, api):
+        """Supersede route runs propose defenses + returns 201; approve
+        flips ancestor.invalid_at without changing its updated_at."""
+        client, app = api
+        manager = app.state.corrections_manager
+        ancestor = propose(manager, created_by="alice")
+        r = await client.post(f"/api/v1/corrections/{ancestor.id}/approve")
+        assert r.status_code == 200
+        ancestor_updated_at = manager.get(ancestor.id).updated_at
+
+        successor_body = {**PROPOSAL, "corrected_claim": "rate is 45"}
+        r = await client.post(
+            f"/api/v1/corrections/{ancestor.id}/supersede", json=successor_body
+        )
+        assert r.status_code == 201
+        successor_id = r.json()["id"]
+        assert r.json()["supersedes_id"] == ancestor.id
+        # Override screen ran (results returned to the caller like propose).
+        assert "override_flags" in r.json()
+
+        r = await client.post(f"/api/v1/corrections/{successor_id}/approve")
+        assert r.status_code == 200
+        assert r.json()["status"] == STATUS_APPROVED
+        assert r.json()["valid_at"] != ""
+
+        ancestor_row = manager.get(ancestor.id)
+        assert ancestor_row.invalid_at != ""
+        assert ancestor_row.updated_at == ancestor_updated_at
+
+    async def test_supersede_ancestor_not_current_is_409(self, api):
+        client, app = api
+        manager = app.state.corrections_manager
+        pending = propose(manager)
+        r = await client.post(
+            f"/api/v1/corrections/{pending.id}/supersede", json=PROPOSAL
+        )
+        assert r.status_code == 409
+
+    async def test_supersede_unknown_ancestor_is_404(self, api):
+        client, _ = api
+        r = await client.post(
+            "/api/v1/corrections/no-such-id/supersede", json=PROPOSAL
+        )
+        assert r.status_code == 404
+
+    async def test_supersede_cross_tenant_is_404(self, api):
+        client, app = api
+        ancestor = propose(app.state.corrections_manager, tenant_id="team-a")
+        r = await client.post(
+            f"/api/v1/corrections/{ancestor.id}/supersede", json=PROPOSAL
+        )
+        assert r.status_code == 404
+
+    async def test_currently_valid_filter_excludes_invalidated(self, api):
+        """T10 (currently_valid): list filter honors invalid_at sentinel."""
+        client, app = api
+        manager = app.state.corrections_manager
+        ancestor = propose(manager, created_by="alice")
+        await client.post(f"/api/v1/corrections/{ancestor.id}/approve")
+        await client.post(
+            f"/api/v1/corrections/{ancestor.id}/supersede",
+            json={**PROPOSAL, "corrected_claim": "rate is 45"},
+        )
+        successor = next(
+            c for c in manager.list(limit=100) if c.supersedes_id == ancestor.id
+        )
+        await client.post(f"/api/v1/corrections/{successor.id}/approve")
+
+        # currently_valid=true excludes the invalidated ancestor.
+        r = await client.get("/api/v1/corrections?currently_valid=true")
+        assert r.status_code == 200
+        ids = {c["id"] for c in r.json()}
+        assert successor.id in ids
+        assert ancestor.id not in ids
+
+        # currently_valid=false surfaces only invalidated history.
+        r = await client.get("/api/v1/corrections?currently_valid=false")
+        assert r.status_code == 200
+        ids = {c["id"] for c in r.json()}
+        assert ancestor.id in ids
+        assert successor.id not in ids
+
+    async def test_stale_listing_excludes_invalidated_by_default(self, api):
+        """T13: stale=true defaults to currently valid; explicit opt-in
+        `currently_valid=false` surfaces invalidated history."""
+        client, app = api
+        manager = app.state.corrections_manager
+
+        ancestor = propose(manager, original="stale ancestor", created_by="alice")
+        await client.post(f"/api/v1/corrections/{ancestor.id}/approve")
+        # Make ancestor stale on the freshness clock.
+        manager.store.update(
+            "corrections", ancestor.id,
+            {"updated_at": "2020-01-01T00:00:00", "last_validated_at": ""},
+        )
+        successor_body = {**PROPOSAL, "corrected_claim": "fresh replacement"}
+        await client.post(
+            f"/api/v1/corrections/{ancestor.id}/supersede", json=successor_body
+        )
+        successor = next(
+            c for c in manager.list(limit=100) if c.supersedes_id == ancestor.id
+        )
+        await client.post(f"/api/v1/corrections/{successor.id}/approve")
+
+        r = await client.get("/api/v1/corrections?stale=true")
+        assert r.status_code == 200
+        ids = {c["id"] for c in r.json()}
+        assert ancestor.id not in ids  # invalidated ancestor excluded
+
+        r = await client.get("/api/v1/corrections?stale=true&currently_valid=false")
+        assert r.status_code == 200
+        ids = {c["id"] for c in r.json()}
+        assert ancestor.id in ids
+
+    async def test_erase_ancestor_blocked_by_successor_is_409(self, api):
+        """T9 (API): 409 body names successor ids; erase top-down works."""
+        client, app = api
+        manager = app.state.corrections_manager
+        ancestor = propose(manager, created_by="alice")
+        await client.post(f"/api/v1/corrections/{ancestor.id}/approve")
+        await client.post(
+            f"/api/v1/corrections/{ancestor.id}/supersede", json=PROPOSAL
+        )
+        successor = next(
+            c for c in manager.list(limit=100) if c.supersedes_id == ancestor.id
+        )
+        await client.post(f"/api/v1/corrections/{successor.id}/approve")
+
+        r = await client.delete(f"/api/v1/corrections/{ancestor.id}")
+        assert r.status_code == 409
+        detail = r.json()["detail"]
+        assert detail["correction_id"] == ancestor.id
+        assert detail["successor_ids"] == [successor.id]
+
+        # Erase top-down works.
+        r = await client.delete(f"/api/v1/corrections/{successor.id}")
+        assert r.status_code == 200
+        r = await client.delete(f"/api/v1/corrections/{ancestor.id}")
+        assert r.status_code == 200
+
+    async def test_approve_without_update_if_returns_501(self, api, monkeypatch):
+        """T17 (API): 501 before status change; successor stays proposed."""
+        client, app = api
+        manager = app.state.corrections_manager
+        ancestor = propose(manager, created_by="alice")
+        await client.post(f"/api/v1/corrections/{ancestor.id}/approve")
+        r = await client.post(
+            f"/api/v1/corrections/{ancestor.id}/supersede", json=PROPOSAL
+        )
+        successor_id = r.json()["id"]
+
+        monkeypatch.delattr(type(manager.store), "update_if")
+        r = await client.post(f"/api/v1/corrections/{successor_id}/approve")
+        assert r.status_code == 501
+        assert "update_if" in r.json()["detail"]
+        # Successor stays proposed; ancestor stays currently valid.
+        assert manager.get(successor_id).status == STATUS_PROPOSED
+        assert manager.get(ancestor.id).invalid_at == ""
 {% endif -%}

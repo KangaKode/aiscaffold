@@ -515,7 +515,7 @@ elif [ -d "$GEN_ROOT/tests" ]; then
 
     # Run all test files (all use mocks/in-process testing, no external deps)
     UNIT_FILES=""
-    for f in tests/test_security.py tests/test_injection_defense.py tests/test_ingest_scan.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_extraction_defense.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_safety_fail_closed.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py tests/test_learning_hygiene.py tests/test_retrieval_ranking.py tests/test_trust_guard.py tests/test_context_pressure.py tests/test_loop_integrity.py tests/test_adversarial_open_corpus.py tests/test_tenant_integrity.py tests/test_detection_wiring.py tests/test_credential_currency.py tests/test_detection_regressions.py; do
+    for f in tests/test_security.py tests/test_injection_defense.py tests/test_ingest_scan.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_supersession.py tests/test_extraction_defense.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_safety_fail_closed.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py tests/test_learning_hygiene.py tests/test_retrieval_ranking.py tests/test_trust_guard.py tests/test_context_pressure.py tests/test_loop_integrity.py tests/test_adversarial_open_corpus.py tests/test_tenant_integrity.py tests/test_detection_wiring.py tests/test_credential_currency.py tests/test_detection_regressions.py; do
         if [ -f "$f" ]; then
             UNIT_FILES="$UNIT_FILES $f"
         fi
@@ -696,6 +696,27 @@ has "OWASP map: annotates evals-gated rows" 'requires .include_evals.' docs/SECU
 # the GOVERNANCE row and its kill switch must always be documented.
 has "GOVERNANCE: lexical/hybrid retrieval ranking row" 'Lexical . hybrid retrieval ranking' docs/GOVERNANCE.md
 has "GOVERNANCE: retrieval kill switch documented" 'LEXICAL_RANKING_ENABLED=false' docs/GOVERNANCE.md
+
+# Corrections validity + supersession (B7) also ships in every profile
+# (learning modules are ungated). Pair the capability with honesty
+# assertions -- no positive "point-in-time" claim, legacy still current,
+# update_if required, no auto-invalidate.
+has "GOVERNANCE: corrections validity / supersession row" \
+    'human-gated supersession' docs/GOVERNANCE.md
+has "GOVERNANCE: no auto-invalidate Non-Claim" \
+    'no auto-invalidat' docs/GOVERNANCE.md
+has "GOVERNANCE: legacy rows remain currently valid" \
+    'still currently valid' docs/GOVERNANCE.md
+has "GOVERNANCE: supersession requires update_if" \
+    'update_if' docs/GOVERNANCE.md
+lacks "GOVERNANCE: no positive point-in-time capability claim" \
+    'point-in-time (query|API|capability)' docs/GOVERNANCE.md
+has "PLATFORM_GUIDE: /supersede API row" \
+    '/corrections/.*/supersede' docs/PLATFORM_GUIDE.md
+has "PLATFORM_GUIDE: /revalidate API row" \
+    '/corrections/.*/revalidate' docs/PLATFORM_GUIDE.md
+has "PLATFORM_GUIDE: stale default behavior change note" \
+    'Behavior change for upgraders' docs/PLATFORM_GUIDE.md
 
 if [ "$INCLUDE_EVALS" = "true" ]; then
     exists "evals on: red-team config present" evals/redteam/redteam.yaml
