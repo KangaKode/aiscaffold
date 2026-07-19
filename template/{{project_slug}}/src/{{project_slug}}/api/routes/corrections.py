@@ -22,7 +22,8 @@ on that check -> 503 (fail closed rather than pretend "no blockers").
 
 Store calls run via asyncio.to_thread so the loop stays responsive.
 
-Keep this file under 520 lines.
+Keep this file under 560 lines. (Raised from 520: claim-only type
+barrier on _get_tenant_correction + reject type=procedure on propose.)
 """
 
 import asyncio
@@ -79,6 +80,8 @@ class CorrectionProposal(BaseModel):
     reason: str = Field("", max_length=MAX_REASON_CHARS)
     evidence_level: str = Field("", max_length=50)
     session_id: str = Field("", max_length=100)
+    # Rejected when non-empty -- procedures use /api/v1/procedures.
+    type: str = Field("", max_length=50)
 
 
 class CorrectionResponse(BaseModel):
@@ -98,6 +101,7 @@ class CorrectionResponse(BaseModel):
     valid_at: str = ""
     invalid_at: str = ""
     supersedes_id: str = ""
+    type: str = ""
     created_at: str
     updated_at: str
     override_flags: list[str] = []
@@ -145,6 +149,7 @@ def _to_response(
         valid_at=correction.valid_at,
         invalid_at=correction.invalid_at,
         supersedes_id=correction.supersedes_id,
+        type=correction.type or "",
         created_at=correction.created_at,
         updated_at=correction.updated_at,
         override_flags=override_flags or [],
@@ -160,9 +165,17 @@ def _validated_id(correction_id: str) -> str:
 async def _get_tenant_correction(
     manager: CorrectionsManager, correction_id: str, tenant_id: str
 ) -> Correction:
-    """404 for missing AND cross-tenant ids -- no existence leak."""
+    """404 for missing, cross-tenant, or non-claim rows -- no existence leak.
+
+    Procedures (type=procedure) are invisible on /corrections lifecycle
+    routes; use /api/v1/procedures. Filter is API-layer only (not manager.get).
+    """
     correction = await asyncio.to_thread(manager.get, _validated_id(correction_id))
-    if correction is None or correction.tenant_id != tenant_id:
+    if (
+        correction is None
+        or correction.tenant_id != tenant_id
+        or (correction.type or "") != ""
+    ):
         raise HTTPException(status_code=404, detail="Correction not found")
     return correction
 
@@ -191,6 +204,14 @@ async def propose_correction(
 ) -> CorrectionResponse:
     """Propose a correction. It only influences prompts after approval."""
     manager = _get_manager(request)
+    if (proposal.type or "") != "":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Claim corrections cannot set type; "
+                "use POST /api/v1/procedures for procedures"
+            ),
+        )
     try:
         validate_identifier(proposal.agent_id, "agent_id")
     except ValidationError as e:
@@ -237,6 +258,14 @@ async def supersede_correction(
     not currently-valid approved.
     """
     manager = _get_manager(request)
+    if (proposal.type or "") != "":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Claim corrections cannot set type; "
+                "use POST /api/v1/procedures for procedures"
+            ),
+        )
     ancestor = await _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
         validate_identifier(proposal.agent_id, "agent_id")
@@ -489,6 +518,7 @@ async def erase_correction_endpoint(
 ) -> ErasureResponse:
     """GDPR Article 17 hard-delete. Daily-capped; leaves an audit event."""
     manager = _get_manager(request)
+    await _get_tenant_correction(manager, correction_id, auth.tenant_id)
     try:
         result = await asyncio.to_thread(
             erase_correction,

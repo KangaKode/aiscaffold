@@ -20,10 +20,9 @@ TABLE ADD COLUMN migration. If the baseline created the new column on
 fresh installs, the version-guarded ALTER would then fail with a
 duplicate-column error (SQLite has no ADD COLUMN IF NOT EXISTS).
 
-Keep this file under 380 lines. (Raised from 300, then 350: migration v8
-froze two more pre-change table snapshots; v9 adds corrections validity
-columns + a filter/sort index. Freeze snapshots must live here by design,
-the module is never split. Headroom reserved for B1's later typed column.)
+Keep this file under 400 lines. (Raised from 380: v10 adds corrections
+type column for governed procedures. Freeze snapshots must live here by
+design; the module is never split.)
 """
 
 TABLE_COLUMNS: dict[str, dict[str, str]] = {
@@ -54,6 +53,9 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
         "valid_at": "TEXT DEFAULT ''",
         "invalid_at": "TEXT DEFAULT ''",
         "supersedes_id": "TEXT DEFAULT ''",
+        # Knowledge kind (added in migration v10). Empty string = claim
+        # correction (canonical sentinel); "procedure" = step-shaped row.
+        "type": "TEXT DEFAULT ''",
     },
     "activity_events": {
         "id": "TEXT PRIMARY KEY",
@@ -344,5 +346,10 @@ MIGRATIONS: list[list[str]] = [
         "ALTER TABLE corrections ADD COLUMN supersedes_id TEXT DEFAULT ''",
         "CREATE INDEX IF NOT EXISTS idx_corrections_tenant_status_valid"
         " ON corrections(tenant_id, status, invalid_at, created_at)",
+    ],
+    # v10 -- corrections knowledge type (claim '' vs procedure). Baseline
+    # stays frozen at the pre-v5 snapshot; ALTER-only like v5/v9.
+    [
+        "ALTER TABLE corrections ADD COLUMN type TEXT DEFAULT ''",
     ],
 ]

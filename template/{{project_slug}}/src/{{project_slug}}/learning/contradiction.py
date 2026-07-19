@@ -134,7 +134,12 @@ def scan_corrections(
     """
     rows = store.query(
         "corrections",
-        {"tenant_id": tenant_id, "status": STATUS_APPROVED, "invalid_at": ""},
+        {
+            "tenant_id": tenant_id,
+            "status": STATUS_APPROVED,
+            "invalid_at": "",
+            "type": "",
+        },
         order_by="created_at DESC",
     )
 

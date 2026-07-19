@@ -2,9 +2,11 @@
 Shared institutional-knowledge context builder.
 
 One place that renders what the platform has learned -- approved
-corrections (learning/corrections.py) and extracted error schemas
-(learning/error_schemata.py) -- into a prompt-ready text block. Used by
-all three resolution tiers so learned knowledge grounds every path, not
+claim corrections (learning/corrections.py, type="") and extracted
+error schemas (learning/error_schemata.py) -- into a prompt-ready text
+block. Governed procedures (type=procedure) are never included here;
+an explicit opt-in render path is required. Used by all three
+resolution tiers so learned knowledge grounds every path, not
 just single-shot:
 
   - Tier 1 /resolve:            orchestration/single_shot.py
