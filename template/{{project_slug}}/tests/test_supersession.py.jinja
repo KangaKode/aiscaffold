@@ -218,6 +218,31 @@ class TestSupersessionApproveHappyPath:
         blob = json.dumps([s.__dict__ for s in schemas], default=str)
         assert "UNIQUE_SUPERSEDED_TOKEN" not in blob
 
+    def test_drift_ignores_invalidated_softening(self, store):
+        """Invalidated approved rows must not inflate correction_drift share."""
+        from {{project_slug}}.learning.collusion import analyze_correction_drift
+
+        def row(idx: int, text: str, invalid: str = "") -> dict:
+            stamp = f"2026-01-01T00:{idx:02d}:00"
+            return {
+                "id": f"drift-{idx:04d}", "tenant_id": "default",
+                "agent_id": "analyst", "session_id": "",
+                "original_claim": f"claim {idx}", "corrected_claim": text,
+                "reason": "", "evidence_level": "documented",
+                "status": STATUS_APPROVED, "created_by": "alice",
+                "approved_by": "bob", "created_at": stamp, "updated_at": stamp,
+                "invalid_at": invalid, "metadata_json": "{}",
+            }
+
+        for idx in range(30):
+            store.insert("corrections", row(idx, "the limit is 60"))
+        for idx in range(30, 45):
+            store.insert(
+                "corrections",
+                row(idx, "this alert is a false positive", "2026-07-01T00:00:00"),
+            )
+        assert analyze_correction_drift(store, window=10, baseline=20) is None
+
     def test_supersede_writes_audit_event(self, store, manager):
         """T15: `correction_superseded` audit event on successful approve."""
         ancestor = propose_approved(manager)
