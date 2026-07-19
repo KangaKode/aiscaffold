@@ -217,6 +217,111 @@ class TestReportBuilder:
         assert section["coverage_from"] == WINDOW[0].isoformat()
 
 
+# --- Approval-health (human-gate health check) ------------------------------
+
+
+class TestApprovalHealthSection:
+    def test_latency_excludes_reject_and_uses_approved_only(self, store):
+        # Five approved with known latencies (hours between create and update).
+        for idx, hours in enumerate((1, 2, 3, 4, 5), start=1):
+            created = (NOW - timedelta(hours=hours + 10)).isoformat()
+            updated = (NOW - timedelta(hours=10)).isoformat()
+            store.insert("corrections", correction_row(
+                idx, created_at=created, updated_at=updated, status="approved",
+            ))
+        # Reject must not enter the latency sample.
+        store.insert("corrections", correction_row(
+            90, status="rejected",
+            created_at=(NOW - timedelta(hours=100)).isoformat(),
+            updated_at=(NOW - timedelta(hours=1)).isoformat(),
+        ))
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["approval_health"]
+        assert section["latency_sample_size"] == 5
+        assert section["insufficient_sample"] is False
+        assert section["approval_latency_seconds_p50"] == 3 * 3600
+        assert section["lifecycle_by_status"]["approved"] == 5
+        assert section["lifecycle_by_status"]["rejected"] == 1
+
+    def test_insufficient_sample_nulls_percentiles(self, store):
+        for idx in range(1, 4):
+            store.insert("corrections", correction_row(idx))
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["approval_health"]
+        assert section["latency_sample_size"] == 3
+        assert section["insufficient_sample"] is True
+        assert section["approval_latency_seconds_p50"] is None
+        assert section["approval_latency_seconds_p95"] is None
+
+    def test_self_approval_from_rows_not_flags(self, store):
+        store.insert("corrections", correction_row(
+            1, created_by="alice", approved_by="alice",
+        ))
+        store.insert("corrections", correction_row(
+            2, created_by="alice", approved_by="bob",
+        ))
+        # Empty identities never count as self-approval.
+        store.insert("corrections", correction_row(
+            3, created_by="", approved_by="",
+        ))
+        store.insert("integrity_flags", flag_row(
+            1, flag_type="four_eyes_unenforceable",
+        ))
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["approval_health"]
+        assert section["self_approval_count"] == 1
+        assert section["integrity_flag_refs"]["four_eyes_unenforceable"] == 1
+
+    def test_zero_second_latency_included(self, store):
+        stamp = NOW.isoformat()
+        for idx in range(1, 6):
+            store.insert("corrections", correction_row(
+                idx, created_at=stamp, updated_at=stamp,
+            ))
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["approval_health"]
+        assert section["latency_sample_size"] == 5
+        assert section["approval_latency_seconds_p50"] == 0.0
+
+    def test_supersession_activity_and_flag_ref_zeros(self, store):
+        store.insert("corrections", correction_row(1, supersedes_id="anc-1"))
+        store.insert("corrections", correction_row(2, supersedes_id=""))
+        store.insert("integrity_flags", flag_row(
+            1, flag_type="supersession_partial_failure",
+        ))
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["approval_health"]
+        assert section["supersession_activity_count"] == 1
+        refs = section["integrity_flag_refs"]
+        assert set(refs) == {
+            "four_eyes_unenforceable",
+            "approval_pair_dominance",
+            "supersession_partial_failure",
+        }
+        assert refs["supersession_partial_failure"] == 1
+        assert refs["approval_pair_dominance"] == 0
+        assert refs["four_eyes_unenforceable"] == 0
+
+    def test_whitelist_and_tenant_isolation(self, store):
+        store.insert("corrections", correction_row(
+            1, tenant="team-b", created_by="eve", approved_by="eve",
+            supersedes_id="other",
+        ))
+        report = build_governance_report(store, "default", *WINDOW)
+        section = report["sections"]["approval_health"]
+        assert section["self_approval_count"] == 0
+        assert section["supersession_activity_count"] == 0
+        assert "SECRET-" not in json.dumps(report)
+
+    def test_coverage_partial_when_corrections_cap_hit(self, store, monkeypatch):
+        monkeypatch.setattr(governance_report, "SECTION_FETCH_CAP", 3)
+        for idx in range(1, 6):
+            store.insert("corrections", correction_row(idx))
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["approval_health"]
+        assert section["coverage_partial"] is True
+
+
 # --- Daily rate cap ----------------------------------------------------------
 
 
