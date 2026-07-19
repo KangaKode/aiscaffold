@@ -49,6 +49,7 @@ from .routes import (
     mcp,
     health,
     preferences,
+    procedures,
     reflections,
     reports,
     resolve,
@@ -316,6 +317,9 @@ def create_app(
     )
     application.include_router(
         corrections.router, prefix="/api/v1", tags=["Learning - Corrections"]
+    )
+    application.include_router(
+        procedures.router, prefix="/api/v1", tags=["Learning - Procedures"]
     )
     application.include_router(
         reflections.router, prefix="/api/v1", tags=["Learning - Reflections"]

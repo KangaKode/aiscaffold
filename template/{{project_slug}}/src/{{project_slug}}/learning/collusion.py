@@ -30,7 +30,8 @@ Directed proposer->approver pair escalation over approved corrections
 lives in the sibling leaf module approval_patterns.py (kept out of this
 file to respect the line cap).
 
-Keep this file under 400 lines.
+Keep this file under 420 lines. (Raised from 400: claim-only type
+filter on correction-drift query.)
 """
 
 import json
@@ -326,7 +327,12 @@ def analyze_correction_drift(
     """
     rows = store.query(
         "corrections",
-        {"tenant_id": tenant_id, "status": "approved", "invalid_at": ""},
+        {
+            "tenant_id": tenant_id,
+            "status": "approved",
+            "invalid_at": "",
+            "type": "",
+        },
         order_by="created_at DESC",
         limit=window + baseline,
     )

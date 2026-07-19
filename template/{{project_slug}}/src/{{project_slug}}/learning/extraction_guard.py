@@ -25,7 +25,8 @@ Detection-only by default: elevated/capped write integrity flags for
 human review and NOTHING else changes -- prompts, knowledge context, and
 listings are never touched, and listings are never silently truncated.
 The single opt-in enforcement point (EXTRACTION_GUARD_ENFORCE=true) is
-GET /corrections returning 429 with a Retry-After header while capped.
+GET /corrections and GET /procedures returning 429 with Retry-After
+while capped (shared knowledge-read cap -- no pivot bypass).
 
 Degradation: when activity tracking is off (ACTIVITY_TRACKING_ENABLED=
 false) or no store is available, there is nothing to count -- the guard
@@ -44,7 +45,7 @@ EXTRACTION_TENANT_THRESHOLD (default 300), EXTRACTION_WINDOW_MINUTES
 
 Leaf module: imports stdlib + learning.flags only; the store is passed in.
 
-Keep this file under 250 lines.
+Keep this file under 270 lines.
 """
 
 import logging
@@ -67,6 +68,7 @@ MODE_CAPPED = "capped"
 KNOWLEDGE_READ_ROUTES = (
     "/api/v1/corrections",
     "/api/v1/reflections",
+    "/api/v1/procedures",
 )
 
 # Capped kicks in at this multiple of a threshold.
@@ -97,7 +99,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def enforcement_enabled() -> bool:
-    """Opt-in 429 enforcement on GET /corrections (default off)."""
+    """Opt-in 429 on GET /corrections and GET /procedures (default off)."""
     return _env_flag("EXTRACTION_GUARD_ENFORCE", default=False)
 
 

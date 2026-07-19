@@ -88,7 +88,12 @@ def check_pair_dominance(
     try:
         rows = store.query(
             "corrections",
-            {"tenant_id": tenant_id, "status": "approved", "invalid_at": ""},
+            {
+                "tenant_id": tenant_id,
+                "status": "approved",
+                "invalid_at": "",
+                "type": "",
+            },
             order_by="updated_at DESC",
             limit=WINDOW_FETCH_CAP,
         )

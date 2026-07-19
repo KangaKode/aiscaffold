@@ -132,14 +132,14 @@ class TestSqliteStore:
 class TestSchemaMigrations:
     def test_fresh_install_has_all_alter_columns(self, store, tmp_path):
         """Fresh DB: baseline creates v1, the ALTERs add aging + v9 validity
-        (T16 freeze two-sided -- ALTERs land after every migration)."""
+        + v10 type (T16 freeze two-sided -- ALTERs land after every migration)."""
         import sqlite3
 
         conn = sqlite3.connect(str(tmp_path / "learning_store.db"))
         cols = {r[1] for r in conn.execute("PRAGMA table_info(corrections)")}
         conn.close()
         assert {"last_validated_at", "last_validated_by",
-                "valid_at", "invalid_at", "supersedes_id"} <= cols
+                "valid_at", "invalid_at", "supersedes_id", "type"} <= cols
 
         row = correction_row(1, "fresh install")
         row["last_validated_at"] = "2026-01-02T00:00:00"
@@ -157,6 +157,9 @@ class TestSchemaMigrations:
         for col in ("last_validated_at", "last_validated_by",
                     "valid_at", "invalid_at", "supersedes_id"):
             assert col not in baseline, f"v1 baseline unexpectedly mentions {col}"
+        # "type" substrings reflection_type -- pin freeze snapshot instead.
+        from {{project_slug}}.learning.tables import _BASELINE_COLUMN_FREEZE
+        assert "type" not in _BASELINE_COLUMN_FREEZE["corrections"]
 
     def test_v9_upgrade_from_v8_preserves_legacy_valid(self, tmp_path):
         """T2 / T3: v8 DB gains the v9 columns + filter index; legacy

@@ -313,6 +313,9 @@ def build_governance_report(
         order_by="created_at DESC",
         limit=SECTION_FETCH_CAP,
     )
+    # Claim lifecycle buckets exclude procedures (type="procedure").
+    claim_rows = [r for r in corr_rows if (r.get("type") or "") == ""]
+    claim_all = [r for r in corr_all if (r.get("type") or "") == ""]
     refl_rows, refl_cov = _fetch_section(
         store, "reflections", tenant_id, from_dt, to_dt
     )
@@ -329,7 +332,7 @@ def build_governance_report(
             "deliberation": _deliberation_section(audit_rows, audit_cov),
             "integrity_flags": _flags_section(flag_rows, flag_cov),
             "corrections": _corrections_section(
-                corr_rows, corr_all, corr_cov, from_dt, to_dt
+                claim_rows, claim_all, corr_cov, from_dt, to_dt
             ),
             "approval_health": approval_health.build_section(
                 corr_rows, flag_rows, corr_cov, flag_cov

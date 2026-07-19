@@ -515,7 +515,7 @@ elif [ -d "$GEN_ROOT/tests" ]; then
 
     # Run all test files (all use mocks/in-process testing, no external deps)
     UNIT_FILES=""
-    for f in tests/test_security.py tests/test_injection_defense.py tests/test_ingest_scan.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_supersession.py tests/test_extraction_defense.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_safety_fail_closed.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py tests/test_learning_hygiene.py tests/test_retrieval_ranking.py tests/test_trust_guard.py tests/test_context_pressure.py tests/test_loop_integrity.py tests/test_adversarial_open_corpus.py tests/test_tenant_integrity.py tests/test_detection_wiring.py tests/test_credential_currency.py tests/test_detection_regressions.py; do
+    for f in tests/test_security.py tests/test_injection_defense.py tests/test_ingest_scan.py tests/test_llm.py tests/test_single_shot.py tests/test_learning.py tests/test_learning_maturity.py tests/test_learning_store.py tests/test_store_correctness.py tests/test_async_hardening.py tests/test_learning_wiring.py tests/test_corrections_api.py tests/test_supersession.py tests/test_extraction_defense.py tests/test_procedures.py tests/test_reports.py tests/test_observability.py tests/test_mcp_connectors.py tests/test_agents.py tests/test_agent_identity.py tests/test_orchestration.py tests/test_premise_gate.py tests/test_safety_fail_closed.py tests/test_chat_hardening.py tests/test_governance.py tests/test_adversarial_defense.py tests/test_tamper_evidence.py tests/test_api.py tests/test_e2e.py tests/test_architecture.py tests/test_middleware.py tests/test_harness.py tests/test_enforcement.py tests/test_vector_store_persistence.py tests/test_embedding_provider_env.py tests/test_learning_hygiene.py tests/test_retrieval_ranking.py tests/test_trust_guard.py tests/test_context_pressure.py tests/test_loop_integrity.py tests/test_adversarial_open_corpus.py tests/test_tenant_integrity.py tests/test_detection_wiring.py tests/test_credential_currency.py tests/test_detection_regressions.py; do
         if [ -f "$f" ]; then
             UNIT_FILES="$UNIT_FILES $f"
         fi
@@ -729,6 +729,29 @@ lacks "GOVERNANCE: no detects-rubber-stamping claim" \
     'detects rubber-stamping' docs/GOVERNANCE.md
 lacks "GOVERNANCE: no collusion-score claim" \
     'collusion score' docs/GOVERNANCE.md
+# B1 -- governed procedures (typed corrections): capability + Non-Claim +
+# separate-resource recipe; Extraction guard names procedures; no
+# procedure/extraction-playbook conflation on the Governed procedures row.
+has "GOVERNANCE: governed procedures capability row" \
+    'Governed procedures \(typed corrections\)' docs/GOVERNANCE.md
+has "GOVERNANCE: procedure type framing" \
+    'type=procedure' docs/GOVERNANCE.md
+has "GOVERNANCE: Extraction guard names procedures" \
+    'and procedures listings' docs/GOVERNANCE.md
+has "GOVERNANCE: approval does not auto-ground procedures" \
+    'Approving a procedure does not automatically ground' docs/GOVERNANCE.md
+has "PLATFORM_GUIDE: /api/v1/procedures route" \
+    '/api/v1/procedures' docs/PLATFORM_GUIDE.md
+has "PLATFORM_GUIDE: procedures separate resource recipe" \
+    'Procedures are a separate resource' docs/PLATFORM_GUIDE.md
+# Adjacency: Governed-procedures capability must not confuse with Sequence
+# monitoring's extraction-playbook language (that phrase may still appear
+# elsewhere in GOVERNANCE.md).
+if grep -iE 'Governed procedures.*extraction playbook|extraction playbook.*Governed procedures' docs/GOVERNANCE.md >/dev/null 2>&1; then
+    fail "GOVERNANCE: Governed procedures row must not conflate with extraction playbook"
+else
+    pass "GOVERNANCE: no procedure/extraction-playbook conflation on capability row"
+fi
 
 if [ "$INCLUDE_EVALS" = "true" ]; then
     exists "evals on: red-team config present" evals/redteam/redteam.yaml

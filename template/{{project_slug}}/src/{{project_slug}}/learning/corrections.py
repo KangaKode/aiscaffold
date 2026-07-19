@@ -28,9 +28,8 @@ Concurrency: status transitions (approve/reject/retire) are conditional
 writes (learning/lifecycle.py) that only land while the row still holds
 the expected prior status; a lost race raises ValueError (409 at API).
 
-Keep this file under 560 lines. (Raised from 500: validity fields on the
-dataclass/serde plus supersession hooks in approve; heavy lifting lives
-in learning/supersession.py.)
+Keep this file under 620 lines. (Raised from 560: knowledge `type` field
+for governed procedures + claim-only filters on list/grounding.)
 """
 
 import json
@@ -107,6 +106,8 @@ class Correction:
     source_surface: Which surface the write came through -- "api" for the
                     corrections API route, "library" for direct manager
                     calls ("" on pre-migration rows).
+    type: Knowledge kind -- "" (claim correction, default) or "procedure"
+          (step-shaped row; never enters default prompt grounding).
     """
 
     agent_id: str = ""
@@ -125,6 +126,7 @@ class Correction:
     valid_at: str = ""
     invalid_at: str = ""
     supersedes_id: str = ""
+    type: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:12])
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -184,6 +186,7 @@ class CorrectionsManager:
         created_by: str = "",
         source_surface: str = "library",
         supersedes_id: str = "",
+        type: str = "",
     ) -> Correction:
         """
         Persist a PROPOSED correction and (if configured) open a check-in.
@@ -193,9 +196,12 @@ class CorrectionsManager:
         (ValueError) or flag it (recorded, still proposed). source_surface
         records provenance: "library" (default) or "api" (the API route).
         When supersedes_id is set, the ancestor must be currently-valid
-        approved knowledge in the same tenant (see propose_supersession).
+        approved knowledge in the same tenant and the same type
+        (see propose_supersession). type="" is a claim; type="procedure"
+        is step-shaped knowledge (excluded from default grounding).
         """
         metadata: dict[str, Any] = {}
+        knowledge_type = type or ""
 
         pii_counts: dict[str, int] = {}
         redacted_fields = []
@@ -225,9 +231,14 @@ class CorrectionsManager:
                 }
 
         if supersedes_id:
-            validate_ancestor_for_supersession(
-                self.get(supersedes_id), tenant_id
-            )
+            ancestor = self.get(supersedes_id)
+            validate_ancestor_for_supersession(ancestor, tenant_id)
+            if (ancestor.type or "") != knowledge_type:
+                raise ValueError(
+                    "Supersession requires the same knowledge type "
+                    f"(ancestor type={ancestor.type!r}, "
+                    f"successor type={knowledge_type!r})"
+                )
 
         correction = Correction(
             agent_id=agent_id,
@@ -240,6 +251,7 @@ class CorrectionsManager:
             created_by=created_by,
             source_surface=source_surface,
             supersedes_id=supersedes_id,
+            type=knowledge_type,
             metadata=metadata,
         )
         self._store.insert("corrections", self._to_row(correction))
@@ -422,9 +434,14 @@ class CorrectionsManager:
         agent_id: str = "",
         limit: int = 100,
         order_by: str = "created_at DESC",
+        type: str = "",
     ) -> list[Correction]:
-        """List a tenant's corrections (newest first by default)."""
-        filters: dict[str, Any] = {"tenant_id": tenant_id}
+        """List a tenant's corrections (newest first by default).
+
+        type defaults to "" (claim rows only). Pass type="procedure" for
+        governed procedures. Pre-v10 rows deserialize as type=''.
+        """
+        filters: dict[str, Any] = {"tenant_id": tenant_id, "type": type or ""}
         if status:
             filters["status"] = status
         if agent_id:
@@ -441,7 +458,9 @@ class CorrectionsManager:
         budget_chars: int = DEFAULT_CONTEXT_BUDGET_CHARS,
     ) -> str:
         """
-        Render approved corrections (most recent first) as a prompt block.
+        Render approved claim corrections (most recent first) as a prompt
+        block. Procedures (type="procedure") are never included -- R1
+        default grounding is claim-only.
 
         Stops adding entries BEFORE the block would exceed budget_chars.
         Env override: CORRECTION_CONTEXT_BUDGET. Returns "" when there is
@@ -455,6 +474,7 @@ class CorrectionsManager:
             "tenant_id": tenant_id,
             "status": STATUS_APPROVED,
             "invalid_at": "",
+            "type": "",
         }
         if agent_id:
             filters["agent_id"] = agent_id
@@ -520,6 +540,7 @@ class CorrectionsManager:
             "valid_at": correction.valid_at,
             "invalid_at": correction.invalid_at,
             "supersedes_id": correction.supersedes_id,
+            "type": correction.type or "",
             "created_at": correction.created_at,
             "updated_at": correction.updated_at,
             "metadata_json": json.dumps(correction.metadata, default=str),
@@ -550,6 +571,7 @@ class CorrectionsManager:
             valid_at=row.get("valid_at") or "",
             invalid_at=row.get("invalid_at") or "",
             supersedes_id=row.get("supersedes_id") or "",
+            type=row.get("type") or "",
             metadata=metadata,
             created_at=row.get("created_at", ""),
             updated_at=row.get("updated_at", ""),
