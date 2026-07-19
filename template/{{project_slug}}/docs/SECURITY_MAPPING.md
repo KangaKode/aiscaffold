@@ -22,7 +22,7 @@ identifiers when you cite this map externally.
 
 | ID | Category | Scaffold posture | Where |
 |----|----------|------------------|-------|
-| LLM01 | Prompt Injection | **Partial, layered, honest about gaps.** Layer 1 static patterns + Layer 2 normalization/decoding scan ingestion boundaries (detect-only on user input; refuse only on knowledge writes); Layer 3 Sentinel semantic screen covers the deliberation path (needs an LLM). Deterministic layers are English-centric; multilingual efficacy is UNMEASURED. Regression-guarded by the golden set; exercised by the hand-crafted + open adversarial corpora. | `security/prompt_guard.py`, `security/injection_defense.py`, `orchestration/ingest_scan.py`, `tests/adversarial_payloads.py`, `tests/adversarial_payloads_open.py`; **(requires `include_evals`)** `evals/tasks/test_injection_defense_golden.py`, `evals/redteam/` |
+| LLM01 | Prompt Injection | **Partial, layered, honest about gaps.** Layer 1 static patterns + Layer 2 normalization/decoding scan ingestion boundaries (detect-only on user input; refuse only on knowledge writes); Layer 3 Sentinel semantic screen covers the deliberation path (needs an LLM). Deterministic layers are English-centric; multilingual efficacy is UNMEASURED. Regression-guarded by the golden set; exercised by the hand-crafted + open adversarial corpora. Deterministic layers are also measured against pinned subsets (N=60+60+30) of InjecAgent and AgentDojo plus open-corpus continuity **(requires `include_evals`)** — category FN/FP with denominators, not a benchmark score. | `security/prompt_guard.py`, `security/injection_defense.py`, `orchestration/ingest_scan.py`, `tests/adversarial_payloads.py`, `tests/adversarial_payloads_open.py`; **(requires `include_evals`)** `evals/tasks/test_injection_defense_golden.py`, `evals/tasks/test_public_corpus_harness.py`, `evals/redteam/` |
 | LLM02 | Sensitive Information Disclosure | PII redaction with Unicode normalization before correction text is persisted; whitelist-only audit/governance output (never prompt/response content). Pattern-based redaction is harm-reduction, not a compliance guarantee. | `security/pii.py`, `learning/corrections.py`, `orchestration/deliberation_audit.py` |
 | LLM03 | Supply Chain | Vendored red-team data carries pinned provenance (immutable upstream commit SHA + per-seed SHA-256 over exact code points) and CC-BY-4.0 attribution; a test recomputes every digest offline. Scaffold does not vet your model/provider supply chain. | `tests/fixtures/provenance.json`, `tests/fixtures/ATTRIBUTION.md`, `tests/test_adversarial_open_corpus.py` |
 | LLM04 | Data & Model Poisoning | Learned-knowledge writes require human approval with an explicit four-eyes posture; content-policy screen rejects standing-rule manipulation; contradiction + override detection; trust-loop hardening (opt-in) flags feedback bursts and single-source domination without mutating scores. Four-eyes is not enforceable under a single API key. | `learning/content_policy.py`, `learning/four_eyes.py`, `learning/trust_guard.py`, `learning/override_detector.py` |
@@ -61,8 +61,9 @@ ASI07 (not applicable by architecture).
 
 - **No benchmark score.** Coverage here means "a control exists and is tested for
   regression," not "attacks in this category are stopped at rate X." The golden
-  set is a regression guard; the red-team config is a starter you must wire to a
-  provider and tune.
+  set is a regression guard; the public-corpus harness measures pinned subsets
+  only (not an AgentDojo / InjecAgent end-to-end score); the red-team config is
+  a starter you must wire to a provider and tune.
 - **No multilingual guarantee.** See `GOVERNANCE.md` — Layers 1-2 are
   English-centric and Layer 3's multilingual efficacy is unmeasured.
 - **No Layer 3 coverage in CI.** The semantic screen needs an LLM; deterministic
