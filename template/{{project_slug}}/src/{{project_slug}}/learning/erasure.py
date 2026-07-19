@@ -73,6 +73,18 @@ class ErasureCapExceededError(Exception):
         )
 
 
+class ErasureBlockedBySuccessorError(Exception):
+    """Ancestor still referenced by superseding row(s); erase top-down."""
+
+    def __init__(self, correction_id: str, successor_ids: list[str]):
+        self.correction_id = correction_id
+        self.successor_ids = successor_ids
+        super().__init__(
+            f"Cannot erase {correction_id}: superseding correction(s) still "
+            f"exist ({', '.join(successor_ids)}); erase successors first"
+        )
+
+
 def _daily_cap() -> int:
     raw = os.environ.get("ERASURE_DAILY_CAP", "").strip()
     if raw.isdigit() and int(raw) > 0:
@@ -137,6 +149,16 @@ def erase_correction(
     )
     if not rows:
         raise ValueError(f"Correction {correction_id} not found")
+
+    try:
+        from .supersession import list_successor_ids
+        blockers = list_successor_ids(store, correction_id, tenant_id)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not check supersession successors before erase: {exc}"
+        ) from exc
+    if blockers:
+        raise ErasureBlockedBySuccessorError(correction_id, blockers)
 
     if not store.delete("corrections", correction_id):
         raise ValueError(f"Correction {correction_id} not found")

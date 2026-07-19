@@ -412,6 +412,15 @@ class TestPairEscalation:
         seed_approved(store, "alice", "bob", n=3)
         assert len(check_pair_dominance(store)) == 1
 
+    def test_invalidated_approvals_do_not_count(self, store):
+        """Superseded/compensated rows stay status=approved; pair scan must skip."""
+        seed_approved(store, "alice", "bob", n=6)
+        for row in store.query("corrections", {"status": "approved"}):
+            store.update(
+                "corrections", row["id"], {"invalid_at": "2026-07-01T00:00:00"}
+            )
+        assert check_pair_dominance(store, threshold=5) == []
+
 
 # --- API-level wiring -----------------------------------------------------------
 

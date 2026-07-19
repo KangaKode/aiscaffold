@@ -98,18 +98,43 @@ def review_security(filepath, content, rel_path):
 # =============================================================================
 
 MAX_FILE_LINES = 500
+MAX_FILE_LINES_HARD_CAP = 800
 MAX_FUNCTION_LINES = 50
 MAX_CLASS_LINES = 300
+LINE_CAP_HEADER_RE = re.compile(r"[Kk]eep this file under (\d+) lines")
+
+
+def _declared_line_cap(content: str) -> int | None:
+    """Return the module's declared line cap, if any (respects the header)."""
+    match = LINE_CAP_HEADER_RE.search(content)
+    if not match:
+        return None
+    try:
+        cap = int(match.group(1))
+    except ValueError:
+        return None
+    return min(cap, MAX_FILE_LINES_HARD_CAP)
 
 
 def review_minimalist(filepath, content, rel_path):
-    """Simulate minimalist agent checks."""
+    """Simulate minimalist agent checks.
+
+    Line cap: respects an in-file "Keep this file under N lines." header up
+    to a hard ceiling of MAX_FILE_LINES_HARD_CAP. Files without a header
+    are held to MAX_FILE_LINES. Same posture as scripts/quick_checks.py so
+    the two never disagree on the declared cap.
+    """
     lines = content.split("\n")
     line_count = len(lines)
+    declared = _declared_line_cap(content)
+    effective_cap = declared if declared is not None else MAX_FILE_LINES
 
-    # File size
-    if line_count > MAX_FILE_LINES:
-        fail("minimalist", f"{rel_path} -- {line_count} lines (max {MAX_FILE_LINES}). Split into smaller modules.")
+    if line_count > effective_cap:
+        fail(
+            "minimalist",
+            f"{rel_path} -- {line_count} lines "
+            f"(max {effective_cap}). Split into smaller modules.",
+        )
 
     # Function and class size via AST
     try:

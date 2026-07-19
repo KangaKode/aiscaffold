@@ -1,0 +1,444 @@
+"""Tests for human-gated supersession (B7): propose + approve, ancestor
+invalidation, concurrent-race compensation, erase blocking, and the
+required `update_if` primitive."""
+
+import json
+
+import pytest
+
+from {{project_slug}}.learning.corrections import (
+    STATUS_APPROVED,
+    STATUS_PROPOSED,
+    CorrectionsManager,
+)
+from {{project_slug}}.learning.erasure import (
+    ErasureBlockedBySuccessorError,
+    erase_correction,
+)
+from {{project_slug}}.learning.store import SqliteLearningStore
+from {{project_slug}}.learning.supersession import (
+    MissingUpdateIfError,
+    PARTIAL_FAILURE_FLAG,
+    SUPERSEDED_EVENT,
+    SupersessionConflictError,
+    finalize_supersession_approve,
+    list_successor_ids,
+    require_update_if,
+    validate_ancestor_for_supersession,
+)
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning_store.db")
+
+
+@pytest.fixture
+def manager(store):
+    return CorrectionsManager(store)
+
+
+def manager_for(store):
+    """Free-function counterpart of the `manager` fixture (helper reuse)."""
+    return CorrectionsManager(store)
+
+
+def propose(mgr, original="rate is 100", corrected="rate is 60",
+            created_by="alice", tenant_id="default"):
+    return mgr.propose(
+        agent_id="analyst", original_claim=original,
+        corrected_claim=corrected, reason="vendor docs",
+        evidence_level="documented", created_by=created_by,
+        tenant_id=tenant_id,
+    )
+
+
+def propose_approved(mgr, original="rate is 100", corrected="rate is 60",
+                     created_by="alice", approved_by="bob"):
+    correction = propose(mgr, original, corrected, created_by=created_by)
+    mgr.approve(correction.id, approved_by=approved_by)
+    return mgr.get(correction.id)
+
+
+def propose_supersession(mgr, ancestor_id, corrected="rate is 45",
+                         created_by="carol", tenant_id="default"):
+    return mgr.propose_supersession(
+        ancestor_id,
+        agent_id="analyst", original_claim="rate is 60",
+        corrected_claim=corrected, reason="vendor docs update",
+        evidence_level="documented", created_by=created_by,
+        tenant_id=tenant_id,
+    )
+
+
+# --- require_update_if / MissingUpdateIfError -------------------------------
+
+
+class TestRequireUpdateIf:
+    def test_reference_sqlite_store_has_update_if(self, store):
+        assert callable(require_update_if(store))
+
+    def test_missing_update_if_raises_before_use(self):
+        class BareStore:
+            def insert(self, *_a, **_kw): pass
+            def query(self, *_a, **_kw): return []
+            def update(self, *_a, **_kw): return True
+
+        with pytest.raises(MissingUpdateIfError, match="update_if"):
+            require_update_if(BareStore())
+
+    def test_supersession_approve_without_update_if_fails_closed(
+        self, store, monkeypatch
+    ):
+        """T17: successor stays proposed; no unconditional ancestor write."""
+        mgr = manager_for(store)
+        ancestor = propose_approved(mgr)
+        successor = propose_supersession(mgr, ancestor.id)
+
+        monkeypatch.delattr(type(store), "update_if")
+        with pytest.raises(MissingUpdateIfError):
+            mgr.approve(successor.id, approved_by="bob")
+
+        # Successor did not transition; ancestor is still currently valid.
+        assert mgr.get(successor.id).status == STATUS_PROPOSED
+        assert mgr.get(ancestor.id).invalid_at == ""
+
+
+# --- Ancestor validation (propose_supersession preconditions) ---------------
+
+
+class TestValidateAncestor:
+    def test_missing_ancestor_rejected(self, manager):
+        with pytest.raises(ValueError, match="not found"):
+            propose_supersession(manager, ancestor_id="no-such-id")
+
+    def test_not_approved_ancestor_rejected(self, manager):
+        pending = propose(manager)
+        with pytest.raises(ValueError, match="not currently-valid"):
+            propose_supersession(manager, pending.id)
+
+    def test_already_invalid_ancestor_rejected(self, store, manager):
+        ancestor = propose_approved(manager)
+        # Simulate an already-superseded row.
+        store.update("corrections", ancestor.id, {"invalid_at": "2026-06-01T00:00:00"})
+        with pytest.raises(ValueError, match="not currently-valid"):
+            propose_supersession(manager, ancestor.id)
+
+    def test_cross_tenant_ancestor_rejected(self, manager):
+        ancestor = propose_approved(manager)
+        with pytest.raises(ValueError, match="not found"):
+            propose_supersession(manager, ancestor.id, tenant_id="other")
+
+    def test_direct_helper_matches(self, manager):
+        ancestor = propose_approved(manager)
+        validate_ancestor_for_supersession(manager.get(ancestor.id), "default")
+
+    def test_propose_with_supersedes_id_also_validates(self, manager):
+        """Library propose(supersedes_id=...) must not bypass ancestor checks."""
+        with pytest.raises(ValueError, match="not found"):
+            manager.propose(
+                agent_id="analyst",
+                original_claim="a",
+                corrected_claim="b",
+                reason="r",
+                evidence_level="documented",
+                created_by="alice",
+                supersedes_id="no-such-id",
+            )
+
+
+# --- Supersession approve happy path (T5, T8, T11, T15) ---------------------
+
+
+class TestSupersessionApproveHappyPath:
+    def test_ancestor_updated_at_untouched(self, manager):
+        ancestor = propose_approved(manager)
+        ancestor_updated_at = manager.get(ancestor.id).updated_at
+
+        successor = propose_supersession(manager, ancestor.id)
+        approved = manager.approve(successor.id, approved_by="bob")
+
+        assert approved.status == STATUS_APPROVED
+        assert approved.supersedes_id == ancestor.id
+        assert approved.valid_at  # set on approve
+        # Ancestor status stays approved, but invalid_at is now set.
+        ancestor_row = manager.get(ancestor.id)
+        assert ancestor_row.status == STATUS_APPROVED
+        assert ancestor_row.invalid_at != ""
+        # Ancestor updated_at MUST be untouched (revalidate precedent).
+        assert ancestor_row.updated_at == ancestor_updated_at
+
+    def test_non_supersession_approve_sets_valid_at(self, manager):
+        """T11: plain approve fills valid_at when empty."""
+        correction = propose(manager)
+        approved = manager.approve(correction.id, approved_by="bob")
+        assert approved.valid_at != ""
+        assert approved.invalid_at == ""
+        assert approved.supersedes_id == ""
+
+    def test_grounding_excludes_invalidated_ancestor(self, manager):
+        """T8: get_approved_for_context does not surface invalidated rows."""
+        ancestor = propose_approved(
+            manager, original="v1 was reference", corrected="ANCESTOR_VALUE"
+        )
+        # Successor claim text avoids sharing tokens with the ancestor so
+        # the exclusion assertion is unambiguous.
+        successor = manager.propose_supersession(
+            ancestor.id,
+            agent_id="analyst", original_claim="pre-successor state",
+            corrected_claim="SUCCESSOR_VALUE", reason="v2 update",
+            evidence_level="documented", created_by="carol",
+            tenant_id="default",
+        )
+        manager.approve(successor.id, approved_by="bob")
+
+        block = manager.get_approved_for_context()
+        assert "SUCCESSOR_VALUE" in block
+        assert "ANCESTOR_VALUE" not in block
+
+    def test_error_schemata_ignore_invalidated_ancestors(self, store, manager):
+        """Post-approve schema extraction must not mine superseded text."""
+        from {{project_slug}}.learning.error_schemata import extract_error_schemas
+
+        for i in range(3):
+            propose_approved(
+                manager,
+                original=f"old-{i}",
+                corrected=f"UNIQUE_SUPERSEDED_TOKEN_{i}",
+                created_by=f"proposer-{i}",
+                approved_by="approver",
+            )
+        for row in store.query(
+            "corrections", {"status": STATUS_APPROVED, "invalid_at": ""}
+        ):
+            store.update(
+                "corrections", row["id"], {"invalid_at": "2026-07-01T00:00:00"}
+            )
+        schemas = extract_error_schemas(store, tenant_id="default")
+        blob = json.dumps([s.__dict__ for s in schemas], default=str)
+        assert "UNIQUE_SUPERSEDED_TOKEN" not in blob
+
+    def test_drift_ignores_invalidated_softening(self, store):
+        """Invalidated approved rows must not inflate correction_drift share."""
+        from {{project_slug}}.learning.collusion import analyze_correction_drift
+
+        def row(idx: int, text: str, invalid: str = "") -> dict:
+            stamp = f"2026-01-01T00:{idx:02d}:00"
+            return {
+                "id": f"drift-{idx:04d}", "tenant_id": "default",
+                "agent_id": "analyst", "session_id": "",
+                "original_claim": f"claim {idx}", "corrected_claim": text,
+                "reason": "", "evidence_level": "documented",
+                "status": STATUS_APPROVED, "created_by": "alice",
+                "approved_by": "bob", "created_at": stamp, "updated_at": stamp,
+                "invalid_at": invalid, "metadata_json": "{}",
+            }
+
+        for idx in range(30):
+            store.insert("corrections", row(idx, "the limit is 60"))
+        for idx in range(30, 45):
+            store.insert(
+                "corrections",
+                row(idx, "this alert is a false positive", "2026-07-01T00:00:00"),
+            )
+        assert analyze_correction_drift(store, window=10, baseline=20) is None
+
+    def test_revalidate_rejects_invalidated_ancestor(self, manager):
+        """Superseded rows must not refresh last_validated_* / report counts."""
+        ancestor = propose_approved(manager)
+        successor = propose_supersession(manager, ancestor.id)
+        manager.approve(successor.id, approved_by="bob")
+        with pytest.raises(ValueError, match="currently-valid"):
+            manager.revalidate(ancestor.id, validated_by="carol")
+        assert manager.get(ancestor.id).last_validated_at == ""
+
+    def test_supersede_writes_audit_event(self, store, manager):
+        """T15: `correction_superseded` audit event on successful approve."""
+        ancestor = propose_approved(manager)
+        successor = propose_supersession(manager, ancestor.id)
+        manager.approve(successor.id, approved_by="bob")
+
+        events = store.query("audit_events", {"event_type": SUPERSEDED_EVENT})
+        assert len(events) == 1
+        detail = json.loads(events[0]["detail_json"])
+        assert detail == {"ancestor_id": ancestor.id, "successor_id": successor.id}
+        assert events[0]["user_id"] == "bob"
+
+
+class TestByteStableGroundingWithoutSupersession:
+    def test_byte_stable_pre_b7_grounding(self, manager):
+        """T12: no supersession -> grounding text unchanged."""
+        propose_approved(manager, corrected="fixture claim one")
+        propose_approved(manager, corrected="fixture claim two")
+
+        block = manager.get_approved_for_context()
+        # Two entries, unmutated by any B7 code path.
+        assert block.count("Instead of:") == 2
+        assert "fixture claim one" in block
+        assert "fixture claim two" in block
+
+
+# --- Concurrent race + compensation (T7, T14) -------------------------------
+
+
+class TestConcurrentRace:
+    def test_second_approver_loses_and_compensates(self, store, manager):
+        """T7: two successors race the ancestor; exactly one stays valid."""
+        ancestor = propose_approved(manager)
+        s1 = propose_supersession(manager, ancestor.id, corrected="v2 claim")
+        s2 = propose_supersession(manager, ancestor.id, corrected="v3 claim")
+
+        manager.approve(s1.id, approved_by="bob")
+
+        with pytest.raises(SupersessionConflictError):
+            manager.approve(s2.id, approved_by="dave")
+
+        # Exactly one currently-valid row + ancestor invalidated.
+        valid = [c for c in manager.list(status=STATUS_APPROVED) if not c.invalid_at]
+        assert len(valid) == 1
+        assert valid[0].id == s1.id
+        # Loser was compensated (invalid_at set) rather than left currently valid.
+        s2_row = manager.get(s2.id)
+        assert s2_row.invalid_at != ""
+        # A partial-failure integrity flag records the race.
+        flags = store.query(
+            "integrity_flags", {"flag_type": PARTIAL_FAILURE_FLAG}
+        )
+        assert len(flags) == 1
+        assert flags[0]["subject_id"] == s2.id
+
+    def test_ancestor_update_raise_compensates_successor(
+        self, store, manager, monkeypatch
+    ):
+        """T14: monkeypatch ancestor `update_if` to raise -> compensator fires;
+        ancestor stays currently valid; grounding does not contain both."""
+        ancestor = propose_approved(manager, corrected="rate is 60")
+        successor = propose_supersession(manager, ancestor.id, corrected="rate is 45")
+
+        real_update_if = store.update_if
+        raised_once = {"done": False}
+
+        def flaky_update_if(table, row_id, changes, expected):
+            if (
+                table == "corrections"
+                and row_id == ancestor.id
+                and not raised_once["done"]
+            ):
+                raised_once["done"] = True
+                raise RuntimeError("simulated ancestor update failure")
+            return real_update_if(table, row_id, changes, expected)
+
+        monkeypatch.setattr(store, "update_if", flaky_update_if)
+        with pytest.raises(SupersessionConflictError):
+            manager.approve(successor.id, approved_by="bob")
+
+        # Ancestor stayed currently valid (SRE A3): grounding contains it.
+        block = manager.get_approved_for_context()
+        assert "rate is 60" in block
+        assert "rate is 45" not in block
+        assert manager.get(ancestor.id).invalid_at == ""
+        assert manager.get(successor.id).invalid_at != ""
+        assert store.count("integrity_flags", {"flag_type": PARTIAL_FAILURE_FLAG}) == 1
+
+
+# --- list_successor_ids + erase block (T9) ---------------------------------
+
+
+class TestErasureBlocking:
+    def test_list_successor_ids_returns_children(self, store, manager):
+        ancestor = propose_approved(manager)
+        successor = propose_supersession(manager, ancestor.id)
+        manager.approve(successor.id, approved_by="bob")
+
+        assert list_successor_ids(store, ancestor.id, "default") == [successor.id]
+        # Cross-tenant returns none (defense in depth).
+        assert list_successor_ids(store, ancestor.id, "team-b") == []
+
+    def test_erase_ancestor_blocked_by_live_successor(self, store, manager):
+        """T9: 409-mapped ErasureBlockedBySuccessorError names the blockers."""
+        ancestor = propose_approved(manager)
+        successor = propose_supersession(manager, ancestor.id)
+        manager.approve(successor.id, approved_by="bob")
+
+        with pytest.raises(ErasureBlockedBySuccessorError) as exc_info:
+            erase_correction(store, ancestor.id, actor="dpo-user")
+        assert exc_info.value.correction_id == ancestor.id
+        assert exc_info.value.successor_ids == [successor.id]
+
+    def test_erase_top_down_succeeds(self, store, manager):
+        ancestor = propose_approved(manager)
+        successor = propose_supersession(manager, ancestor.id)
+        manager.approve(successor.id, approved_by="bob")
+
+        erase_correction(store, successor.id, actor="dpo-user")
+        # Successor gone -> ancestor no longer blocked.
+        erase_correction(store, ancestor.id, actor="dpo-user")
+        assert manager.get(ancestor.id) is None
+        assert manager.get(successor.id) is None
+
+    def test_store_down_check_raises_distinct(self, store, manager, monkeypatch):
+        """T9: store-down on the successor check surfaces as RuntimeError
+        (distinct from ValueError); API maps to 503, not 409.
+
+        Patch the supersession module's `list_successor_ids` (erasure
+        imports it inside the function) so we fail only the successor
+        check -- the earlier daily-cap query still runs normally."""
+        ancestor = propose_approved(manager)
+
+        from {{project_slug}}.learning import supersession as supersession_module
+
+        def boom(*_a, **_kw):
+            raise IOError("store down")
+
+        monkeypatch.setattr(supersession_module, "list_successor_ids", boom)
+        with pytest.raises(RuntimeError, match="successors"):
+            erase_correction(store, ancestor.id, actor="dpo-user")
+
+
+# --- Four-eyes on supersession (T6) -----------------------------------------
+
+
+class TestFourEyesOnSupersession:
+    def test_strict_mode_blocks_self_approval(self, store):
+        mgr = CorrectionsManager(store, require_four_eyes=True)
+        ancestor = propose_approved(mgr, created_by="alice", approved_by="bob")
+        successor = propose_supersession(mgr, ancestor.id, created_by="carol")
+        with pytest.raises(ValueError, match="Four-eyes"):
+            mgr.approve(successor.id, approved_by="carol")
+        # Successor still proposed; ancestor still currently valid.
+        assert mgr.get(successor.id).status == STATUS_PROPOSED
+        assert mgr.get(ancestor.id).invalid_at == ""
+
+
+# --- finalize helper direct unit test ---------------------------------------
+
+
+class TestFinalizeHelperDirect:
+    def test_finalize_on_missing_ancestor_compensates(self, store):
+        # Drive finalize with a nonsense ancestor id after a raw status
+        # promote. propose(supersedes_id=...) rejects missing ancestors, so
+        # the dangling pointer is written via store.update (store-level
+        # fault injection for the compensator path).
+        mgr = CorrectionsManager(store)
+        successor = mgr.propose(
+            agent_id="analyst", original_claim="a", corrected_claim="b",
+            reason="", evidence_level="documented", created_by="alice",
+        )
+        mgr.store.update(
+            "corrections", successor.id,
+            {
+                "status": STATUS_APPROVED,
+                "invalid_at": "",
+                "supersedes_id": "no-such-ancestor",
+            },
+        )
+        with pytest.raises(SupersessionConflictError):
+            finalize_supersession_approve(
+                store, successor_id=successor.id,
+                ancestor_id="no-such-ancestor", tenant_id="default",
+                approved_by="bob", now="2026-07-19T00:00:00",
+            )
+        assert mgr.get(successor.id).invalid_at != ""
+        assert store.count(
+            "integrity_flags", {"flag_type": PARTIAL_FAILURE_FLAG}
+        ) == 1

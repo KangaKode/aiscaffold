@@ -72,7 +72,7 @@ def check_pair_dominance(
 ) -> list[dict]:
     """
     Count directed created_by->approved_by pairs over recently APPROVED
-    corrections and flag pairs above the threshold.
+    currently-valid corrections and flag pairs above the threshold.
 
     The window is rolling (last window_days, on the approval timestamp
     updated_at). Self-pairs (created_by == approved_by) and rows missing
@@ -88,7 +88,7 @@ def check_pair_dominance(
     try:
         rows = store.query(
             "corrections",
-            {"tenant_id": tenant_id, "status": "approved"},
+            {"tenant_id": tenant_id, "status": "approved", "invalid_at": ""},
             order_by="updated_at DESC",
             limit=WINDOW_FETCH_CAP,
         )

@@ -308,12 +308,12 @@ def analyze_correction_drift(
     baseline: int = 100,
 ) -> dict | None:
     """
-    Slow-poisoning heuristic (v1) over approved corrections.
+    Slow-poisoning heuristic (v1) over currently-valid approved corrections.
 
-    Compares the share of the most recent `window` approved corrections
-    whose reason/corrected_claim matches a "softening" pattern against
-    the share in the prior `baseline` corrections. When the recent share
-    exceeds the baseline share by more than 0.25 (and at least
+    Compares the share of the most recent `window` currently-valid approved
+    corrections whose reason/corrected_claim matches a "softening" pattern
+    against the share in the prior `baseline` corrections. When the recent
+    share exceeds the baseline share by more than 0.25 (and at least
     DRIFT_MIN_WINDOW recent samples exist), returns a finding dict and
     persists an integrity flag (flag_type="correction_drift").
 
@@ -326,7 +326,7 @@ def analyze_correction_drift(
     """
     rows = store.query(
         "corrections",
-        {"tenant_id": tenant_id, "status": "approved"},
+        {"tenant_id": tenant_id, "status": "approved", "invalid_at": ""},
         order_by="created_at DESC",
         limit=window + baseline,
     )

@@ -20,9 +20,10 @@ TABLE ADD COLUMN migration. If the baseline created the new column on
 fresh installs, the version-guarded ALTER would then fail with a
 duplicate-column error (SQLite has no ADD COLUMN IF NOT EXISTS).
 
-Keep this file under 350 lines. (Raised from 300: migration v8 froze
-two more pre-change table snapshots -- freeze snapshots must live here
-by design, the module is never split.)
+Keep this file under 380 lines. (Raised from 300, then 350: migration v8
+froze two more pre-change table snapshots; v9 adds corrections validity
+columns + a filter/sort index. Freeze snapshots must live here by design,
+the module is never split. Headroom reserved for B1's later typed column.)
 """
 
 TABLE_COLUMNS: dict[str, dict[str, str]] = {
@@ -47,6 +48,12 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
         # Write provenance (added in migration v8): "api" for the
         # corrections API route, "library" for direct manager calls.
         "source_surface": "TEXT DEFAULT ''",
+        # Validity + supersession (added in migration v9). Empty invalid_at
+        # means currently valid (canonical sentinel -- store equality
+        # filters reject None).
+        "valid_at": "TEXT DEFAULT ''",
+        "invalid_at": "TEXT DEFAULT ''",
+        "supersedes_id": "TEXT DEFAULT ''",
     },
     "activity_events": {
         "id": "TEXT PRIMARY KEY",
@@ -324,5 +331,18 @@ MIGRATIONS: list[list[str]] = [
     + [
         "CREATE INDEX IF NOT EXISTS idx_delegation_tenant"
         " ON delegation_records(tenant_id, created_at)",
+    ],
+    # v9 -- corrections validity + supersession. The v1 baseline is frozen
+    # at the pre-B7 column set (see _BASELINE_COLUMN_FREEZE), so these
+    # ALTERs run exactly once on both fresh installs and upgraded
+    # databases (same pattern as v5 aging columns). Index deliberately
+    # NOT in INDEX_STATEMENTS (v7 precedent) so a DB stamped at v8 gains
+    # it via ensure_schema and the upgrade test can assert that.
+    [
+        "ALTER TABLE corrections ADD COLUMN valid_at TEXT DEFAULT ''",
+        "ALTER TABLE corrections ADD COLUMN invalid_at TEXT DEFAULT ''",
+        "ALTER TABLE corrections ADD COLUMN supersedes_id TEXT DEFAULT ''",
+        "CREATE INDEX IF NOT EXISTS idx_corrections_tenant_status_valid"
+        " ON corrections(tenant_id, status, invalid_at, created_at)",
     ],
 ]
