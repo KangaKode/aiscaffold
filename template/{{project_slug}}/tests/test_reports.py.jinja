@@ -321,6 +321,20 @@ class TestApprovalHealthSection:
             "sections"]["approval_health"]
         assert section["coverage_partial"] is True
 
+    def test_coverage_partial_when_flags_cap_hit_alone(self, store, monkeypatch):
+        """Flag-row truncation must mark approval_health partial too."""
+        monkeypatch.setattr(governance_report, "SECTION_FETCH_CAP", 3)
+        store.insert("corrections", correction_row(1))
+        for idx in range(1, 6):
+            store.insert("integrity_flags", flag_row(
+                idx, flag_type="supersession_partial_failure",
+            ))
+        section = build_governance_report(store, "default", *WINDOW)[
+            "sections"]["approval_health"]
+        assert section["coverage_partial"] is True
+        # Only the three newest flags are visible under the cap.
+        assert section["integrity_flag_refs"]["supersession_partial_failure"] == 3
+
 
 # --- Daily rate cap ----------------------------------------------------------
 

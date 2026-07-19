@@ -33,9 +33,15 @@ FLAG_REF_TYPES = (
 def build_section(
     corr_rows: list[dict],
     flag_rows: list[dict],
-    coverage: dict,
+    corr_coverage: dict,
+    flag_coverage: dict,
 ) -> dict[str, Any]:
-    """Assemble sections.approval_health from pre-fetched window rows."""
+    """Assemble sections.approval_health from pre-fetched window rows.
+
+    Coverage merges corrections + flags horizons: integrity_flag_refs
+    come from flag_rows, so a flags-only cap hit must still set
+    coverage_partial (never report refs as complete when flags truncated).
+    """
     approved = [r for r in corr_rows if r.get("status") == "approved"]
     latencies = _approval_latencies(approved)
     sample_size = len(latencies)
@@ -58,7 +64,19 @@ def build_section(
             1 for r in approved if r.get("supersedes_id")
         ),
         "integrity_flag_refs": _flag_refs(flag_rows),
-        **coverage,
+        **_merged_coverage(corr_coverage, flag_coverage),
+    }
+
+
+def _merged_coverage(corr_coverage: dict, flag_coverage: dict) -> dict:
+    """OR coverage_partial; keep corrections window bounds as the primary stamp."""
+    return {
+        "coverage_from": corr_coverage.get("coverage_from"),
+        "coverage_to": corr_coverage.get("coverage_to"),
+        "coverage_partial": bool(
+            corr_coverage.get("coverage_partial")
+            or flag_coverage.get("coverage_partial")
+        ),
     }
 
 
