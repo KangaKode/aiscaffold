@@ -98,11 +98,18 @@ class MCPServerResponse(BaseModel):
 
 
 class MCPHealthResponse(BaseModel):
-    """Reachability check result for one registered server."""
+    """Reachability check result for one registered server.
+
+    ``tools_flagged`` / ``tools_drifted`` are advisory counts from the
+    detect-only tool-metadata screen on this health fetch (0 when clean).
+    They never flip ``healthy`` -- reachability alone decides that.
+    """
 
     name: str
     healthy: bool
     tools_available: int = 0
+    tools_flagged: int = 0
+    tools_drifted: int = 0
 
 
 class MCPInvokeRequest(BaseModel):
@@ -223,12 +230,30 @@ async def check_mcp_server_health(
         validate_identifier(name, field_name="name")
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    config = _find_config(_get_registry(request), name, auth.tenant_id)
+    registry = _get_registry(request)
+    config = _find_config(registry, name, auth.tenant_id)
+    store = getattr(request.app.state, "learning_store", None)
+    report_out: dict[str, int] = {}
     tools = await _get_client(request).list_tools(
-        config.server_url, config.resolve_credential()
+        config.server_url,
+        config.resolve_credential(),
+        config=config,
+        store=store,
+        report_out=report_out,
     )
+    try:
+        registry.persist()
+    except Exception:
+        logger.warning(
+            "[MCP] Registry persist after health screen failed (non-fatal)",
+            exc_info=True,
+        )
     return MCPHealthResponse(
-        name=config.name, healthy=len(tools) > 0, tools_available=len(tools)
+        name=config.name,
+        healthy=len(tools) > 0,
+        tools_available=len(tools),
+        tools_flagged=int(report_out.get("tools_flagged", 0)),
+        tools_drifted=int(report_out.get("tools_drifted", 0)),
     )
 
 
