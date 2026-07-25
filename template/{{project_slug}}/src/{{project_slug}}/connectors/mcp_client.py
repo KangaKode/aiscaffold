@@ -200,12 +200,22 @@ class MCPClient:
         self,
         server_url: str,
         auth_token: str | None = None,
+        *,
+        config: Any | None = None,
+        flag_hook: Any | None = None,
+        report_out: dict[str, int] | None = None,
     ) -> list[MCPToolInfo]:
-        """List available tools on an MCP server ([] on any failure)."""
+        """List available tools on an MCP server ([] on any failure).
+
+        After a successful fetch, tool descriptions/schemas are screened
+        detect-only (connectors/tool_screen.py). Optional ``config`` enables
+        hash memory; ``flag_hook`` receives findings (api/ wires store flags);
+        ``report_out`` receives advisory counts. List is never filtered.
+        """
         # validate_url resolves DNS (blocking getaddrinfo) -- off the loop.
         await asyncio.to_thread(validate_url, server_url, field_name="server_url")
         try:
-            return await self._transport.list_tools(
+            tools = await self._transport.list_tools(
                 server_url, self._headers(auth_token), self.default_timeout
             )
         except Exception as exc:
@@ -214,6 +224,21 @@ class MCPClient:
                 server_url, _truncate_error(exc),
             )
             return []
+
+        from .tool_screen import screen_listed_tools
+
+        try:
+            await asyncio.to_thread(
+                screen_listed_tools, tools, config, flag_hook, report_out
+            )
+        except Exception:
+            logger.warning(
+                "[MCPClient] tool metadata screen failed (fail-open)",
+                exc_info=True,
+            )
+            if report_out is not None:
+                report_out["metadata_screen_failed"] = 1
+        return tools
 
     async def health_check(
         self,

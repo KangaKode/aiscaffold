@@ -14,8 +14,8 @@ Security:
   - invoke responses are sanitized before they leave the platform
   - Requires app.state.mcp_registry / mcp_client (503 when not configured)
 
-Keep this file under 300 lines. (Raised from 250: store-correctness
-hardening of the registry routes grew the module.)
+Keep this file under 320 lines. (Raised for tool-metadata health wiring
+on top of prior store-correctness hardening.)
 """
 
 from __future__ import annotations
@@ -98,11 +98,22 @@ class MCPServerResponse(BaseModel):
 
 
 class MCPHealthResponse(BaseModel):
-    """Reachability check result for one registered server."""
+    """Reachability check result for one registered server.
+
+    ``tools_flagged`` / ``tools_drifted`` are advisory counts from the
+    detect-only tool-metadata screen on this health fetch (0 when clean).
+    They never flip ``healthy`` -- reachability alone decides that.
+    ``metadata_screen_failed`` is True when the screen itself raised
+    (fail-open in the client); the counts on this response are then
+    "unknown", not "clean".
+    """
 
     name: str
     healthy: bool
     tools_available: int = 0
+    tools_flagged: int = 0
+    tools_drifted: int = 0
+    metadata_screen_failed: bool = False
 
 
 class MCPInvokeRequest(BaseModel):
@@ -223,12 +234,46 @@ async def check_mcp_server_health(
         validate_identifier(name, field_name="name")
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    config = _find_config(_get_registry(request), name, auth.tenant_id)
+    registry = _get_registry(request)
+    config = _find_config(registry, name, auth.tenant_id)
+    store = getattr(request.app.state, "learning_store", None)
+    report_out: dict[str, int] = {}
+
+    def _flag_hook(flag_type: str, subject_id: str, detail: dict) -> None:
+        if store is None:
+            return
+        from ...learning.flags import record_flag_hit
+
+        record_flag_hit(
+            store,
+            flag_type=flag_type,
+            subject_id=subject_id,
+            tenant_id=config.tenant_id,
+            detail=detail,
+            severity="warning",
+        )
+
     tools = await _get_client(request).list_tools(
-        config.server_url, config.resolve_credential()
+        config.server_url,
+        config.resolve_credential(),
+        config=config,
+        flag_hook=_flag_hook if store is not None else None,
+        report_out=report_out,
     )
+    try:
+        registry.persist()
+    except Exception:
+        logger.warning(
+            "[MCP] Registry persist after health screen failed (non-fatal)",
+            exc_info=True,
+        )
     return MCPHealthResponse(
-        name=config.name, healthy=len(tools) > 0, tools_available=len(tools)
+        name=config.name,
+        healthy=len(tools) > 0,
+        tools_available=len(tools),
+        tools_flagged=int(report_out.get("tools_flagged", 0)),
+        tools_drifted=int(report_out.get("tools_drifted", 0)),
+        metadata_screen_failed=bool(report_out.get("metadata_screen_failed", 0)),
     )
 
 

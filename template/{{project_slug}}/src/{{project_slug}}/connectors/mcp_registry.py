@@ -60,6 +60,8 @@ class MCPServerConfig:
     timeout: float = 30.0
     default_tool: str = ""
     default_arguments: dict[str, Any] = field(default_factory=dict)
+    # Per-tool sha256 of size-capped description+schema (tool_screen); not secrets.
+    tool_desc_hashes: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.credential_env_var and not _CREDENTIAL_ENV_RE.match(
@@ -97,6 +99,7 @@ class MCPServerConfig:
             "timeout": self.timeout,
             "default_tool": self.default_tool,
             "default_arguments": self.default_arguments,
+            "tool_desc_hashes": dict(self.tool_desc_hashes or {}),
         }
 
 
@@ -184,6 +187,9 @@ class MCPServerRegistry:
         for tenant_id, servers in data.get("servers", {}).items():
             for name, cfg in servers.items():
                 try:
+                    hashes = cfg.get("tool_desc_hashes") or {}
+                    if not isinstance(hashes, dict):
+                        hashes = {}
                     config = MCPServerConfig(
                         name=cfg["name"],
                         server_url=cfg["server_url"],
@@ -195,6 +201,9 @@ class MCPServerRegistry:
                         timeout=cfg.get("timeout", 30.0),
                         default_tool=cfg.get("default_tool", ""),
                         default_arguments=cfg.get("default_arguments", {}),
+                        tool_desc_hashes={
+                            str(k): str(v) for k, v in hashes.items()
+                        },
                     )
                     self._validate_config(config)
                 except (ValidationError, KeyError) as exc:
