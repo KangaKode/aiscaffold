@@ -202,15 +202,15 @@ class MCPClient:
         auth_token: str | None = None,
         *,
         config: Any | None = None,
-        store: Any | None = None,
+        flag_hook: Any | None = None,
         report_out: dict[str, int] | None = None,
     ) -> list[MCPToolInfo]:
         """List available tools on an MCP server ([] on any failure).
 
         After a successful fetch, tool descriptions/schemas are screened
         detect-only (connectors/tool_screen.py). Optional ``config`` enables
-        hash memory + integrity flags; ``report_out`` receives advisory counts.
-        The returned list is never filtered or mutated.
+        hash memory; ``flag_hook`` receives findings (api/ wires store flags);
+        ``report_out`` receives advisory counts. List is never filtered.
         """
         # validate_url resolves DNS (blocking getaddrinfo) -- off the loop.
         await asyncio.to_thread(validate_url, server_url, field_name="server_url")
@@ -229,7 +229,7 @@ class MCPClient:
 
         try:
             await asyncio.to_thread(
-                screen_listed_tools, tools, config, store, report_out
+                screen_listed_tools, tools, config, flag_hook, report_out
             )
         except Exception:
             logger.warning(

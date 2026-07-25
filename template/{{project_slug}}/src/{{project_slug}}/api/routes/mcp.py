@@ -14,8 +14,8 @@ Security:
   - invoke responses are sanitized before they leave the platform
   - Requires app.state.mcp_registry / mcp_client (503 when not configured)
 
-Keep this file under 300 lines. (Raised from 250: store-correctness
-hardening of the registry routes grew the module.)
+Keep this file under 320 lines. (Raised for tool-metadata health wiring
+on top of prior store-correctness hardening.)
 """
 
 from __future__ import annotations
@@ -234,11 +234,26 @@ async def check_mcp_server_health(
     config = _find_config(registry, name, auth.tenant_id)
     store = getattr(request.app.state, "learning_store", None)
     report_out: dict[str, int] = {}
+
+    def _flag_hook(flag_type: str, subject_id: str, detail: dict) -> None:
+        if store is None:
+            return
+        from ...learning.flags import record_flag_hit
+
+        record_flag_hit(
+            store,
+            flag_type=flag_type,
+            subject_id=subject_id,
+            tenant_id=config.tenant_id,
+            detail=detail,
+            severity="warning",
+        )
+
     tools = await _get_client(request).list_tools(
         config.server_url,
         config.resolve_credential(),
         config=config,
-        store=store,
+        flag_hook=_flag_hook if store is not None else None,
         report_out=report_out,
     )
     try:
