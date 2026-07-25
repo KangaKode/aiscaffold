@@ -103,6 +103,9 @@ class MCPHealthResponse(BaseModel):
     ``tools_flagged`` / ``tools_drifted`` are advisory counts from the
     detect-only tool-metadata screen on this health fetch (0 when clean).
     They never flip ``healthy`` -- reachability alone decides that.
+    ``metadata_screen_failed`` is True when the screen itself raised
+    (fail-open in the client); the counts on this response are then
+    "unknown", not "clean".
     """
 
     name: str
@@ -110,6 +113,7 @@ class MCPHealthResponse(BaseModel):
     tools_available: int = 0
     tools_flagged: int = 0
     tools_drifted: int = 0
+    metadata_screen_failed: bool = False
 
 
 class MCPInvokeRequest(BaseModel):
@@ -269,6 +273,7 @@ async def check_mcp_server_health(
         tools_available=len(tools),
         tools_flagged=int(report_out.get("tools_flagged", 0)),
         tools_drifted=int(report_out.get("tools_drifted", 0)),
+        metadata_screen_failed=bool(report_out.get("metadata_screen_failed", 0)),
     )
 
 

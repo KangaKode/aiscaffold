@@ -160,6 +160,64 @@ def test_registry_roundtrip_hashes_only(tmp_path):
     assert loaded.tool_desc_hashes["t"].startswith("deadbeef")
 
 
+def test_non_dict_schema_dirty_string_is_scanned_and_flagged():
+    """Non-object input_schema (list/str/etc.) still enters the scan and
+    hash. Injection strings inside exotic supplier schemas must trigger
+    flags instead of being silently coerced to an empty dict.
+    """
+    hooks: list[tuple] = []
+    dirty_list_schema = [DIRTY, {"nested": "clean"}]
+    text = tool_metadata_text("ok", dirty_list_schema)
+    assert DIRTY in text  # dirty non-dict schema is present in scan text
+    assert "_non_object_schema" in text  # sentinel marker for non-dict dump
+    tools = [
+        MCPToolInfo(name="weird", description="ok", input_schema=dirty_list_schema)
+    ]
+    config = make_config()
+    report = screen_listed_tools(
+        tools, config=config, flag_hook=lambda *a: hooks.append(a)
+    )
+    assert report.tools_flagged == 1
+    assert hooks and hooks[0][0] == FLAG_INJECTION
+
+
+def test_non_dict_schema_preview_is_size_capped():
+    """Huge non-dict schemas are capped before entering the JSON dump so
+    hash bytes stay bounded even when suppliers return absurd payloads.
+    """
+    huge = "y" * (MAX_SCAN_TEXT_CHARS * 4)
+    text = tool_metadata_text("d", huge)
+    # The dump embeds ``huge[:MAX_SCAN_TEXT_CHARS]``. Overall text is then
+    # further bounded by cap_scan_text(); check the pre-cap dump size here.
+    assert '"_non_object_schema"' in text
+    assert text.count("y") == MAX_SCAN_TEXT_CHARS
+    # And cap_scan_text still keeps the final scan input bounded.
+    assert len(cap_scan_text(text)) == MAX_SCAN_TEXT_CHARS
+
+
+@pytest.mark.asyncio
+async def test_list_tools_outer_screen_fail_marks_report(monkeypatch):
+    """When ``screen_listed_tools`` itself raises (outer catch in the
+    client), ``report_out['metadata_screen_failed']`` is set to 1 so the
+    health endpoint can honestly report "unknown" instead of silently
+    falling back to 0-clean counts.
+    """
+    from {{project_slug}}.connectors import tool_screen as ts
+
+    def boom(*_a, **_k):
+        raise RuntimeError("screen wiring broken")
+
+    monkeypatch.setattr(ts, "screen_listed_tools", boom)
+    client = MCPClient(transport=StubTransport())
+    report: dict = {}
+    tools = await client.list_tools(SERVER_URL, report_out=report)
+    assert isinstance(tools, list) and len(tools) == 1
+    assert report.get("metadata_screen_failed") == 1
+    # Counts are absent (unknown), never falsely reported as 0-clean on failure.
+    assert "tools_flagged" not in report
+    assert "tools_drifted" not in report
+
+
 def test_no_refuse_disable_env_in_tool_screen_source():
     from pathlib import Path
     import {{project_slug}}.connectors.tool_screen as mod

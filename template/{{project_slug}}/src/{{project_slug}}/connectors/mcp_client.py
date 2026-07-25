@@ -236,6 +236,8 @@ class MCPClient:
                 "[MCPClient] tool metadata screen failed (fail-open)",
                 exc_info=True,
             )
+            if report_out is not None:
+                report_out["metadata_screen_failed"] = 1
         return tools
 
     async def health_check(

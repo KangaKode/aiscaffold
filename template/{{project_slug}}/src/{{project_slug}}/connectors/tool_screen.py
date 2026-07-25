@@ -46,12 +46,25 @@ class ToolScreenReport:
     tools_drifted: int = 0
 
 
-def tool_metadata_text(description: str, input_schema: dict[str, Any] | None) -> str:
-    """Canonical scan/hash bytes source (schema key-order independent)."""
-    schema = input_schema if isinstance(input_schema, dict) else {}
-    dumped = json.dumps(
-        schema, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    )
+def tool_metadata_text(description: str, input_schema: Any) -> str:
+    """Canonical scan/hash bytes source (schema key-order independent).
+
+    Dicts get a canonical sort-keyed JSON dump. Anything else (list, str,
+    None -- suppliers can and do return exotic shapes) is dumped as
+    ``{"_non_object_schema": str(value)[:MAX_SCAN_TEXT_CHARS]}`` so
+    injection patterns inside non-object schemas still enter the scan
+    and drift hash instead of being silently discarded.
+    """
+    if isinstance(input_schema, dict):
+        dumped = json.dumps(
+            input_schema, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+    else:
+        preview = "" if input_schema is None else str(input_schema)
+        dumped = json.dumps(
+            {"_non_object_schema": preview[:MAX_SCAN_TEXT_CHARS]},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        )
     return f"{description or ''}\n{dumped}"
 
 
@@ -98,7 +111,7 @@ def screen_listed_tools(
             capped = cap_scan_text(
                 tool_metadata_text(
                     getattr(tool, "description", "") or "",
-                    getattr(tool, "input_schema", None) or {},
+                    getattr(tool, "input_schema", None),
                 )
             )
             digest = metadata_sha256(capped)
