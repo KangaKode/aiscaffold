@@ -694,5 +694,144 @@ class ReviewerAssuranceRegisterTests(unittest.TestCase):
         )
 
 
+class ScopedReviewerAssuranceGateTests(unittest.TestCase):
+    """SHADOW-first: prompt reviewers may not tell agents to block unconditionally.
+
+    Regression pins for the Bugbot fix round on PR 3. Two honesty leaks
+    were escaping the SHADOW-first contract:
+
+    - The on-demand ``red-team`` agent prompt said a single blocking
+      finding "prevents the commit" and to emit a ``BLOCK`` verdict
+      whenever any blocking finding existed, with no reference to
+      ``docs/REVIEWER_ASSURANCE.md``.
+    - The shared ``expert-review.mdc`` proof-of-finding contract
+      defined the six-field bar for candidate blockers but never
+      required consulting the assurance register before a scoped
+      reviewer promoted a candidate to a ``BLOCK`` recommendation.
+
+    These tests fail on the pre-fix wording and pass once each surface
+    gates blocking recommendations on the reviewer version being
+    recorded as ``BLOCKING`` in ``docs/REVIEWER_ASSURANCE.md``.
+    Deterministic scanners are out of scope -- their exit-code
+    semantics live in the Python scripts, not in prompt reviewers.
+    """
+
+    def test_red_team_agent_does_not_claim_findings_prevent_the_commit(self):
+        path = TEMPLATE_AGENTS_DIR / "red-team.md"
+        self.assertTrue(
+            path.exists(),
+            f"red-team agent prompt missing at {path}.",
+        )
+        text = _text(path)
+        forbidden = re.compile(
+            r"prevents\s+the\s+commit"
+            r"|blocks\s+the\s+merge"
+            r"|blocks?\s+the\s+commit",
+            re.IGNORECASE,
+        )
+        match = forbidden.search(text)
+        self.assertIsNone(
+            match,
+            "red-team agent prompt still contains SHADOW-violating "
+            "wording (e.g. 'prevents the commit' / 'blocks the merge'). "
+            "The prompt reviewer must not instruct an agent to block a "
+            "commit unconditionally -- a blocking recommendation is "
+            "allowed only when this reviewer version is recorded as "
+            "``BLOCKING`` in docs/REVIEWER_ASSURANCE.md.",
+        )
+
+    def test_red_team_agent_references_reviewer_assurance_register(self):
+        path = TEMPLATE_AGENTS_DIR / "red-team.md"
+        text = _text(path)
+        self.assertIn(
+            "REVIEWER_ASSURANCE.md",
+            text,
+            "red-team agent prompt does not reference "
+            "docs/REVIEWER_ASSURANCE.md. It must consult the register "
+            "before recommending BLOCK -- otherwise it silently "
+            "contradicts the always-applied SHADOW-first rule.",
+        )
+
+    def test_red_team_agent_gates_block_verdict_on_blocking_status(self):
+        path = TEMPLATE_AGENTS_DIR / "red-team.md"
+        text = _text(path)
+        # Reuse the same windowed pattern used by the always-applied
+        # rule test: find every mention of REVIEWER_ASSURANCE.md and
+        # verify at least one sits in a window that also names
+        # ``BLOCKING`` and gates the recommendation ("only" / "allowed"
+        # / "may" / "permitted"). Windowing tolerates line-wrapping,
+        # which a strict single-line regex would falsely reject.
+        blocking_context_re = re.compile(
+            r"`?BLOCKING`?.{0,240}"
+            r"(?:recommend|status|allowed|record|only|reviewer|verdict)"
+            r"|(?:recommend|status|allowed|record|only|reviewer|verdict)"
+            r".{0,240}`?BLOCKING`?",
+            re.IGNORECASE | re.DOTALL,
+        )
+        only_gate_re = re.compile(
+            r"(?:only|allowed|may|permitted)"
+            r".{0,200}`?BLOCKING`?"
+            r"|`?BLOCKING`?.{0,200}"
+            r"(?:only|allowed|may|permitted)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        satisfied = False
+        for match in re.finditer(r"REVIEWER_ASSURANCE\.md", text):
+            start = max(0, match.start() - 400)
+            end = min(len(text), match.end() + 400)
+            window = text[start:end]
+            if blocking_context_re.search(window) and only_gate_re.search(window):
+                satisfied = True
+                break
+        self.assertTrue(
+            satisfied,
+            "red-team agent prompt does not gate a ``BLOCK`` verdict "
+            "on the reviewer version being recorded as ``BLOCKING`` in "
+            "docs/REVIEWER_ASSURANCE.md. Add an explicit clause "
+            "stating that when this reviewer is SHADOW / DRAFT / "
+            "SUSPENDED (which is every prompt reviewer today), "
+            "findings are reported as non-blocking recommendations, "
+            "not commit-blocking verdicts.",
+        )
+
+    def test_expert_review_proof_of_finding_consults_assurance_register(self):
+        text = _text(TEMPLATE_EXPERT_REVIEW)
+        window = _proof_of_finding_window(text)
+        self.assertIsNotNone(
+            window,
+            "expert-review proof-of-finding section missing; fix the "
+            "'proof-of-finding section' test first.",
+        )
+        self.assertIn(
+            "REVIEWER_ASSURANCE.md",
+            window,
+            "expert-review Proof of Finding section does not name "
+            "docs/REVIEWER_ASSURANCE.md. Even with all six evidence "
+            "fields, a candidate blocker must not be promoted to a "
+            "``BLOCK`` recommendation unless the reviewer version is "
+            "recorded as ``BLOCKING`` in the assurance register. This "
+            "gate belongs in the shared contract because every scoped "
+            "reviewer defers to it.",
+        )
+        gate_re = re.compile(
+            r"(?is)`?BLOCKING`?[^.\n]{0,240}"
+            r"(?:REVIEWER_ASSURANCE|assurance\s+register)"
+            r"|(?:REVIEWER_ASSURANCE|assurance\s+register)"
+            r"[^.\n]{0,240}`?BLOCKING`?",
+        )
+        self.assertRegex(
+            window,
+            gate_re,
+            "expert-review Proof of Finding names the assurance "
+            "register but does not tie a blocking recommendation to "
+            "the reviewer version being recorded as ``BLOCKING`` there. "
+            "The section must state that evidence-complete findings "
+            "are *candidates* for BLOCK, and a blocking recommendation "
+            "is allowed only when this reviewer version is BLOCKING in "
+            "docs/REVIEWER_ASSURANCE.md; otherwise findings are "
+            "reported as non-blocking SHADOW comments.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
