@@ -81,6 +81,81 @@ Final verdict: PROCEED / CONDITIONAL / BLOCK
 
 Verdicts are technical recommendations; the human maintainer makes the final call.
 
+## Proof of Finding
+
+This section defines the shared **blocking-evidence contract** every scoped
+reviewer (`red-team`, `sast-reviewer`, `security-hardener`,
+`agent-security-specialist`, `code-reviewer`, `solution-architect`,
+`test-architect`, `data-flow-guardian`) must satisfy before recommending
+`BLOCK`. Deterministic scanners (`scripts/agent_review.py`,
+`scripts/red_team_check.py`) map their machine output onto the same fields
+via stable rule IDs (for example `SEC-SQL-FSTRING`, `SEC-SHELL-TRUE`,
+`SEC-HARDCODED-CREDENTIAL`).
+
+The contract exists so a reviewer cannot recommend a block on a vague
+suspicion: every potential blocker must survive adversarial self-challenge
+and carry enough evidence that another reviewer or the human maintainer can
+reproduce and audit the finding without re-derivation.
+
+**Blocking security finding — required fields.** A blocking security
+finding must include ALL SIX of:
+
+1. **Location** — exact `file:lineno` (and repository, when the finding
+   spans repositories). For deterministic scanners, the location comes
+   from the stable-ID message; for prompt reviewers, cite the reviewed
+   diff.
+2. **Execution or exploit path** — the attacker-controlled source, the
+   dangerous sink, and each intermediate hop. Present as
+   `source → sink` (or explicitly name the attacker-controlled source
+   and the sink) with any sanitization or trust-boundary crossings
+   called out. Findings without a documented source-to-sink path are
+   `UNVERIFIED`, not blockers.
+3. **Trigger or reproduction** — a concrete input, request shape, or
+   sequence of steps that fires the finding (a repro). If the reviewer
+   cannot state a trigger, the finding is `UNVERIFIED`.
+4. **Defense challenge** — a documented challenge against existing
+   defenses: what upstream validation, middleware, framework auto-escape,
+   or scoping filter was considered and why it does not stop this path.
+   Every potential blocker must survive this adversarial second pass
+   before recommending `BLOCK`.
+5. **Impact** — the concrete outcome if the path is exploited (data
+   isolation broken, credential leak, code execution, denial of service,
+   etc.). Business-impact framing beats generic CWE names.
+6. **Remediation** — a specific, actionable fix (file:line, function, or
+   pattern) — never "consider improving" or "review this area".
+
+The SAST reviewer applies a stronger four-gate/dual-pass protocol on top
+of these fields; that protocol supersedes the shared contract for its
+findings (do not weaken or duplicate it in the SAST agent file).
+
+**Blocking correctness (non-security) finding — required fields.** A
+blocking correctness finding must include:
+
+1. **Location** — as above.
+2. **Failing execution path or violated invariant** — a runnable
+   failing execution path through the code that produces the wrong
+   result, or a named invariant the change breaks. Bare assertions
+   ("this looks wrong") are `UNVERIFIED`, not blockers.
+3. **Reproducible evidence** — a failing test, a captured output, or a
+   deterministic reproduction script. "I ran it once and it seemed off"
+   is `UNVERIFIED`; reproducible evidence is required.
+4. **Impact and remediation** — same shape as the security fields.
+
+**`UNVERIFIED` — non-blocking label.** `UNVERIFIED` is the explicit
+label for a concern that a reviewer wants recorded but cannot elevate to
+a blocker under this contract. `UNVERIFIED` is non-blocking: it must
+not appear in the `BLOCK` list, must not gate a merge, and does not
+count toward a clean-slate target (0 CRITICAL / 0 HIGH). Report
+`UNVERIFIED` findings in a distinct "Follow-up" section of the review
+so a reviewer or the human maintainer can decide whether to investigate
+later, request more evidence, or dismiss. Promoting an `UNVERIFIED`
+finding to `BLOCK` requires filling in the missing fields above (path,
+trigger, defense challenge, impact, remediation) — never a rewording of
+the same suspicion. The always-applied `red-team` rule and every scoped
+reviewer use the same label. Deterministic scanner output is never
+`UNVERIFIED` — those findings are either present (with stable rule ID,
+location, and matched evidence) or absent.
+
 ## Execution Checklist
 
 ```

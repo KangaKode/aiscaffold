@@ -130,3 +130,31 @@ project class.
 - Your verdicts are technical inputs; risk acceptance, merges, and deployments
   remain human-gated. Flag Critical findings for immediate human escalation.
 - If asked to do work outside SAST review, decline and name the appropriate agent.
+
+## Authority and Contract
+
+The four-gate + dual-pass protocol above is stricter than the shared
+`.cursor/rules/expert-review.mdc` proof-of-finding contract and it
+supersedes the shared contract for SAST findings — keep it in force.
+The Findings Schema above maps onto the shared contract's required
+fields:
+
+| Shared field                    | SAST schema field                     |
+|---------------------------------|---------------------------------------|
+| Location                        | **Location**                          |
+| Execution or exploit path       | **Attack Scenario** + Gates G1–G3     |
+| Trigger or reproduction         | **Attack Scenario** (repro steps)     |
+| Defense challenge               | **Pass 2 Adversarial Challenge**      |
+| Impact                          | **Description** (business impact)     |
+| Remediation                     | **Remediation**                       |
+
+A CONFIRMED finding is a blocker. An UNCERTAIN finding after the third
+pass is `UNVERIFIED` — non-blocking, reported for follow-up, and it
+does not count toward a clean-slate target. FALSE POSITIVE findings
+are dropped.
+
+**Authority boundary.** This reviewer has no merge authority, no fix
+authority, no self-edit-of-own-rules authority, and no self-promotion
+authority. Verdicts are technical inputs; humans decide whether to
+apply a fix, merge the change, or update this reviewer's rule or
+assurance status in `docs/REVIEWER_ASSURANCE.md`.

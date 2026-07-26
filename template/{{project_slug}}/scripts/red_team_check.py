@@ -17,30 +17,48 @@ import sys
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Stable rule IDs (proof-of-finding contract, see
+# ``.cursor/rules/expert-review.mdc``). Root scanner
+# ``scripts/agent_review.py`` uses the same identifiers so generated
+# projects share one vocabulary with the source repo.
+RULE_SEC_API_KEY = "SEC-API-KEY"
+RULE_SEC_HARDCODED_API_KEY = "SEC-HARDCODED-API-KEY"
+RULE_SEC_HARDCODED_CREDENTIAL = "SEC-HARDCODED-CREDENTIAL"
+RULE_SEC_HARDCODED_TOKEN = "SEC-HARDCODED-TOKEN"
+RULE_SEC_SQL_FSTRING = "SEC-SQL-FSTRING"
+RULE_SEC_SQL_FORMAT = "SEC-SQL-FORMAT"
+RULE_SEC_EVAL = "SEC-EVAL"
+RULE_SEC_EXEC = "SEC-EXEC"
+RULE_SEC_PICKLE = "SEC-PICKLE"
+RULE_ARCH_LAYER_VIOLATION = "ARCH-LAYER-VIOLATION"
+RULE_SIZE_FILE_OVER_CAP = "SIZE-FILE-OVER-CAP"
+RULE_DATA_DROP_TABLE_UNGUARDED = "DATA-DROP-TABLE-UNGUARDED"
+RULE_DATA_DELETE_WITHOUT_WHERE = "DATA-DELETE-WITHOUT-WHERE"
+
 SECRET_PATTERNS = [
-    (r'["\']sk-[a-zA-Z0-9_-]{10,}["\']', "Possible API key (sk-...)"),
-    (r'api[_-]?key\s*=\s*["\'][^"\']{10,}["\']', "Possible hardcoded API key"),
-    (r'password\s*=\s*["\'][^"\']+["\']', "Possible hardcoded password"),
-    (r'token\s*=\s*["\'][a-zA-Z0-9_-]{20,}["\']', "Possible hardcoded token"),
+    (r'["\'](sk)-[a-zA-Z0-9_-]{10,}["\']', RULE_SEC_API_KEY, "Possible API key (sk-...)"),
+    (r'(api[_-]?key)\s*=\s*["\'][^"\']{10,}["\']', RULE_SEC_HARDCODED_API_KEY, "Possible hardcoded API key"),
+    (r'(password)\s*=\s*["\'][^"\']+["\']', RULE_SEC_HARDCODED_CREDENTIAL, "Possible hardcoded password"),
+    (r'(token)\s*=\s*["\'][a-zA-Z0-9_-]{20,}["\']', RULE_SEC_HARDCODED_TOKEN, "Possible hardcoded token"),
 ]
 
 SQL_INJECTION_PATTERNS = [
-    (r'execute\(f["\']', "Possible SQL injection via f-string"),
-    (r'execute\(["\'].*\.format\(', "Possible SQL injection via .format()"),
+    (r'execute\(f["\']', RULE_SEC_SQL_FSTRING, "Possible SQL injection via f-string"),
+    (r'execute\(["\'].*\.format\(', RULE_SEC_SQL_FORMAT, "Possible SQL injection via .format()"),
 ]
 
 DDL_PATTERNS = [r'ALTER\s+TABLE', r'CREATE\s+(TABLE|INDEX|TRIGGER)', r'DROP\s+(TABLE|INDEX)\s+IF\s+EXISTS', r'PRAGMA']
 
 DANGEROUS_PATTERNS = [
-    (r'\beval\s*\(', "Use of eval()"),
-    (r'\bexec\s*\(', "Use of exec()"),
-    (r'\bpickle\.loads?\s*\(', "Use of pickle"),
+    (r'\beval\s*\(', RULE_SEC_EVAL, "Use of eval()"),
+    (r'\bexec\s*\(', RULE_SEC_EXEC, "Use of exec()"),
+    (r'\bpickle\.loads?\s*\(', RULE_SEC_PICKLE, "Use of pickle"),
 ]
 
-
 class Finding:
-    def __init__(self, severity, filepath, line, message, evidence, fix):
+    def __init__(self, severity, rule_id, filepath, line, message, evidence, fix):
         self.severity = severity
+        self.rule_id = rule_id
         self.filepath = filepath
         self.line = line
         self.message = message
@@ -49,7 +67,23 @@ class Finding:
 
     def __str__(self):
         rel = os.path.relpath(self.filepath, PROJECT_ROOT) if self.filepath else "N/A"
-        return f"[{self.severity}] {rel}:{self.line} - {self.message}\n  EVIDENCE: {self.evidence}\n  FIX: {self.fix}"
+        return (
+            f"[{self.severity}] [{self.rule_id}] {rel}:{self.line} - {self.message}\n"
+            f"  EVIDENCE: {self.evidence}\n  FIX: {self.fix}"
+        )
+
+
+def _credential_evidence(match, line):
+    """Return a keyword-only evidence string for credential-shaped rules.
+
+    Never quotes the credential value. If ``match`` provides a capturing
+    group (the credential keyword), that keyword is surfaced; otherwise
+    a redacted placeholder is used so the reviewer still sees an anchor
+    without leaking the secret.
+    """
+    if match and match.groups():
+        return f"keyword={match.group(1)}"
+    return "keyword=<redacted>"
 
 
 def check_secrets(fp, content):
@@ -57,9 +91,12 @@ def check_secrets(fp, content):
     for n, line in enumerate(content.split("\n"), 1):
         if line.strip().startswith("#"):
             continue
-        for pat, desc in SECRET_PATTERNS:
-            if re.search(pat, line, re.IGNORECASE):
-                findings.append(Finding("BLOCKING", fp, n, f"Security: {desc}", line.strip()[:100],
+        for pat, rule_id, desc in SECRET_PATTERNS:
+            match = re.search(pat, line, re.IGNORECASE)
+            if match:
+                evidence = _credential_evidence(match, line)
+                findings.append(Finding(
+                    "BLOCKING", rule_id, fp, n, f"Security: {desc}", evidence,
                     "Replace the hardcoded value with os.environ.get('ENV_VAR_NAME'). "
                     "Add the variable to .env.example with a placeholder value. "
                     "Never commit secrets to git."))
@@ -69,11 +106,11 @@ def check_secrets(fp, content):
 def check_sql_injection(fp, content):
     findings = []
     for n, line in enumerate(content.split("\n"), 1):
-        for pat, desc in SQL_INJECTION_PATTERNS:
+        for pat, rule_id, desc in SQL_INJECTION_PATTERNS:
             if re.search(pat, line):
                 is_ddl = any(re.search(d, line, re.IGNORECASE) for d in DDL_PATTERNS)
                 sev = "WARNING" if is_ddl else "BLOCKING"
-                findings.append(Finding(sev, fp, n, f"Security: {desc}", line.strip()[:100],
+                findings.append(Finding(sev, rule_id, fp, n, f"Security: {desc}", line.strip()[:100],
                     "DDL statements are acceptable if input is trusted." if is_ddl else
                     "Replace f-string/format with parameterized query: "
                     "conn.execute('SELECT * FROM t WHERE id = ?', (user_id,)). "
@@ -86,7 +123,7 @@ def check_dangerous(fp, content):
     for n, line in enumerate(content.split("\n"), 1):
         if line.strip().startswith("#"):
             continue
-        for pat, desc in DANGEROUS_PATTERNS:
+        for pat, rule_id, desc in DANGEROUS_PATTERNS:
             if re.search(pat, line):
                 fixes = {
                     r'\beval\s*\(': "Replace eval() with ast.literal_eval() for data parsing, "
@@ -97,7 +134,7 @@ def check_dangerous(fp, content):
                                               "Pickle can execute arbitrary code during deserialization.",
                 }
                 fix = next((v for k, v in fixes.items() if re.search(k, line)), "Use safe alternatives.")
-                findings.append(Finding("BLOCKING", fp, n, f"Security: {desc}", line.strip()[:100], fix))
+                findings.append(Finding("BLOCKING", rule_id, fp, n, f"Security: {desc}", line.strip()[:100], fix))
     return findings
 
 
@@ -134,7 +171,7 @@ def check_architecture(fp, content):
         if name:
             for prefix in forbidden.get(module, []):
                 if name.startswith(prefix):
-                    findings.append(Finding("BLOCKING", fp, node.lineno,
+                    findings.append(Finding("BLOCKING", RULE_ARCH_LAYER_VIOLATION, fp, node.lineno,
                         f"Architecture: {module}/ imports {prefix.rstrip('.')}/ (forbidden)",
                         f"import {name}", "Extract shared types to a lower layer"))
     return findings
@@ -143,7 +180,7 @@ def check_architecture(fp, content):
 def check_file_size(fp, content):
     lc = content.count("\n") + 1
     if lc > 500:
-        return [Finding("WARNING", fp, 0, f"Size: {lc} lines (limit: 500)", f"{lc} lines", "Split into smaller modules")]
+        return [Finding("WARNING", RULE_SIZE_FILE_OVER_CAP, fp, 0, f"Size: {lc} lines (limit: 500)", f"{lc} lines", "Split into smaller modules")]
     return []
 
 
@@ -151,9 +188,9 @@ def check_data_safety(fp, content):
     findings = []
     for n, line in enumerate(content.split("\n"), 1):
         if re.search(r'DROP\s+TABLE\s+(?!IF\s+EXISTS)', line, re.IGNORECASE):
-            findings.append(Finding("BLOCKING", fp, n, "Data: DROP TABLE without IF EXISTS", line.strip()[:100], "Use DROP TABLE IF EXISTS"))
+            findings.append(Finding("BLOCKING", RULE_DATA_DROP_TABLE_UNGUARDED, fp, n, "Data: DROP TABLE without IF EXISTS", line.strip()[:100], "Use DROP TABLE IF EXISTS"))
         if re.search(r'DELETE\s+FROM\s+\w+\s*["\';]', line, re.IGNORECASE) and "WHERE" not in line.upper():
-            findings.append(Finding("BLOCKING", fp, n, "Data: DELETE without WHERE", line.strip()[:100], "Add WHERE clause"))
+            findings.append(Finding("BLOCKING", RULE_DATA_DELETE_WITHOUT_WHERE, fp, n, "Data: DELETE without WHERE", line.strip()[:100], "Add WHERE clause"))
     return findings
 
 

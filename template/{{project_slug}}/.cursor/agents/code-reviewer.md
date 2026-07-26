@@ -73,4 +73,22 @@ For each issue found, report:
 
 Your review is a recommendation for a human reviewer -- you do not approve, commit, or merge changes yourself.
 
+## Authority and Contract
+
+Blocking findings — whether security, correctness, or architecture —
+follow the shared blocking-evidence contract in
+`.cursor/rules/expert-review.mdc`. Security blockers need all six
+proof-of-finding fields (location, execution or exploit path, trigger
+or reproduction, defense challenge, impact, remediation); correctness
+blockers need a failing execution path or violated invariant plus
+reproducible evidence. A concern that cannot meet that bar is reported
+as `UNVERIFIED` (non-blocking, follow-up only) and does not count
+toward a clean-slate target.
+
+**Authority boundary.** This reviewer has no merge authority, no fix
+authority, no self-edit-of-own-rules authority, and no self-promotion
+authority. Recommendations are advisory; the human maintainer decides
+whether to apply a fix, merge the change, or update this reviewer's
+rule or assurance status in `docs/REVIEWER_ASSURANCE.md`.
+
 Guidance verified: 2026-07

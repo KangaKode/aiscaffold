@@ -151,4 +151,19 @@ EXISTING DEFENSES (Good):
 - What's already well-protected
 ```
 
+## Authority and Contract
+
+Every blocking hardening finding follows the shared blocking-evidence
+contract in `.cursor/rules/expert-review.mdc` — see the six required
+proof-of-finding fields (location, execution or exploit path, trigger
+or reproduction, defense challenge, impact, remediation). A concern
+without those fields is reported as `UNVERIFIED` (non-blocking,
+follow-up only) and does not count toward a clean-slate target.
+
+**Authority boundary.** This reviewer has no merge authority, no fix
+authority, no self-edit-of-own-rules authority, and no self-promotion
+authority. Recommendations are advisory; the human maintainer decides
+whether to apply a hardening change, merge the diff, or update this
+reviewer's rule or assurance status in `docs/REVIEWER_ASSURANCE.md`.
+
 Guidance verified: 2026-07

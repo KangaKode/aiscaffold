@@ -63,8 +63,41 @@ def review_code_quality(filepath, content, rel_path):
 # =============================================================================
 
 
+# Stable rule IDs for deterministic security findings.
+#
+# These IDs are part of the proof-of-finding contract (see
+# ``template/{{project_slug}}/.cursor/rules/expert-review.mdc``): every
+# blocking security finding carries a stable ID, exact location
+# (``rel_path:lineno``), and matched evidence. Tests in
+# ``tests/test_agent_review.py`` pin the three IDs below by name.
+RULE_SQL_FSTRING = "SEC-SQL-FSTRING"
+RULE_SQL_FORMAT = "SEC-SQL-FORMAT"
+RULE_OS_SYSTEM = "SEC-OS-SYSTEM"
+RULE_SHELL_TRUE = "SEC-SHELL-TRUE"
+RULE_HARDCODED_CREDENTIAL = "SEC-HARDCODED-CREDENTIAL"
+
+
+def _fail_finding(rule_id, rel_path, lineno, description, evidence):
+    """Emit a stable-ID security finding via the ``security`` agent slot.
+
+    Format: ``[SEC-...] rel_path:lineno -- description (evidence: ...)``.
+    ``evidence`` must be the offending code fragment or the trigger
+    keyword; it must NEVER contain a secret value. Callers pass a
+    keyword or shape for credential findings and the trimmed line for
+    all other patterns.
+    """
+    evidence_str = f" (evidence: {evidence})" if evidence else ""
+    fail("security", f"[{rule_id}] {rel_path}:{lineno} -- {description}{evidence_str}")
+
+
 def review_security(filepath, content, rel_path):
-    """Simulate security-hardener agent checks."""
+    """Simulate security-hardener agent checks.
+
+    Every failure emitted here carries a stable rule ID, the exact
+    ``rel_path:lineno`` location, and matched evidence per the
+    proof-of-finding contract. Detection outcomes match the previous
+    free-text implementation; only the message shape changed.
+    """
     lines = content.split("\n")
 
     for n, line in enumerate(lines, 1):
@@ -74,23 +107,67 @@ def review_security(filepath, content, rel_path):
 
         # f-string in SQL execute
         if re.search(r'\.execute\(f["\']', line):
-            fail("security", f"{rel_path}:{n} -- f-string in SQL execute (use parameterized queries)")
+            _fail_finding(
+                RULE_SQL_FSTRING,
+                rel_path,
+                n,
+                "f-string in SQL execute (use parameterized queries)",
+                stripped,
+            )
 
         # .format() in SQL execute
         if re.search(r'\.execute\(["\'].*\.format\(', line):
-            fail("security", f"{rel_path}:{n} -- .format() in SQL execute (use parameterized queries)")
+            _fail_finding(
+                RULE_SQL_FORMAT,
+                rel_path,
+                n,
+                ".format() in SQL execute (use parameterized queries)",
+                stripped,
+            )
 
         # os.system or subprocess with shell=True
         if re.search(r'os\.system\(', line):
-            fail("security", f"{rel_path}:{n} -- os.system() is unsafe (use subprocess.run with shell=False)")
+            _fail_finding(
+                RULE_OS_SYSTEM,
+                rel_path,
+                n,
+                "os.system() is unsafe (use subprocess.run with shell=False)",
+                stripped,
+            )
         if re.search(r'subprocess.*shell\s*=\s*True', line):
-            fail("security", f"{rel_path}:{n} -- subprocess with shell=True is unsafe")
+            _fail_finding(
+                RULE_SHELL_TRUE,
+                rel_path,
+                n,
+                "subprocess with shell=True is unsafe",
+                stripped,
+            )
 
-        # Hardcoded credentials (outside comments and test files)
+        # Hardcoded credentials (outside comments and test files).
+        # Evidence quotes ONLY the credential keyword that fired the
+        # rule; the credential value must never enter the finding text
+        # because findings surface in reviewer output and CI logs.
         if "test" not in rel_path.lower():
-            if re.search(r'(password|secret|token)\s*=\s*["\'][^"\']{8,}["\']', line, re.IGNORECASE):
-                if "default" not in line.lower() and "example" not in line.lower() and "changeme" not in line.lower():
-                    fail("security", f"{rel_path}:{n} -- Possible hardcoded credential")
+            cred_match = re.search(
+                r'(password|secret|token)\s*=\s*["\'][^"\']{8,}["\']',
+                line,
+                re.IGNORECASE,
+            )
+            if cred_match:
+                lowered = line.lower()
+                if (
+                    "default" not in lowered
+                    and "example" not in lowered
+                    and "changeme" not in lowered
+                ):
+                    keyword = cred_match.group(1)
+                    _fail_finding(
+                        RULE_HARDCODED_CREDENTIAL,
+                        rel_path,
+                        n,
+                        "Possible hardcoded credential",
+                        f"keyword={keyword}",
+                    )
 
 
 # =============================================================================
