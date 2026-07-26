@@ -94,6 +94,17 @@ RENDER_CONTEXT = {
     "include_learning": True,
 }
 
+# Second render context that flips the API-gateway toggle OFF. The ``load``
+# extra in ``pyproject.toml.jinja`` is guarded by ``include_api_gateway``,
+# so this alternate render is the only way to verify that the generated CI
+# actually mirrors the conditional extras — a single all-on render would
+# accept a security job that unconditionally installs ``.[load]`` regardless
+# of the toggle. All other unconditional extras (``postgres``, ``mcp``,
+# ``metrics``, ``otel``) must still install with the gateway off.
+RENDER_CONTEXT_NO_API_GATEWAY = dict(RENDER_CONTEXT, include_api_gateway=False)
+UNCONDITIONAL_EXTRAS = ("postgres", "mcp", "metrics", "otel")
+API_GATEWAY_ONLY_EXTRAS = ("load",)
+
 # Commit-scoped Gitleaks fingerprint: <40-hex-sha>:<path>:<rule>:<line>.
 # No wildcard, no bare path, no rule-wide entry.
 _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{40}:[^:\s]+:[^:\s]+:\d+$")
@@ -123,10 +134,11 @@ def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _render_template_workflow() -> str:
-    """Render ``ci.yml.jinja`` with the standard copier answers."""
+def _render_template_workflow(context: dict | None = None) -> str:
+    """Render ``ci.yml.jinja`` with a copier answer set (default: all toggles on)."""
     env = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
-    return env.from_string(_text(TEMPLATE_WORKFLOW_JINJA)).render(**RENDER_CONTEXT)
+    ctx = RENDER_CONTEXT if context is None else context
+    return env.from_string(_text(TEMPLATE_WORKFLOW_JINJA)).render(**ctx)
 
 
 def _job_step_texts(job: dict) -> list[str]:
@@ -151,11 +163,49 @@ def _job_step_texts(job: dict) -> list[str]:
     return out
 
 
+def _step_run_texts(job: dict) -> list[str]:
+    """Return every step's ``run:`` script text (never ``name``/``uses``/``with``).
+
+    Used by tests that require an invocation to appear in what the step
+    actually executes, not merely in a human-readable ``name:`` label.
+    """
+    out: list[str] = []
+    for step in job.get("steps") or []:
+        if isinstance(step, dict) and isinstance(step.get("run"), str):
+            out.append(step["run"])
+    return out
+
+
 def _job(workflow: dict, name: str) -> dict | None:
     jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
     if not isinstance(jobs, dict):
         return None
     return jobs.get(name)
+
+
+def _branch_protection_windows(text: str) -> list[str]:
+    """Return every 'branch protection' occurrence as a bounded local window.
+
+    Each returned slice is anchored on a 'branch protection' match, bounded
+    forward to the next markdown heading (or 500 chars) and backward by 200
+    chars. This is the anchor-window pattern used by
+    ``low_obligation_window`` / ``medium_concise_window`` in
+    ``tests/test_development_process.py``; scoping the three-way co-occurrence
+    to a single window here prevents concepts scattered across unrelated
+    sections from vacuously satisfying the documentation contract.
+    """
+    lower = text.lower()
+    windows: list[str] = []
+    for match in re.finditer(r"branch protection", lower):
+        start = max(0, match.start() - 200)
+        after = lower[match.end() :]
+        heading = re.search(r"\n#+[\s#]", after)
+        if heading is not None:
+            end = match.end() + heading.start()
+        else:
+            end = match.end() + 500
+        windows.append(lower[start:end])
+    return windows
 
 
 class RootWorkflowSecurityJobTests(unittest.TestCase):
@@ -246,20 +296,34 @@ class RootWorkflowSecurityJobTests(unittest.TestCase):
             job,
             "security job missing; cannot verify audit-gate invocation.",
         )
-        blob = "\n".join(_job_step_texts(job))
-        self.assertIn(
-            "pip_audit_gate.py",
-            blob,
+        # The invocation must be in a step's ``run:`` script, not merely
+        # mentioned in a step's human-readable ``name:``. A ``name:``-only
+        # match would let a step named "Audit core with pip_audit_gate.py"
+        # satisfy the assertion without ever executing the gate.
+        gate_runs = [
+            run for run in _step_run_texts(job) if "pip_audit_gate.py" in run
+        ]
+        self.assertTrue(
+            gate_runs,
             "Root security job must invoke the shared audit gate at "
-            "template/{{project_slug}}/scripts/pip_audit_gate.py; there is no "
-            "second copy at the root.",
+            "template/{{project_slug}}/scripts/pip_audit_gate.py from a "
+            "step's `run:` script (there is no second copy at the root, and "
+            "a mention in `name:` is not an invocation).",
         )
-        self.assertRegex(
-            blob,
-            r"\bcore\b",
-            "Root security job must scope the audit-gate invocation to "
-            "core/ (the root aiscaffold Python project).",
-        )
+        # ``core`` must appear inside the same step that runs the gate,
+        # scoping the assertion to the invocation itself. A bare ``\bcore\b``
+        # somewhere else in the job (e.g. a pre-check step or an unrelated
+        # comment referencing "the core repo") would otherwise satisfy this
+        # test even if the gate were pointed at the wrong target.
+        for run in gate_runs:
+            self.assertRegex(
+                run,
+                r"\bcore\b",
+                "Root security job's audit-gate `run:` must scope the "
+                "invocation to `core/` (the root aiscaffold Python project); "
+                "an unrelated 'core' mention elsewhere in the job does not "
+                f"count. Offending step run:\n{run}",
+            )
 
     def test_no_scanner_bypass_flags(self):
         job = _job(self.workflow, "security")
@@ -267,7 +331,23 @@ class RootWorkflowSecurityJobTests(unittest.TestCase):
             job,
             "security job missing; cannot verify absence of bypass flags.",
         )
+        # A job-level ``continue-on-error: true`` would neuter the entire
+        # security job regardless of step-level flags, so check that first.
+        self.assertNotEqual(
+            job.get("continue-on-error"),
+            True,
+            "Root security job sets job-level `continue-on-error: true`, "
+            "which turns every step's failure into a soft pass and defeats "
+            "the entire fail-closed contract.",
+        )
         step_texts = _job_step_texts(job)
+        # A workflow with zero steps would satisfy every per-step pattern
+        # vacuously; require at least one step before iterating.
+        self.assertTrue(
+            step_texts,
+            "Root security job has no steps; the bypass-flag scan cannot "
+            "pass vacuously against an empty step list.",
+        )
         for step_text in step_texts:
             for label, pattern in _BYPASS_PATTERNS:
                 with self.subTest(bypass=label, step=step_text[:80]):
@@ -276,6 +356,20 @@ class RootWorkflowSecurityJobTests(unittest.TestCase):
                         f"security job step uses forbidden bypass {label!r}; "
                         "scanners must fail closed.",
                     )
+
+    def test_no_duplicate_root_audit_gate(self):
+        # The canonical audit gate ships at
+        # template/{{project_slug}}/scripts/pip_audit_gate.py; the root
+        # workflow invokes the same file via a relative template path.
+        # A second copy at repo-root scripts/ would silently drift out of
+        # sync — one owner, one file.
+        root_dup = REPO_ROOT / "scripts" / "pip_audit_gate.py"
+        self.assertFalse(
+            root_dup.exists(),
+            f"Duplicate audit gate found at {root_dup}. The canonical "
+            "location is template/{{project_slug}}/scripts/pip_audit_gate.py; "
+            "the root workflow must invoke that same file, not a fork of it.",
+        )
 
     def test_summary_needs_security(self):
         summary = _job(self.workflow, "summary")
@@ -458,11 +552,17 @@ class TemplateRenderedWorkflowTests(unittest.TestCase):
             "Template security job must install base + development deps "
             "via requirements.txt before running pip-audit.",
         )
-        for extra in ("postgres", "mcp", "metrics", "otel", "load"):
+        # Bracket-form extras spec (``[postgres]``, ``[postgres,mcp,...]``)
+        # is the only pip-supported way to install package extras from a
+        # source tree — but we do not pin the specific ``.[postgres]``
+        # invocation form: quoted variants (``"".[postgres]""``, ``".[postgres]"``,
+        # ``pkg[postgres]``, ``$(pwd)[postgres]``) are all valid ways to
+        # request the same extra. Only the extras spec itself is asserted.
+        for extra in (*UNCONDITIONAL_EXTRAS, *API_GATEWAY_ONLY_EXTRAS):
             with self.subTest(extra=extra):
                 self.assertRegex(
                     blob,
-                    rf"\.\[[^]]*\b{extra}\b[^]]*\]",
+                    rf"\[[^]]*\b{extra}\b[^]]*\]",
                     f"Template security job must install the {extra!r} extra "
                     "(rendered from pyproject.toml.jinja) so pip-audit sees "
                     "the same resolved set generated projects actually use.",
@@ -472,19 +572,41 @@ class TemplateRenderedWorkflowTests(unittest.TestCase):
         self._require_workflow()
         job = _job(self.workflow, "security")
         self.assertIsNotNone(job, "security job missing in rendered template ci.yml.")
-        blob = "\n".join(_job_step_texts(job))
-        self.assertIn(
-            "scripts/pip_audit_gate.py",
-            blob,
+        # Require the invocation to appear in a step's ``run:`` (what the
+        # step actually executes), not merely in a ``name:`` label.
+        gate_runs = [
+            run
+            for run in _step_run_texts(job)
+            if "scripts/pip_audit_gate.py" in run
+        ]
+        self.assertTrue(
+            gate_runs,
             "Template security job must invoke the audit gate shipped at "
-            "scripts/pip_audit_gate.py inside the generated project.",
+            "scripts/pip_audit_gate.py inside the generated project from a "
+            "step's `run:` script; a bare mention in `name:` is not an "
+            "invocation.",
         )
 
     def test_no_scanner_bypass_flags_in_rendered(self):
         self._require_workflow()
         job = _job(self.workflow, "security")
         self.assertIsNotNone(job, "security job missing in rendered template ci.yml.")
-        for step_text in _job_step_texts(job):
+        # Job-level ``continue-on-error: true`` neuters the whole job; check
+        # it before scanning steps.
+        self.assertNotEqual(
+            job.get("continue-on-error"),
+            True,
+            "Rendered template security job sets job-level "
+            "`continue-on-error: true`, which turns every step's failure "
+            "into a soft pass and defeats the fail-closed contract.",
+        )
+        step_texts = _job_step_texts(job)
+        self.assertTrue(
+            step_texts,
+            "Rendered template security job has no steps; the bypass-flag "
+            "scan cannot pass vacuously against an empty step list.",
+        )
+        for step_text in step_texts:
             for label, pattern in _BYPASS_PATTERNS:
                 with self.subTest(bypass=label, step=step_text[:80]):
                     self.assertIsNone(
@@ -541,6 +663,88 @@ class TemplateRenderedWorkflowTests(unittest.TestCase):
                 )
 
 
+class TemplateRenderedWorkflowNoApiGatewayTests(unittest.TestCase):
+    """Second render with ``include_api_gateway=False``: conditional extras.
+
+    The contract requires the security job to install exactly the extras
+    that ``pyproject.toml.jinja`` rendered — no more, no less. The default
+    render context has every optional toggle ON, so it cannot distinguish
+    between a workflow that installs ``.[load]`` unconditionally and one
+    that only installs it when the API gateway is present. Rendering a
+    second time with the gateway OFF exercises the conditional so the
+    ``load`` extra (guarded by ``include_api_gateway`` in the pyproject
+    template) must be absent while the unconditional extras remain.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rendered = _render_template_workflow(RENDER_CONTEXT_NO_API_GATEWAY)
+        try:
+            cls.workflow = yaml.safe_load(cls.rendered)
+        except yaml.YAMLError as exc:
+            cls.workflow = None
+            cls.yaml_error = exc
+        else:
+            cls.yaml_error = None
+
+    def _require_workflow(self):
+        if self.workflow is None:
+            self.fail(
+                "Rendered ci.yml.jinja (API gateway OFF) is not valid YAML; "
+                "cannot check conditional-extras contract. Error: "
+                f"{self.yaml_error}"
+            )
+
+    def test_rendered_workflow_yaml_parses_without_api_gateway(self):
+        self._require_workflow()
+        self.assertIsInstance(
+            self.workflow.get("jobs"),
+            dict,
+            "Rendered workflow (API gateway OFF) must have a 'jobs' mapping.",
+        )
+
+    def test_load_extra_absent_when_api_gateway_off(self):
+        self._require_workflow()
+        job = _job(self.workflow, "security")
+        self.assertIsNotNone(
+            job,
+            "security job missing in API-gateway-off render; cannot verify "
+            "conditional-extras behavior.",
+        )
+        blob = "\n".join(_job_step_texts(job))
+        for extra in API_GATEWAY_ONLY_EXTRAS:
+            with self.subTest(extra=extra):
+                self.assertNotRegex(
+                    blob,
+                    rf"\[[^]]*\b{extra}\b[^]]*\]",
+                    f"Template security job installs the {extra!r} extra "
+                    "even though include_api_gateway=False. The load extra "
+                    "is only defined in pyproject.toml.jinja when the API "
+                    "gateway is present; installing it unconditionally "
+                    "would break `pip install` in generated projects that "
+                    "opt out of the gateway.",
+                )
+
+    def test_unconditional_extras_still_present_when_api_gateway_off(self):
+        self._require_workflow()
+        job = _job(self.workflow, "security")
+        self.assertIsNotNone(
+            job,
+            "security job missing in API-gateway-off render; cannot verify "
+            "that unconditional extras still install.",
+        )
+        blob = "\n".join(_job_step_texts(job))
+        for extra in UNCONDITIONAL_EXTRAS:
+            with self.subTest(extra=extra):
+                self.assertRegex(
+                    blob,
+                    rf"\[[^]]*\b{extra}\b[^]]*\]",
+                    f"Template security job (API gateway OFF) must still "
+                    f"install the {extra!r} extra: it is unconditional in "
+                    "pyproject.toml.jinja.",
+                )
+
+
 class GeneratedBranchProtectionDocumentationTests(unittest.TestCase):
     """The template must name the summary job as the required branch-protection check."""
 
@@ -551,21 +755,30 @@ class GeneratedBranchProtectionDocumentationTests(unittest.TestCase):
         hits: list[Path] = []
         for path in candidates:
             try:
-                lower = _text(path).lower()
+                content = _text(path)
             except (OSError, UnicodeDecodeError):
                 continue
-            if (
-                "branch protection" in lower
-                and "summary" in lower
-                and "required" in lower
-            ):
-                hits.append(path)
+            # The three concepts must co-occur inside a single bounded
+            # window (paragraph or section) — not scattered anywhere in
+            # the whole file. This follows the anchor-window pattern used
+            # by ``low_obligation_window`` / ``medium_concise_window`` in
+            # ``tests/test_development_process.py``. A file-wide substring
+            # check would let a stray "branch protection" in one section,
+            # "summary" in an unrelated table of contents, and "required"
+            # in a third section all quilt together into a false pass.
+            for window in _branch_protection_windows(content):
+                if "summary" in window and "required" in window:
+                    hits.append(path)
+                    break
         self.assertTrue(
             hits,
             "No file under template/{{project_slug}}/ names the CI summary "
-            "job as the required branch-protection check. Task 4 must add "
-            "generated setup docs stating that the summary job (which "
-            "depends on test, lint, and security) is the required check.",
+            "job as the required branch-protection check within a single "
+            "documentation window (bounded by the next markdown heading or "
+            "500 chars around the 'branch protection' anchor). Task 4 must "
+            "add generated setup docs stating -- in one paragraph or "
+            "section -- that the summary job (which depends on test, lint, "
+            "and security) is the required check.",
         )
 
 

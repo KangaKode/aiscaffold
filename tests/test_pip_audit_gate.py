@@ -155,32 +155,51 @@ class ExceptionsFileValidationTests(unittest.TestCase):
 
     def test_missing_required_field_raises(self):
         # Any missing key from {id, reason, owner, compensating_control,
-        # expires} must fail closed.
+        # expires} must fail closed AND the error message must name the
+        # missing field. A bare ``assertRaises(ExceptionsError)`` would
+        # pass even if the gate rejected valid entries for the wrong
+        # reason (e.g. always claiming the date was malformed): distinct
+        # failure modes must produce distinct, distinguishing messages.
         for field in ("id", "reason", "owner", "compensating_control", "expires"):
             with self.subTest(missing=field):
                 entry = self._valid_entry()
                 entry.pop(field)
                 path = self._write_exceptions([entry])
-                with self.assertRaises(
-                    self.gate.ExceptionsError,
-                    msg=(
-                        f"Exception entry missing required field {field!r} "
-                        "must raise ExceptionsError before pip-audit runs."
-                    ),
-                ):
+                with self.assertRaises(self.gate.ExceptionsError) as ctx:
                     self.gate.load_exceptions(path)
+                message = str(ctx.exception)
+                self.assertRegex(
+                    message,
+                    r"(?i)missing|required",
+                    f"Exception entry missing field {field!r} must raise "
+                    "ExceptionsError with a message that says 'missing' or "
+                    "'required' (distinguishing this failure mode from "
+                    "duplicate-ID/malformed-date/expired). Got: "
+                    f"{message!r}.",
+                )
+                self.assertIn(
+                    field,
+                    message,
+                    f"Missing-field error must name the missing field "
+                    f"{field!r} in its message so operators know which "
+                    f"key to add. Got: {message!r}.",
+                )
 
     def test_duplicate_ids_raise(self):
         path = self._write_exceptions(
             [self._valid_entry(), self._valid_entry()]
         )
-        with self.assertRaises(
-            self.gate.ExceptionsError,
-            msg="Two exception entries with the same advisory ID must "
-            "raise ExceptionsError (silent merge would hide reachability "
-            "disagreement between two owners).",
-        ):
+        with self.assertRaises(self.gate.ExceptionsError) as ctx:
             self.gate.load_exceptions(path)
+        message = str(ctx.exception)
+        self.assertRegex(
+            message,
+            r"(?i)duplicate",
+            "Duplicate-ID error must say 'duplicate' in its message "
+            "(distinguishing this failure from missing-field/malformed-"
+            "date/expired). A silent merge would hide reachability "
+            f"disagreement between two owners. Got: {message!r}.",
+        )
 
     def test_malformed_date_raises(self):
         for bad_date in ("2026-13-99", "not-a-date", "2026/07/26", "20260726"):
@@ -188,24 +207,35 @@ class ExceptionsFileValidationTests(unittest.TestCase):
                 path = self._write_exceptions(
                     [self._valid_entry(expires=bad_date)]
                 )
-                with self.assertRaises(
-                    self.gate.ExceptionsError,
-                    msg=(
-                        f"Exception with malformed expires={bad_date!r} must "
-                        "raise ExceptionsError; only ISO-8601 dates are valid."
-                    ),
-                ):
+                with self.assertRaises(self.gate.ExceptionsError) as ctx:
                     self.gate.load_exceptions(path)
+                message = str(ctx.exception)
+                # Distinguish from the "expired" case: the entry here is
+                # not past its deadline, the date literal is unparseable.
+                # Word 'expired' alone would collapse both failure modes.
+                self.assertRegex(
+                    message,
+                    r"(?i)invalid|malformed|parse|iso|format",
+                    f"Malformed expires={bad_date!r} error must say one of "
+                    "'invalid'/'malformed'/'parse'/'iso'/'format' so the "
+                    "cause is distinguishable from an actually-expired "
+                    f"entry. Got: {message!r}.",
+                )
 
     def test_expired_entry_raises(self):
         yesterday = (date.today() - timedelta(days=1)).isoformat()
         path = self._write_exceptions([self._valid_entry(expires=yesterday)])
-        with self.assertRaises(
-            self.gate.ExceptionsError,
-            msg="Expired exception entries must raise ExceptionsError so "
-            "blocking behavior is restored automatically at the deadline.",
-        ):
+        with self.assertRaises(self.gate.ExceptionsError) as ctx:
             self.gate.load_exceptions(path)
+        message = str(ctx.exception)
+        self.assertRegex(
+            message,
+            r"(?i)expired",
+            "Expired-entry error must contain 'expired' so the failure "
+            "cause is distinguishable from a merely malformed date. "
+            "Blocking behavior is restored automatically at the deadline "
+            f"and operators need to know why. Got: {message!r}.",
+        )
 
     def test_non_list_top_level_raises(self):
         path = self._tempdir() / "exceptions.json"
@@ -383,15 +413,24 @@ class PipAuditExitCodePropagationTests(unittest.TestCase):
             "Gate must invoke pip-audit exactly once for a valid exceptions file.",
         )
         args = captured[0]
+        # Adjacency matters: pip-audit reads ``--ignore-vuln <id>`` as a
+        # two-token flag/value pair. Independent ``assertIn`` calls would
+        # pass even if the flag and ID were split apart -- e.g., all
+        # ``--ignore-vuln`` flags first, then all IDs at the end of argv,
+        # which pip-audit would parse as a stray ``--ignore-vuln`` (needs
+        # a value) plus positional IDs, silently dropping the intended
+        # ignore semantics.
+        pairs = [
+            (args[i], args[i + 1])
+            for i in range(len(args) - 1)
+            if args[i] == "--ignore-vuln"
+        ]
         self.assertIn(
-            "--ignore-vuln",
-            args,
-            "Active exception must be passed to pip-audit as --ignore-vuln.",
-        )
-        self.assertIn(
-            "GHSA-aaaa-bbbb-cccc",
-            args,
-            "Active exception's advisory ID must appear in the pip-audit args.",
+            ("--ignore-vuln", "GHSA-aaaa-bbbb-cccc"),
+            pairs,
+            "Active exception must be passed to pip-audit as an adjacent "
+            "'--ignore-vuln <id>' pair (pip-audit parses them positionally). "
+            f"Got argv: {args!r}.",
         )
 
 
