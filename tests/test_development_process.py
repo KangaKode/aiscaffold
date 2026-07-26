@@ -13,10 +13,6 @@ the four governance surfaces:
 They are documentation-parity checks: they prove the policy text exists in every
 asset that must carry it, not that humans classify individual changes correctly.
 Actual tier assignment and review remain a human gate.
-
-These tests are the RED phase for the AI-native SDLC assurance plan (PR 1,
-Task 1). They are expected to fail until Task 2 lands the tier policy in every
-asset and creates the generated development-process rule file.
 """
 
 from pathlib import Path
@@ -43,6 +39,26 @@ POLICY_ASSETS = {
 }
 
 RULE_ASSETS = ("root_rule", "template_rule")
+
+# Exemption-clause pattern used as the Low-tier window anchor. Must not use the
+# first bare ``\blow\b`` — process docs put an early "Low" in the mermaid
+# diagram, and always-applied rules match "Low" inside "non-Low".
+_LOW_EXEMPT_RE = re.compile(r"exempt[a-z]*[^\n]{0,60}design artifact")
+
+
+def low_obligation_window(text: str) -> str | None:
+    """Return the slice of ``text`` around the Low exemption clause, or None.
+
+    Anchoring on the exemption clause (not the first bare ``low``) is the
+    regression fix for the Bugbot finding that obligation checks could be
+    satisfied by diagram labels or ``non-Low`` prose.
+    """
+    lower = text.lower()
+    match = _LOW_EXEMPT_RE.search(lower)
+    if match is None:
+        return None
+    start = max(0, match.start() - 200)
+    return lower[start : match.start() + 1500]
 
 
 class RiskTierPolicyTests(unittest.TestCase):
@@ -180,6 +196,10 @@ class RiskTierPolicyTests(unittest.TestCase):
         # "specific"/"decision", "test" matches "latest", "review" matches
         # "reviewer", and "branch" matches "branches" — none of which prove
         # Low still carries the obligation.
+        #
+        # Window anchor is the exemption clause itself (not the first bare
+        # ``\blow\b``), because process docs put an early "Low" in the mermaid
+        # diagram and always-applied rules match "Low" inside "non-Low".
         obligation_patterns = {
             "branch isolation": r"\bbranch(?:es)?\b",
             "CI": r"\bci\b",
@@ -189,23 +209,12 @@ class RiskTierPolicyTests(unittest.TestCase):
         }
         for name in POLICY_ASSETS:
             with self.subTest(asset=name):
-                lower = self._text(name).lower()
-                self.assertRegex(
-                    lower,
-                    r"exempt[a-z]*[^\n]{0,60}design artifact",
+                text = self._text(name)
+                low_window = low_obligation_window(text)
+                self.assertIsNotNone(
+                    low_window,
                     f"{name}: Low tier not described as exempting design artifacts",
                 )
-                low_anchor = re.search(r"\blow\b", lower)
-                self.assertIsNotNone(
-                    low_anchor,
-                    f"{name}: no bare-word 'Low' anchor to scope the Low-tier "
-                    "obligation checks",
-                )
-                # Scope obligation matching to a windowed slice around the Low
-                # anchor so we require the obligations to appear adjacent to
-                # Low-tier text, not merely somewhere in the doc.
-                start = max(0, low_anchor.start() - 200)
-                low_window = lower[start : low_anchor.start() + 1500]
                 obligations_present = sum(
                     1
                     for pattern in obligation_patterns.values()
@@ -217,7 +226,7 @@ class RiskTierPolicyTests(unittest.TestCase):
                     f"{name}: Low tier must still preserve at least two of "
                     "branch isolation / CI / human ownership / applicable "
                     "review / tests obligations (whole-word matched, "
-                    "scoped to Low-tier context)",
+                    "scoped to the Low exemption clause)",
                 )
 
     def test_under_20_line_exemption_semantics(self):
@@ -245,6 +254,69 @@ class RiskTierPolicyTests(unittest.TestCase):
                     r"high[- ](?:tier[- ])?paths?[^\n]{0,80}invariant",
                     f"{name}: under-20-line rule must exclude high-tier paths and invariants",
                 )
+
+
+class LowObligationWindowRegressionTests(unittest.TestCase):
+    """Regression: obligation window must not use the first bare ``low``.
+
+    Bugbot found that scoping to the first ``\\blow\\b`` match let the
+    workflow-diagram tier label or a ``non-Low`` mention satisfy the
+    preserve-list check even after Low-tier obligation language was removed
+    from the exemption section.
+    """
+
+    def test_window_anchors_on_exemption_not_first_low(self):
+        # Early "Low" in a diagram label, and "non-Low" before the real section.
+        # Obligations sit next to the exemption clause only.
+        synthetic = (
+            'Classify["Risk-Tier (High / Medium / Low)"]\n'
+            "non-Low changes get a written plan.\n"
+            "### High\n"
+            "High requires four artifacts and CI review.\n"
+            "### Low\n"
+            "Low-tier work is exempt from design artifacts only. "
+            "Branch isolation, CI, tests, human ownership, and "
+            "post-change review still apply.\n"
+        )
+        window = low_obligation_window(synthetic)
+        self.assertIsNotNone(window)
+        # Exemption-anchored window must include the preserve list.
+        self.assertRegex(window, r"\bci\b")
+        self.assertIn("human ownership", window)
+        # And must NOT be the early diagram slice (which has "Low" but no
+        # exemption clause and no preserve list in the first 200 chars before
+        # an early-only match). Sanity: exemption text is in the window.
+        self.assertIn("exempt", window)
+        self.assertIn("design artifact", window)
+
+    def test_first_bare_low_window_would_miss_obligations(self):
+        """Demonstrate the pre-fix bug: first \\blow\\b is the wrong anchor."""
+        synthetic = (
+            'Classify["Risk-Tier (High / Medium / Low)"]\n'
+            + ("padding " * 400)
+            + "### Low\n"
+            "Low-tier work is exempt from design artifacts only. "
+            "Branch isolation, CI, tests, human ownership, and "
+            "post-change review still apply.\n"
+        )
+        lower = synthetic.lower()
+        first_low = re.search(r"\blow\b", lower)
+        self.assertIsNotNone(first_low)
+        bad_start = max(0, first_low.start() - 200)
+        bad_window = lower[bad_start : first_low.start() + 1500]
+        # Pre-fix window around the diagram "Low" never reaches the
+        # exemption clause when enough padding separates them.
+        self.assertNotIn("exempt", bad_window)
+        # Correct helper still finds the exemption section.
+        good_window = low_obligation_window(synthetic)
+        self.assertIsNotNone(good_window)
+        self.assertIn("exempt", good_window)
+        self.assertRegex(good_window, r"\bci\b")
+
+    def test_missing_exemption_returns_none(self):
+        self.assertIsNone(
+            low_obligation_window("High and Medium only. No exemption clause.")
+        )
 
 
 if __name__ == "__main__":
