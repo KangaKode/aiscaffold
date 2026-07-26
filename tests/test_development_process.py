@@ -20,6 +20,7 @@ asset and creates the generated development-process rule file.
 """
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -131,7 +132,7 @@ class RiskTierPolicyTests(unittest.TestCase):
                 )
                 self.assertRegex(
                     lower,
-                    r"workflow[- ]states|wireframes",
+                    r"(?:workflow[- ]states|wireframes)",
                     f"{name}: High-tier artifact 'workflow states/wireframes' missing",
                 )
                 self.assertRegex(
@@ -154,13 +155,38 @@ class RiskTierPolicyTests(unittest.TestCase):
                     r"one[^\n]{0,30}note",
                     f"{name}: Medium tier does not require one design note",
                 )
+                medium_anchor = re.search(r"\bmedium\b", lower)
+                self.assertIsNotNone(
+                    medium_anchor,
+                    f"{name}: no bare-word 'medium' anchor to scope the 'concise' "
+                    "requirement to Medium-tier text",
+                )
+                # Scope "concise" to a paragraph-sized window around the Medium
+                # anchor so this assertion cannot be satisfied by an unrelated
+                # occurrence of the word elsewhere in the doc.
+                start = max(0, medium_anchor.start() - 200)
+                medium_window = lower[start : medium_anchor.start() + 800]
                 self.assertIn(
                     "concise",
-                    lower,
-                    f"{name}: Medium tier design note not required to be 'concise'",
+                    medium_window,
+                    f"{name}: Medium tier design note not required to be 'concise' "
+                    "in the paragraph adjacent to the Medium-tier anchor",
                 )
 
     def test_low_tier_exempts_design_artifacts_only(self):
+        # Word-boundary / phrase patterns for the Low-tier obligations that must
+        # survive even though design artifacts are exempted. Substring matching
+        # here would be tautological on the ambient docs: "ci" matches
+        # "specific"/"decision", "test" matches "latest", "review" matches
+        # "reviewer", and "branch" matches "branches" — none of which prove
+        # Low still carries the obligation.
+        obligation_patterns = {
+            "branch isolation": r"\bbranch(?:es)?\b",
+            "CI": r"\bci\b",
+            "human ownership": r"human ownership",
+            "post-change review": r"\b(?:post[- ]change[- ])?reviews?\b",
+            "tests": r"\btests?\b",
+        }
         for name in POLICY_ASSETS:
             with self.subTest(asset=name):
                 lower = self._text(name).lower()
@@ -169,16 +195,29 @@ class RiskTierPolicyTests(unittest.TestCase):
                     r"exempt[a-z]*[^\n]{0,60}design artifact",
                     f"{name}: Low tier not described as exempting design artifacts",
                 )
+                low_anchor = re.search(r"\blow\b", lower)
+                self.assertIsNotNone(
+                    low_anchor,
+                    f"{name}: no bare-word 'Low' anchor to scope the Low-tier "
+                    "obligation checks",
+                )
+                # Scope obligation matching to a windowed slice around the Low
+                # anchor so we require the obligations to appear adjacent to
+                # Low-tier text, not merely somewhere in the doc.
+                start = max(0, low_anchor.start() - 200)
+                low_window = lower[start : low_anchor.start() + 1500]
                 obligations_present = sum(
                     1
-                    for token in ("branch", "ci", "human ownership", "review", "test")
-                    if token in lower
+                    for pattern in obligation_patterns.values()
+                    if re.search(pattern, low_window)
                 )
                 self.assertGreaterEqual(
                     obligations_present,
                     2,
                     f"{name}: Low tier must still preserve at least two of "
-                    "branch/CI/human ownership/review/tests obligations",
+                    "branch isolation / CI / human ownership / applicable "
+                    "review / tests obligations (whole-word matched, "
+                    "scoped to Low-tier context)",
                 )
 
     def test_under_20_line_exemption_semantics(self):
