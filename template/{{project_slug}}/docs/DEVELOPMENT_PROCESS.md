@@ -101,8 +101,9 @@ Low-tier work is **exempt from design artifacts** only. Every other gate
 still applies. Low-tier changes preserve:
 
 - branch isolation — never commit directly to `main`;
-- CI validation — quick checks, tests, and any secret/dependency scans
-  still run and still block;
+- CI validation — quick checks, tests, and the blocking `security` job
+  (Gitleaks over full history plus `pip-audit` through the fail-closed
+  exceptions gate) still run and still block;
 - applicable tests — new or updated tests for the touched behavior when
   there is any behavior to test;
 - human ownership — the maintainer approves the tier and the diff; and
@@ -123,6 +124,8 @@ whenever invoking the Low exemption.
 | Code review | Maintainability, correctness, and architecture drift |
 | Red-team review | Security regressions, prompt-injection risk, data leaks, and unsafe automation |
 | CI validation | Broken tests, lint failures, security findings, and template regressions |
+| Secret scanning (Gitleaks) | New secrets committed to the tree or reintroduced through history (`security` job, `.github/workflows/ci.yml`; pinned action, `fetch-depth: 0`) |
+| Dependency auditing (`pip-audit`) | Merging a change that ships known-vulnerable Python dependencies; every exception must pass through the fail-closed gate at `scripts/pip_audit_gate.py` with a named owner, compensating control, and expiry -- expired entries automatically restore blocking behaviour |
 
 ## Roundtable POC Handoff
 

@@ -7,6 +7,44 @@ so you can verify it.
 
 ---
 
+## CI and Branch Protection
+
+The generated `.github/workflows/ci.yml` runs four jobs on every push
+and pull request: `test` (pytest with coverage), `lint` (black + ruff),
+`security` (Bandit, Gitleaks over full history pinned by commit SHA,
+and `pip-audit` through the fail-closed exceptions gate at
+`scripts/pip_audit_gate.py`), and `summary`. The `summary` job depends
+on `test`, `lint`, and `security`, runs with `if: always()`, and exits
+nonzero unless every dependency reports `success` -- so a scanner
+failure blocks the merge without callers having to enumerate each job.
+
+Configure GitHub branch protection so that `summary` is the single
+required status check for merges to your default branch. Requiring
+`summary` alone is enough because it aggregates `test`, `lint`, and
+`security`; requiring each individually is redundant and drifts every
+time a job is renamed. Branch protection lives outside this repository
+and the scaffold cannot configure or verify it: after your first push,
+confirm the setting in `Settings -> Branches -> Branch protection
+rules` (or via `gh api`) and record the choice in your ops runbook.
+
+Gitleaks license: the pinned `gitleaks-action` is license-free for
+public repositories and personal GitHub accounts. Generated projects
+that live inside a GitHub *organization* need to register a Gitleaks
+license and expose it to CI as a repository secret named
+`GITLEAKS_LICENSE`; the scaffold cannot procure that for you. A
+missing license inside an organization surfaces as a failed
+`security` job (which then fails `summary`), not as a silent skip.
+
+Scanner unavailability is a failed job, not a warning. A transient
+network failure reaching PyPI or the Gitleaks license server may be
+re-run by a human, but the workflow must never be edited to convert
+those failures into a soft pass (no `continue-on-error`, no
+`|| true`, no `--fix`, no blanket ignore) -- the fail-closed
+contract is what makes the `summary` check trustworthy in branch
+protection.
+
+---
+
 ## Severity Matrix: What Fails How
 
 Components degrade independently. Know each one's posture before an
