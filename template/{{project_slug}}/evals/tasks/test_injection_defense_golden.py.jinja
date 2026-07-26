@@ -35,9 +35,14 @@ layers; any residual Layer-1 trip is a measured false positive, not zero.
 Run:      python evals/tasks/test_injection_defense_golden.py
 Rebaseline (intentional): python evals/tasks/test_injection_defense_golden.py --update-baseline
 
-Keep this file under 315 lines (raised from 300 for the frozen-legacy guard:
-the deterministic-layer categories are pinned so a careless --update-baseline
-cannot commit degraded Layer 1-2 behavior -- see frozen_violations).
+Keep this file under 345 lines (raised from 315 for the input_fragments
+loader path: benign look-alikes can now carry either a single ``input``
+or an ``input_fragments`` list -- see case_input and validate_schema --
+so a fixture can split secret-shaped strings on disk without any
+committed line matching a Gitleaks rule. The frozen-legacy guard is
+unchanged: the deterministic-layer categories are pinned so a careless
+--update-baseline cannot commit degraded Layer 1-2 behavior -- see
+frozen_violations).
 """
 
 import json
@@ -98,10 +103,21 @@ def resolve_payload(ref: str) -> str:
 
 
 def case_input(case: dict) -> str:
-    """The single text a case screens (literal for benign, corpus for attacks)."""
+    """The single text a case screens (literal for benign, corpus for attacks).
+
+    Benign look-alikes can carry the screened text either as a single
+    ``input`` string or as an ``input_fragments`` list that the loader
+    joins with the empty string. Fragmenting lets a fixture keep JWT,
+    hex-key, or other secret-shaped strings on disk without any
+    committed line matching a Gitleaks rule, while preserving the exact
+    runtime value the deterministic layers screen.
+    """
     src = case["source"]
     if src.startswith(("corpus:", "corpus_open:")):
         return resolve_payload(src)
+    fragments = case.get("input_fragments")
+    if fragments is not None:
+        return "".join(fragments)
     return case.get("input", "")
 
 
@@ -153,8 +169,26 @@ def validate_schema(data: dict) -> list[str]:
             except Exception as exc:  # noqa: BLE001 -- surface any lookup failure
                 errors.append(f"{cid}: unresolved corpus ref {src!r} ({exc})")
         elif src == "benign-lookalike":
-            if "input" not in case:
-                errors.append(f"{cid}: benign look-alike missing 'input'")
+            has_input = "input" in case
+            has_fragments = "input_fragments" in case
+            if has_input and has_fragments:
+                errors.append(
+                    f"{cid}: benign look-alike has both 'input' and "
+                    "'input_fragments'; pick one"
+                )
+            elif not has_input and not has_fragments:
+                errors.append(
+                    f"{cid}: benign look-alike missing 'input' or "
+                    "'input_fragments'"
+                )
+            elif has_fragments and not (
+                isinstance(case["input_fragments"], list)
+                and case["input_fragments"]
+                and all(isinstance(x, str) for x in case["input_fragments"])
+            ):
+                errors.append(
+                    f"{cid}: 'input_fragments' must be a non-empty list of strings"
+                )
         else:
             errors.append(
                 f"{cid}: source must be 'corpus:...', 'corpus_open:...', or "

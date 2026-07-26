@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Four jobs: test/lint/security run in parallel; summary is the single
+# required check to configure in branch protection (see docs/OPERATIONS.md).
+# Every GitHub Actions expression in this file is wrapped in a Jinja
+# raw block so Copier does not consume the leading dollar-brace pair
+# during rendering into the generated project.
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -54,7 +60,7 @@ jobs:
           python-version: "{{ python_version }}"
 
       - name: Install linters
-        run: pip install ruff black bandit
+        run: pip install ruff black
 
       - name: Check formatting
         run: black --check --diff .
@@ -62,5 +68,90 @@ jobs:
       - name: Lint
         run: ruff check .
 
-      - name: Security scan
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 is REQUIRED for Gitleaks to walk full local history
+      # of the generated project; a shallow clone would only scan the head
+      # commit and reintroduced secrets from older commits would slip past.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "{{ python_version }}"
+
+      # Bandit stays in the security job (moved out of lint). Formatting
+      # and lint checks live in `lint`; scanners live here so a security
+      # regression can be gated independently in branch protection via
+      # the `summary` job (which needs test + lint + security).
+      - name: Install security tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit pip-audit==2.10.1
+
+      # Install the same base + development set the test job installs,
+      # PLUS every rendered optional extra from pyproject.toml, so
+      # pip-audit sees the resolved dependency graph that a generated
+      # project actually uses in production. The `load` extra is only
+      # rendered into pyproject.toml.jinja when the API gateway is
+      # present, so it is only installed conditionally here; the
+      # unconditional extras (postgres, mcp, metrics, otel) always
+      # install. The bracket-form extras spec is preceded by ``.`` (the
+      # project source) so this survives the "must be preceded by a
+      # package target" contract check in tests/test_ci_security.py.
+      - name: Install project with all rendered extras
+        run: |
+          pip install -r requirements.txt
+          pip install ".[postgres,mcp,metrics,otel{% if include_api_gateway %},load{% endif %}]"
+
+      - name: Run Bandit (medium+ severity)
         run: bandit -r src/{{ project_slug }} -ll --quiet
+
+      # Gitleaks: full-history secret scan pinned to a commit SHA (not a
+      # tag) so a compromised or moved tag cannot ship a different
+      # scanner into this workflow.
+      #
+      # GITLEAKS_LICENSE: this action is license-free for public repos
+      # and personal accounts. If your generated project lives inside a
+      # GitHub *organization*, register a Gitleaks license and expose it
+      # to CI as a repository secret named GITLEAKS_LICENSE -- documented
+      # in docs/OPERATIONS.md; the scaffold cannot solve this for you.
+      - name: Run Gitleaks (full history)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
+        env:
+          GITHUB_TOKEN: {% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}
+
+      # pip-audit runs through the fail-closed exceptions gate: any
+      # exception row must declare id/reason/owner/compensating_control/
+      # expires, unexpired, no duplicates. An empty list is fine; the
+      # gate then invokes pip-audit with no --ignore-vuln pairs.
+      - name: Audit dependencies with pip-audit gate
+        run: |
+          python scripts/pip_audit_gate.py \
+            --exceptions .github/pip-audit-exceptions.json
+
+  summary:
+    # `summary` is the SINGLE check to require in branch protection: it
+    # aggregates test + lint + security. `if: always()` runs even when
+    # a dependency fails, and the run script exits nonzero unless every
+    # dependency reports `success`, so a scanner failure blocks the
+    # merge without the maintainer having to enumerate each job in the
+    # protection rule.
+    runs-on: ubuntu-latest
+    needs: [test, lint, security]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [ "{% raw %}${{ needs.test.result }}{% endraw %}" != "success" ] || \
+             [ "{% raw %}${{ needs.lint.result }}{% endraw %}" != "success" ] || \
+             [ "{% raw %}${{ needs.security.result }}{% endraw %}" != "success" ]; then
+            echo "CI FAILED"
+            echo "  test: {% raw %}${{ needs.test.result }}{% endraw %}"
+            echo "  lint: {% raw %}${{ needs.lint.result }}{% endraw %}"
+            echo "  security: {% raw %}${{ needs.security.result }}{% endraw %}"
+            exit 1
+          fi
+          echo "All CI checks passed"

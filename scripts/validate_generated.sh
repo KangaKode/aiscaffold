@@ -738,6 +738,63 @@ has "INDEX: DEVELOPMENT_PROCESS entry mentions risk-tier policy" 'DEVELOPMENT_PR
 has "INDEX: threat models section documented" '[Tt]hreat [Mm]odels' docs/INDEX.md
 lacks "INDEX: no legacy three-document assumption in Phased Model refs" 'three design documents' docs/INDEX.md
 
+# Task 4 -- rendered CI security job must ship in EVERY profile. These are
+# source-text assertions on the RENDERED workflow (the .jinja is copier's
+# input; the .yml here is copier's output), so they prove copier actually
+# emitted the security job into a generated project rather than trusting
+# a template-side unit test. The unit-level contract (structural YAML,
+# raw-block wrapping, extras conditional on include_api_gateway) lives in
+# tests/test_ci_security.py; these are the belt-and-braces install check.
+exists "security: rendered CI workflow ships" .github/workflows/ci.yml
+has "security: rendered CI defines a top-level security job" '^  security:' .github/workflows/ci.yml
+has "security: rendered checkout uses fetch-depth: 0" 'fetch-depth: 0' .github/workflows/ci.yml
+has "security: Gitleaks action pinned to the commit SHA" \
+    'gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7' .github/workflows/ci.yml
+has "security: pip-audit pinned to 2.10.1 in rendered workflow" \
+    'pip-audit==2.10.1' .github/workflows/ci.yml
+has "security: GITHUB_TOKEN github expression survives copier rendering" \
+    'secrets\.GITHUB_TOKEN' .github/workflows/ci.yml
+has "security: audit-gate invocation renders into workflow" \
+    'scripts/pip_audit_gate\.py' .github/workflows/ci.yml
+exists "security: audit-gate script ships in generated project" scripts/pip_audit_gate.py
+exists "security: exceptions file rendered into generated project" \
+    .github/pip-audit-exceptions.json
+has "security: exceptions file starts as an empty JSON list" \
+    '^\[\]' .github/pip-audit-exceptions.json
+has "security: summary aggregates test, lint, security" \
+    'needs:.*test.*lint.*security' .github/workflows/ci.yml
+lacks "security: no scanner --fix flag in rendered workflow" \
+    '[^-]--fix\b' .github/workflows/ci.yml
+lacks "security: no continue-on-error bypass in rendered workflow" \
+    'continue-on-error:[[:space:]]*true' .github/workflows/ci.yml
+lacks "security: no |\| true bypass in rendered workflow" \
+    '\|\|[[:space:]]*true' .github/workflows/ci.yml
+# The scaffold contract forbids ANY Gitleaks allowlist/ignore config
+# from shipping into a generated project (fixtures are cleaned at the
+# source; first-run Gitleaks in a generated repo must be clean without
+# any shipped suppression).
+absent "security: no .gitleaks.toml ships into generated project" .gitleaks.toml
+absent "security: no gitleaks.toml ships into generated project" gitleaks.toml
+absent "security: no .gitleaksignore ships into generated project" .gitleaksignore
+# Generated OPERATIONS.md names the summary job as the required
+# branch-protection check (the co-occurrence contract is unit-tested;
+# this is the render check).
+has "security: OPERATIONS.md documents branch protection" \
+    'branch protection' docs/OPERATIONS.md
+has "security: OPERATIONS.md names summary as the required check" \
+    'summary' docs/OPERATIONS.md
+has "security: OPERATIONS.md marks the check as required" \
+    'required' docs/OPERATIONS.md
+# Governance Non-Claims for the new scanners must render.
+has "security: GOVERNANCE names pip-audit non-lockfile limit" \
+    'pip-audit.*resolved environment' docs/GOVERNANCE.md
+has "security: GOVERNANCE names advisory-database limits" \
+    'advisory database has limits' docs/GOVERNANCE.md
+has "security: GOVERNANCE flags branch-protection external-only" \
+    'Branch protection cannot be configured' docs/GOVERNANCE.md
+has "security: GOVERNANCE flags exceptions file as human review" \
+    'exceptions file is a HUMAN review record' docs/GOVERNANCE.md
+
 # Open adversarial corpus + provenance ship in EVERY profile (tests/ is not
 # gated by include_evals). The fixture is plain .py copier never renders, so a
 # raw jinja sequence would survive to runtime -- assert there is none, and that
@@ -980,6 +1037,75 @@ if [ "$INCLUDE_EVALS" = "true" ]; then
 else
     absent "evals off: evals/ excluded" evals
     lacks "evals off: setup_check has no evals reference" 'evals' scripts/setup_check.py
+fi
+
+# =========================================================================
+# Step 12: Dependency Audit (pip-audit through the fail-closed gate)
+# =========================================================================
+# Every profile audits its rendered requirements set via
+# ``pip-audit -r requirements.txt`` (resolved from PyPI metadata, no full
+# install). The FULL profile additionally installs every rendered
+# optional extra into a throwaway venv and audits the resolved
+# environment, matching what the generated ``security`` CI job does. Any
+# other profile's extras subset is a strict subset of full's, so
+# auditing full once covers the cross product without multiplying venv
+# cost by four.
+#
+# Network failures (PyPI/OSV unreachable) fail this step. Do not add
+# ``|| true``, ``continue-on-error``, or ``--fix`` here; a transient
+# failure is a job to rerun, not a soft pass. Local runs must have
+# outbound access; CI runners already do.
+section "Step 12: Dependency Audit (pip-audit through gate)"
+# Both preconditions below are contract, not opportunistic: the
+# validation venv contract pins ``pip-audit==2.10.1``, and rendered
+# projects always emit ``requirements.txt``. A missing tool or missing
+# rendered file means the environment or the generator regressed, so
+# fail rather than emit a warning that a reviewer could miss --
+# validate_generated.sh is the gate that must pass before any code
+# review, and a silent skip here would let unaudited requirements
+# reach review.
+if ! command -v pip-audit &>/dev/null; then
+    fail "pip-audit not on PATH: the validation venv contract pins pip-audit==2.10.1; a missing tool is an environment regression, not a soft skip"
+elif [ ! -f "$GEN_ROOT/requirements.txt" ]; then
+    fail "pip-audit: requirements.txt missing in generated project at $GEN_ROOT/requirements.txt: a rendered project always emits requirements.txt, so this is a generator regression, not a soft skip"
+elif [ ! -f "$GEN_ROOT/scripts/pip_audit_gate.py" ]; then
+    fail "pip-audit gate script missing at scripts/pip_audit_gate.py"
+else
+    AUDIT_LOG="$TEST_DIR/pip_audit_${PROFILE}.log"
+    (cd "$GEN_ROOT" && python3 scripts/pip_audit_gate.py \
+        --exceptions .github/pip-audit-exceptions.json \
+        -r requirements.txt) >"$AUDIT_LOG" 2>&1
+    AUDIT_STATUS=$?
+    if [ "$AUDIT_STATUS" -eq 0 ]; then
+        pass "pip-audit: rendered requirements.txt clean (profile=$PROFILE)"
+    else
+        fail "pip-audit: findings or auditor error against requirements.txt (exit $AUDIT_STATUS)"
+        tail -40 "$AUDIT_LOG" | sed 's/^/    /'
+    fi
+
+    if [ "$PROFILE" = "full" ]; then
+        FULL_VENV="$TEST_DIR/audit-full-venv"
+        FULL_LOG="$TEST_DIR/pip_audit_full_env.log"
+        : >"$FULL_LOG"
+        if python3 -m venv "$FULL_VENV" >>"$FULL_LOG" 2>&1 \
+            && "$FULL_VENV/bin/pip" install --upgrade --quiet pip >>"$FULL_LOG" 2>&1 \
+            && "$FULL_VENV/bin/pip" install --quiet pip-audit==2.10.1 >>"$FULL_LOG" 2>&1 \
+            && "$FULL_VENV/bin/pip" install --quiet -r "$GEN_ROOT/requirements.txt" >>"$FULL_LOG" 2>&1 \
+            && (cd "$GEN_ROOT" && "$FULL_VENV/bin/pip" install --quiet ".[postgres,mcp,metrics,otel,load]" >>"$FULL_LOG" 2>&1); then
+            (cd "$GEN_ROOT" && "$FULL_VENV/bin/python" scripts/pip_audit_gate.py \
+                --exceptions .github/pip-audit-exceptions.json) >>"$FULL_LOG" 2>&1
+            FULL_STATUS=$?
+            if [ "$FULL_STATUS" -eq 0 ]; then
+                pass "pip-audit (full profile): extras-installed environment clean"
+            else
+                fail "pip-audit (full profile): findings or auditor error against extras (exit $FULL_STATUS)"
+                tail -40 "$FULL_LOG" | sed 's/^/    /'
+            fi
+        else
+            fail "pip-audit (full profile): venv/install setup failed (see log below)"
+            tail -40 "$FULL_LOG" | sed 's/^/    /'
+        fi
+    fi
 fi
 
 # =========================================================================
