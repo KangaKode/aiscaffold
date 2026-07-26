@@ -183,10 +183,11 @@ def validate_schema(data: dict) -> list[str]:
                 )
             elif has_fragments and not (
                 isinstance(case["input_fragments"], list)
+                and case["input_fragments"]
                 and all(isinstance(x, str) for x in case["input_fragments"])
             ):
                 errors.append(
-                    f"{cid}: 'input_fragments' must be a list of strings"
+                    f"{cid}: 'input_fragments' must be a non-empty list of strings"
                 )
         else:
             errors.append(
