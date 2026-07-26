@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed wrapper around ``pip-audit``.
 
-Keep this file under 300 lines.
+Keep this file under 400 lines.
 
 Reads a JSON exceptions allowlist that documents each vulnerability the
 project has deliberately chosen to ignore for now, validates the file
@@ -20,8 +20,25 @@ repository):
   ``pip-audit`` is invoked.
 - Every surviving (active) entry becomes an explicit
   ``--ignore-vuln <id>`` pair, in file order. No blanket bypass.
-- ``main`` returns ``pip-audit``'s exact exit code (never swallows a
-  scanner failure).
+- ``main`` returns ``pip-audit``'s exact exit code when pip-audit
+  actually ran (never swallows a scanner failure).
+
+Exit codes:
+
+- ``0`` / ``1`` / ``2`` / any code returned by ``pip-audit`` --
+  propagated verbatim when pip-audit was launched successfully.
+  ``pip-audit`` uses ``0`` for a clean audit, ``1`` for advisories
+  found, and ``2`` for its own argument errors.
+- ``GATE_CONFIG_ERROR`` (``78``, chosen from BSD ``sysexits.h``
+  ``EX_CONFIG``) for gate-configuration failures: an invalid or
+  unreadable exceptions file, an unexpected error while parsing the
+  allowlist, or an environmental error that prevents ``pip-audit``
+  from being launched at all (for example, the interpreter path is
+  unusable). Distinct from ``pip-audit``'s own ``2`` so an operator
+  can tell "the allowlist is broken" apart from "pip-audit rejected
+  its arguments". Every gate-config failure path prints a
+  ``[pip_audit_gate]``-prefixed diagnostic on stderr; the gate never
+  returns ``0`` on any failure path.
 
 This file is shipped both at the root of the scaffold repository (via
 its inclusion under the template's project-slug subdirectory, which
@@ -45,6 +62,14 @@ from typing import Iterable, Sequence
 
 REQUIRED_FIELDS = ("id", "reason", "owner", "compensating_control", "expires")
 
+# Distinct exit code for gate-configuration failures. Chosen from BSD
+# ``sysexits.h`` ``EX_CONFIG`` (78). Kept separate from ``pip-audit``'s
+# own 0/1/2 so an operator can tell "the allowlist is broken" (this
+# code) apart from "pip-audit rejected its arguments" (pip-audit's own
+# ``2``). Any change to this value must be reflected in the module
+# docstring above.
+GATE_CONFIG_ERROR = 78
+
 # Strict extended ISO 8601 calendar date: exactly ``YYYY-MM-DD``. The
 # builtin ``datetime.date.fromisoformat`` accepts the compact
 # ``YYYYMMDD`` form on Python >= 3.11, which the schema forbids
@@ -59,9 +84,10 @@ class ExceptionsError(Exception):
 
     Callers (the ``main`` entrypoint and, potentially, other tooling)
     catch this to distinguish a gate-configuration failure from a
-    ``pip-audit`` failure. The gate returns a distinct nonzero exit
-    code in that case so operators can tell "the allowlist is broken"
-    apart from "pip-audit found something".
+    ``pip-audit`` failure. The gate returns ``GATE_CONFIG_ERROR`` in
+    that case (see module docstring) so operators can tell "the
+    allowlist is broken" apart from "pip-audit found something" or
+    "pip-audit rejected its arguments".
     """
 
 
@@ -209,12 +235,31 @@ def run_pip_audit(args: Sequence[str]) -> int:
     the auditor version follows the pinned install in CI. Tests
     monkey-patch this function to assert argument shape without
     hitting the network.
+
+    Fail-closed guard: an ``OSError`` from ``subprocess.run`` (e.g.
+    ``FileNotFoundError`` when ``sys.executable`` is unusable, or
+    ``PermissionError``) is translated into a
+    ``[pip_audit_gate]``-prefixed stderr message and a
+    ``GATE_CONFIG_ERROR`` return. Letting the raw traceback out would
+    still exit nonzero via Python's default handler, but a clear
+    diagnostic is what an operator needs to fix the environment.
     """
 
-    completed = subprocess.run(
-        [sys.executable, "-m", "pip_audit", *args],
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "pip_audit", *args],
+            check=False,
+        )
+    except OSError as exc:
+        print(
+            f"[pip_audit_gate] Failed to invoke pip-audit via "
+            f"{sys.executable!r} -m pip_audit "
+            f"({exc.__class__.__name__}: {exc}). Ensure the interpreter "
+            "is executable and the ``pip_audit`` package is installed "
+            "in that interpreter's environment.",
+            file=sys.stderr,
+        )
+        return GATE_CONFIG_ERROR
     return completed.returncode
 
 
@@ -244,10 +289,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     """Command-line entrypoint.
 
-    Returns pip-audit's exact exit code on a valid exceptions file.
-    Returns a distinct nonzero code (``2``) when the exceptions file
-    itself is invalid, so operators can tell "gate is broken" apart
-    from "pip-audit found a real vulnerability".
+    Returns ``pip-audit``'s exact exit code on a valid exceptions
+    file. Returns ``GATE_CONFIG_ERROR`` (see module docstring) when
+    the exceptions file itself is invalid or unreadable, when the
+    pip-audit subprocess cannot be launched, or when any other
+    unexpected exception is raised while preparing or running the
+    gate -- so operators can tell "gate is broken" apart from
+    "pip-audit found a real vulnerability" or "pip-audit rejected
+    its arguments" (its own ``2``). Every failure path prints a
+    ``[pip_audit_gate]``-prefixed stderr diagnostic; no failure path
+    returns ``0``.
     """
 
     parser = _build_arg_parser()
@@ -257,14 +308,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         active = load_exceptions(Path(args.exceptions))
     except ExceptionsError as exc:
         print(f"[pip_audit_gate] {exc}", file=sys.stderr)
-        return 2
+        return GATE_CONFIG_ERROR
     except OSError as exc:
         print(
             f"[pip_audit_gate] Cannot read exceptions file "
             f"{args.exceptions!r}: {exc}",
             file=sys.stderr,
         )
-        return 2
+        return GATE_CONFIG_ERROR
+    except Exception as exc:  # noqa: BLE001 -- normalize; gate must fail closed with a diagnostic
+        # Defense in depth: any unexpected error while loading the
+        # allowlist (e.g. a corrupt filesystem raising something
+        # exotic, or a future validator raising something other than
+        # ExceptionsError) becomes a clear diagnostic + nonzero exit
+        # rather than a raw traceback.
+        print(
+            f"[pip_audit_gate] Unexpected error while loading exceptions "
+            f"file {args.exceptions!r}: {exc.__class__.__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return GATE_CONFIG_ERROR
 
     ignore_args = build_ignore_args(active)
     pip_audit_args = ignore_args + list(extras)
@@ -276,7 +339,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    return run_pip_audit(pip_audit_args)
+    try:
+        return run_pip_audit(pip_audit_args)
+    except Exception as exc:  # noqa: BLE001 -- normalize; gate must fail closed with a diagnostic
+        # ``run_pip_audit`` already catches ``OSError`` from
+        # ``subprocess.run`` itself and returns ``GATE_CONFIG_ERROR``.
+        # This outer guard covers any other unexpected exception
+        # (custom monkey-patched sentinel, future refactor, etc.) so
+        # the gate never returns ``0`` on any failure path.
+        print(
+            f"[pip_audit_gate] Unexpected error while running pip-audit: "
+            f"{exc.__class__.__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return GATE_CONFIG_ERROR
 
 
 if __name__ == "__main__":

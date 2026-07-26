@@ -1056,10 +1056,18 @@ fi
 # failure is a job to rerun, not a soft pass. Local runs must have
 # outbound access; CI runners already do.
 section "Step 12: Dependency Audit (pip-audit through gate)"
+# Both preconditions below are contract, not opportunistic: the
+# validation venv contract pins ``pip-audit==2.10.1``, and rendered
+# projects always emit ``requirements.txt``. A missing tool or missing
+# rendered file means the environment or the generator regressed, so
+# fail rather than emit a warning that a reviewer could miss --
+# validate_generated.sh is the gate that must pass before any code
+# review, and a silent skip here would let unaudited requirements
+# reach review.
 if ! command -v pip-audit &>/dev/null; then
-    warn "pip-audit not installed -- skipping dependency audit"
+    fail "pip-audit not on PATH: the validation venv contract pins pip-audit==2.10.1; a missing tool is an environment regression, not a soft skip"
 elif [ ! -f "$GEN_ROOT/requirements.txt" ]; then
-    warn "pip-audit: requirements.txt missing in generated project (skipped)"
+    fail "pip-audit: requirements.txt missing in generated project at $GEN_ROOT/requirements.txt: a rendered project always emits requirements.txt, so this is a generator regression, not a soft skip"
 elif [ ! -f "$GEN_ROOT/scripts/pip_audit_gate.py" ]; then
     fail "pip-audit gate script missing at scripts/pip_audit_gate.py"
 else
