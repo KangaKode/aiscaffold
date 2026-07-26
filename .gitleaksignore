@@ -1,0 +1,39 @@
+# Historical fingerprints for fake test values that were cleaned at the
+# source in Task 3B (feat/ai-native-sdlc-assurance-pr2). Every fixture is
+# now assembled at test runtime from short fragments, so the current tree
+# ships no Gitleaks findings. History is immutable, so the seven
+# pre-cleanup fingerprints below stay pinned here -- no globs, no bare
+# paths, no rule-wide entries; each entry is a commit-scoped
+# <40-hex-sha>:<path>:<rule>:<line> so only these exact historical hits
+# are silenced. If Gitleaks ever fires again on any of these files, it
+# will be a new fingerprint (different SHA or line) and will not be
+# masked. Template projects intentionally ship zero suppression of their
+# own (no template-side .gitleaksignore, no .gitleaks.toml, no
+# gitleaks:allow comments).
+
+# injection_defense_dataset.json line 63 (benign-enc-jwt): a fake JWT
+# whose three segments decode to benign Jane Doe claims. Gitleaks' 'jwt'
+# rule fired on the committed one-line input string; the fixture now
+# stores the JWT as an input_fragments list joined at load time.
+76b141744c8b1cde809d26104d76cca389217f26:template/{{project_slug}}/evals/fixtures/injection_defense_dataset.json:jwt:63
+# Second commit still carrying the same fake JWT string on line 63.
+71db771c2ac3f120c0f25b8e63417ba325d1a1ad:template/{{project_slug}}/evals/fixtures/injection_defense_dataset.json:jwt:63
+
+# test_agent_identity.py.jinja line 33 (TEST_SIGNING_KEY): the 64-char
+# HS256 test key built as "0123456789abcdef" * 4, used only to sign
+# expired/tampered fixture tokens in the identity-verification tests.
+# The source now assembles the 16-hex repeat unit from four 4-char
+# fragments so no committed line matches Gitleaks' generic-api-key rule.
+211a8f723f8ac890a039603da7db89eb630d1369:template/{{project_slug}}/tests/test_agent_identity.py.jinja:generic-api-key:33
+# Second commit still carrying the same TEST_SIGNING_KEY literal at line 33.
+cf51b293f04d368549d87f37d9f9160f6767963e:template/{{project_slug}}/tests/test_agent_identity.py.jinja:generic-api-key:33
+
+# test_middleware.py.jinja line 115 (monkeypatch.setenv("API_KEY", ...)):
+# the fake API-key literal "correct-key-12345" used by the middleware
+# auth tests. The source now assembles the key at runtime from two short
+# fragments and binds it to a local variable reused at lines 118 and 121.
+98a1baaa2463722ef422a350dad666ac3e651607:template/{{project_slug}}/tests/test_middleware.py.jinja:generic-api-key:115
+# Same commit, same file, line 118: the same fake key as Bearer credentials.
+98a1baaa2463722ef422a350dad666ac3e651607:template/{{project_slug}}/tests/test_middleware.py.jinja:generic-api-key:118
+# Same commit, same file, line 121: the same fake key asserted on result.api_key.
+98a1baaa2463722ef422a350dad666ac3e651607:template/{{project_slug}}/tests/test_middleware.py.jinja:generic-api-key:121
