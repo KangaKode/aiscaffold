@@ -1,0 +1,83 @@
+---
+description: Gated PR workflow, risk-tier policy, and standing constraints for all changes in this generated project
+alwaysApply: true
+---
+
+# Development Process (Gated PRs)
+
+Every feature or fix follows the workflow in `docs/DEVELOPMENT_PROCESS.md` —
+this rule is the PR-mechanics summary of that document, not a replacement.
+Design ceremony is proportional to the change's risk-tier (see below); tests
+are planned before production logic.
+
+## Risk-Tier Policy
+
+Every change is classified into a risk-tier before implementation —
+**High** (four design artifacts), **Medium** (one concise design note;
+the default for any non-High, non-Low change), or **Low** (design
+artifacts exempt only). The **highest applicable tier wins**: a small
+diff cannot be downgraded when it touches a high-tier path or
+invariant. Record the chosen tier and rationale in the PR description.
+
+- **High** (security/auth, agent identity or permissions, enforcement,
+  migrations/schema/RLS, tenant or learning data, secrets or deployment
+  boundaries, CI workflows, hooks; path globs include `src/*/security/**`,
+  authentication and authorization middleware, agent-identity or scope
+  dispatch, `enforcement/**`, `learning/tables.py` and its migrations,
+  `.github/workflows/**`, `.cursor/hooks*`, deployment manifests, and
+  secret configuration). High requires all four design artifacts before
+  implementation: **architecture map**, **data-flow diagram**,
+  **workflow states or wireframes**, and **threat model**. Primary
+  layout: `docs/designs/<feature>/{ARCHITECTURE_MAP,DATA_FLOW,WORKFLOW_STATES,THREAT_MODEL}.md`.
+- **Medium is the default** risk-tier for any non-High, non-Low change,
+  including single-file behavior changes. Medium requires **one concise
+  design note** covering architecture impact, data movement, failure
+  behavior, risks, and planned tests.
+- **Low** applies to documentation- or presentation-only work, test-only
+  changes, and fixes under 20 gross changed lines measured as
+  **additions plus deletions** (excluding mechanically generated
+  artifacts) that do not touch high-tier paths or invariants. Low is
+  **exempt from design artifacts** only. Branch isolation, CI,
+  applicable tests, human ownership, and post-change review still
+  apply.
+
+## PR Mechanics
+
+1. **Plan sign-off before code (proportional to risk-tier).** High
+   changes get the four design artifacts reviewed by the relevant
+   domain experts. Medium changes get one concise design note reviewed
+   by the matching reviewer. Implementation starts only after every
+   required reviewer returns APPROVED; CHANGES-REQUIRED verdicts are
+   folded into the plan and re-reviewed. Low-tier changes may skip
+   design ceremony but not branch isolation, CI, tests, ownership, or
+   review.
+2. **One focused PR per change, on a branch.** Never commit directly
+   to `main`.
+3. **Validation before review.** Whatever validation the project
+   ships (`bash scripts/validate.sh`, `make test`, `pre-commit`,
+   generated-project checks, etc.) must pass fully before requesting
+   any review. Treat warnings as review items, not noise.
+4. **Post-implementation review of the actual diff.** Bugbot plus the
+   matching domain expert review the branch. Findings are fixed with
+   regression tests (a test that fails on the pre-fix code), then
+   re-reviewed. Nothing is pushed or merged without an explicit final
+   APPROVED.
+5. **Strongest model only.** Implementation and review subagents run
+   on the strongest available model. If a subagent silently falls back
+   to a weaker model, discard its output and redo it — or retro-audit
+   anything already merged.
+
+## Standing constraints
+
+- **Detect, never auto-act:** shipped defaults may flag, log, or
+  refuse explicitly — they never silently alter prompts, truncate
+  listings, or degrade responses. Enforcement beyond flags is opt-in
+  via env flags, default off.
+- **Honest docs:** every capability claim cites code and tests;
+  limitations go in GOVERNANCE Non-Claims. Never overclaim.
+- **Schema changes** go through the `MIGRATIONS` mechanism in
+  `learning/tables.py` with the frozen v1 baseline. Never add columns
+  only to the live `TABLE_COLUMNS` baseline.
+- **Line-cap headers are honest:** respect each module's stated cap;
+  if a file must grow, update the header in the same PR rather than
+  ignoring it.

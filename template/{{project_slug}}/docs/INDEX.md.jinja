@@ -10,7 +10,7 @@
 |----------|---------|
 | [TUTORIAL.md](TUTORIAL.md) | Your First Agent in 30 Minutes (start here) |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Layering rules, module descriptions, state management, design decisions |
-| [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md) | Gated AI-assisted workflow: design docs, expert review, tests, code review, red-team gate, CI |
+| [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md) | Risk-tier policy (High/Medium/Low), design ceremony per tier, expert review, tests, code review, red-team gate, CI |
 | [TESTING_STANDARDS.md](TESTING_STANDARDS.md) | Testing conventions, markers, eval infrastructure |
 | [QUALITY_SCORE.md](QUALITY_SCORE.md) | Per-domain quality grades |
 | [REFERENCES.md](REFERENCES.md) | Industry research and key principles |
@@ -47,17 +47,37 @@
 
 ---
 
-## Architecture Maps
+## Design Artifacts
+
+Group per-feature design docs under `docs/designs/<feature>/`.
+High-tier features produce four artifacts (architecture map, data
+flow, workflow states / wireframes, and threat model). Medium-tier
+features produce one concise design note. Low-tier changes are
+exempt from design artifacts.
+
+### Architecture Maps
 
 <!-- Add as you create them -->
-<!-- | Feature | Document | Status | -->
-<!-- |---------|----------|--------| -->
+<!-- | Feature | Document (docs/designs/<feature>/ARCHITECTURE_MAP.md) | Status | -->
+<!-- |---------|--------------------------------------------------------|--------| -->
 
----
-
-## Data Flow Diagrams
+### Data Flow Diagrams
 
 <!-- Add as you create them -->
+<!-- | Feature | Document (docs/designs/<feature>/DATA_FLOW.md) | Status | -->
+<!-- |---------|-------------------------------------------------|--------| -->
+
+### Workflow States / Wireframes
+
+<!-- Add as you create them -->
+<!-- | Feature | Document (docs/designs/<feature>/WORKFLOW_STATES.md) | Status | -->
+<!-- |---------|-------------------------------------------------------|--------| -->
+
+### Threat Models
+
+<!-- Add as you create them; required for every High-tier feature -->
+<!-- | Feature | Document (docs/designs/<feature>/THREAT_MODEL.md) | Status | -->
+<!-- |---------|----------------------------------------------------|--------| -->
 
 ---
 
