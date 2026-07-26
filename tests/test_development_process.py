@@ -51,14 +51,41 @@ def low_obligation_window(text: str) -> str | None:
 
     Anchoring on the exemption clause (not the first bare ``low``) is the
     regression fix for the Bugbot finding that obligation checks could be
-    satisfied by diagram labels or ``non-Low`` prose.
+    satisfied by diagram labels or ``non-Low`` prose. The forward window
+    stops at the next markdown heading (or a small cap) so the tier-agnostic
+    Gates table that follows the Low section cannot satisfy the preserve-list
+    check either.
     """
     lower = text.lower()
     match = _LOW_EXEMPT_RE.search(lower)
     if match is None:
         return None
-    start = max(0, match.start() - 200)
-    return lower[start : match.start() + 1500]
+    start = max(0, match.start() - 120)
+    after = lower[match.end() :]
+    heading = re.search(r"\n##[\s#]", after)
+    if heading is not None:
+        end = match.end() + heading.start()
+    else:
+        end = match.end() + 500
+    return lower[start:end]
+
+
+def medium_concise_window(text: str) -> str | None:
+    """Return the slice of ``text`` around the Medium-default clause, or None.
+
+    Anchoring on the exact phrase ``medium is the default`` (not a loose
+    ``medium ... default`` match, and not the first bare ``medium``) avoids
+    the workflow-diagram label and the adjacent mermaid
+    ``Medium: 1 concise design note`` / ``Medium (default)`` nodes satisfying
+    the check when the Medium policy paragraph itself has dropped the
+    concise-note requirement.
+    """
+    lower = text.lower()
+    match = re.search(r"medium is the default", lower)
+    if match is None:
+        return None
+    start = max(0, match.start() - 80)
+    return lower[start : match.end() + 400]
 
 
 class RiskTierPolicyTests(unittest.TestCase):
@@ -160,7 +187,8 @@ class RiskTierPolicyTests(unittest.TestCase):
     def test_medium_is_default_and_requires_one_concise_design_note(self):
         for name in POLICY_ASSETS:
             with self.subTest(asset=name):
-                lower = self._text(name).lower()
+                text = self._text(name)
+                lower = text.lower()
                 self.assertRegex(
                     lower,
                     r"medium[^\n]{0,80}default|default[^\n]{0,80}medium",
@@ -171,41 +199,32 @@ class RiskTierPolicyTests(unittest.TestCase):
                     r"one[^\n]{0,30}note",
                     f"{name}: Medium tier does not require one design note",
                 )
-                medium_anchor = re.search(r"\bmedium\b", lower)
+                medium_window = medium_concise_window(text)
                 self.assertIsNotNone(
-                    medium_anchor,
-                    f"{name}: no bare-word 'medium' anchor to scope the 'concise' "
-                    "requirement to Medium-tier text",
+                    medium_window,
+                    f"{name}: no 'medium is the default' clause to scope the "
+                    "'concise' requirement away from the workflow diagram",
                 )
-                # Scope "concise" to a paragraph-sized window around the Medium
-                # anchor so this assertion cannot be satisfied by an unrelated
-                # occurrence of the word elsewhere in the doc.
-                start = max(0, medium_anchor.start() - 200)
-                medium_window = lower[start : medium_anchor.start() + 800]
                 self.assertIn(
                     "concise",
                     medium_window,
                     f"{name}: Medium tier design note not required to be 'concise' "
-                    "in the paragraph adjacent to the Medium-tier anchor",
+                    "adjacent to the Medium-default clause",
                 )
 
     def test_low_tier_exempts_design_artifacts_only(self):
-        # Word-boundary / phrase patterns for the Low-tier obligations that must
-        # survive even though design artifacts are exempted. Substring matching
-        # here would be tautological on the ambient docs: "ci" matches
-        # "specific"/"decision", "test" matches "latest", "review" matches
-        # "reviewer", and "branch" matches "branches" — none of which prove
-        # Low still carries the obligation.
-        #
-        # Window anchor is the exemption clause itself (not the first bare
-        # ``\blow\b``), because process docs put an early "Low" in the mermaid
-        # diagram and always-applied rules match "Low" inside "non-Low".
+        # Exact phrases from the Low preserve-list. Loose patterns like
+        # ``\bci\b`` / ``\breviews?\b`` / ``\btests?\b`` also match the
+        # tier-agnostic Gates table ("CI validation", "Code review",
+        # "Test-first planning") that follows the Low section, so a
+        # too-wide window would stay green after the Low bullets were
+        # deleted.
         obligation_patterns = {
-            "branch isolation": r"\bbranch(?:es)?\b",
-            "CI": r"\bci\b",
+            "branch isolation": r"branch isolation",
             "human ownership": r"human ownership",
-            "post-change review": r"\b(?:post[- ]change[- ])?reviews?\b",
-            "tests": r"\btests?\b",
+            "post-change review": r"post[- ]change review",
+            "applicable tests": r"applicable tests",
+            "CI validation": r"\bci\b",
         }
         for name in POLICY_ASSETS:
             with self.subTest(asset=name):
@@ -224,9 +243,9 @@ class RiskTierPolicyTests(unittest.TestCase):
                     obligations_present,
                     2,
                     f"{name}: Low tier must still preserve at least two of "
-                    "branch isolation / CI / human ownership / applicable "
-                    "review / tests obligations (whole-word matched, "
-                    "scoped to the Low exemption clause)",
+                    "branch isolation / human ownership / post-change review / "
+                    "applicable tests / CI obligations (phrase-matched, "
+                    "scoped tightly to the Low exemption clause)",
                 )
 
     def test_under_20_line_exemption_semantics(self):
@@ -262,7 +281,8 @@ class LowObligationWindowRegressionTests(unittest.TestCase):
     Bugbot found that scoping to the first ``\\blow\\b`` match let the
     workflow-diagram tier label or a ``non-Low`` mention satisfy the
     preserve-list check even after Low-tier obligation language was removed
-    from the exemption section.
+    from the exemption section. A later finding showed a too-wide forward
+    window also let the tier-agnostic Gates table satisfy loose patterns.
     """
 
     def test_window_anchors_on_exemption_not_first_low(self):
@@ -275,19 +295,22 @@ class LowObligationWindowRegressionTests(unittest.TestCase):
             "High requires four artifacts and CI review.\n"
             "### Low\n"
             "Low-tier work is exempt from design artifacts only. "
-            "Branch isolation, CI, tests, human ownership, and "
+            "Branch isolation, human ownership, and "
             "post-change review still apply.\n"
+            "## Gates\n"
+            "| Gate | What It Prevents |\n"
+            "| Test-first planning | unverified code |\n"
+            "| Code review | maintainability |\n"
+            "| CI validation | broken tests |\n"
         )
         window = low_obligation_window(synthetic)
         self.assertIsNotNone(window)
-        # Exemption-anchored window must include the preserve list.
-        self.assertRegex(window, r"\bci\b")
+        self.assertIn("branch isolation", window)
         self.assertIn("human ownership", window)
-        # And must NOT be the early diagram slice (which has "Low" but no
-        # exemption clause and no preserve list in the first 200 chars before
-        # an early-only match). Sanity: exemption text is in the window.
         self.assertIn("exempt", window)
         self.assertIn("design artifact", window)
+        # Gates table must stay outside the tight forward window.
+        self.assertNotIn("test-first planning", window)
 
     def test_first_bare_low_window_would_miss_obligations(self):
         """Demonstrate the pre-fix bug: first \\blow\\b is the wrong anchor."""
@@ -296,7 +319,7 @@ class LowObligationWindowRegressionTests(unittest.TestCase):
             + ("padding " * 400)
             + "### Low\n"
             "Low-tier work is exempt from design artifacts only. "
-            "Branch isolation, CI, tests, human ownership, and "
+            "Branch isolation, human ownership, and "
             "post-change review still apply.\n"
         )
         lower = synthetic.lower()
@@ -304,18 +327,70 @@ class LowObligationWindowRegressionTests(unittest.TestCase):
         self.assertIsNotNone(first_low)
         bad_start = max(0, first_low.start() - 200)
         bad_window = lower[bad_start : first_low.start() + 1500]
-        # Pre-fix window around the diagram "Low" never reaches the
-        # exemption clause when enough padding separates them.
         self.assertNotIn("exempt", bad_window)
-        # Correct helper still finds the exemption section.
         good_window = low_obligation_window(synthetic)
         self.assertIsNotNone(good_window)
         self.assertIn("exempt", good_window)
-        self.assertRegex(good_window, r"\bci\b")
+        self.assertIn("branch isolation", good_window)
 
     def test_missing_exemption_returns_none(self):
         self.assertIsNone(
             low_obligation_window("High and Medium only. No exemption clause.")
+        )
+
+    def test_wide_window_into_gates_is_rejected(self):
+        """Obligations must not be satisfied solely by the Gates table."""
+        synthetic = (
+            "### Low\n"
+            "Low-tier work is exempt from design artifacts only.\n"
+            + ("x" * 600)
+            + "## Gates\n"
+            "| Test-first planning | unverified |\n"
+            "| Code review | drift |\n"
+            "| CI validation | broken tests |\n"
+        )
+        window = low_obligation_window(synthetic)
+        self.assertIsNotNone(window)
+        # Tight window ends before the Gates table.
+        self.assertNotIn("test-first planning", window)
+        self.assertNotIn("code review", window)
+
+
+class MediumConciseWindowRegressionTests(unittest.TestCase):
+    """Regression: concise check must not use the first bare ``medium``."""
+
+    def test_window_anchors_on_default_clause_not_diagram(self):
+        synthetic = (
+            'Classify["Risk-Tier (High / Medium / Low)"]\n'
+            'Classify -->|"Medium (default)"| MediumDoc["Medium: 1 concise design note"]\n'
+            + ("padding " * 200)
+            + "### Medium\n"
+            "**Medium is the default risk-tier** for non-High/non-Low changes. "
+            "It requires **one concise design note** covering architecture.\n"
+        )
+        window = medium_concise_window(synthetic)
+        self.assertIsNotNone(window)
+        self.assertIn("concise", window)
+        self.assertIn("default", window)
+        # First bare "medium" is the diagram label; a window there would
+        # hit the mermaid node's "concise" without the policy paragraph.
+        lower = synthetic.lower()
+        first_medium = re.search(r"\bmedium\b", lower)
+        self.assertIsNotNone(first_medium)
+        bad_start = max(0, first_medium.start() - 200)
+        bad_window = lower[bad_start : first_medium.start() + 800]
+        # Diagram-adjacent window has "concise" from the mermaid node.
+        self.assertIn("concise", bad_window)
+        # But it does not include the policy "medium is the default" body
+        # once padding separates them — the helper must use that body.
+        self.assertNotIn("covering architecture", bad_window)
+        self.assertIn("covering architecture", window)
+
+    def test_missing_default_clause_returns_none(self):
+        self.assertIsNone(
+            medium_concise_window(
+                'Classify["Medium"]\nMediumDoc["Medium: 1 concise design note"]\n'
+            )
         )
 
 
