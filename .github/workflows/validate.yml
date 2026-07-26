@@ -33,10 +33,13 @@ jobs:
           python-version: "3.13"
 
       - name: Install dependencies
-        run: pip install jinja2
+        run: pip install jinja2 pyyaml
 
       - name: Run quick checks
         run: python3 scripts/quick_checks.py
+
+      - name: Run root unit tests
+        run: python -m unittest discover -s tests -v
 
   validate-matrix:
     name: Validate (${{ matrix.project_type }}, ${{ matrix.profile }})
