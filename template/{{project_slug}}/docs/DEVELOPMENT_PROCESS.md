@@ -134,6 +134,44 @@ evidence enforcement, complete [ROUNDTABLE_HANDOFF.md](ROUNDTABLE_HANDOFF.md)
 before engineering review. The handoff captures agent contracts, phase evidence,
 failure behavior, observability, and demo-only production blockers.
 
+## Bug-Class Feedback: One-off vs Recurring Class
+
+Every confirmed finding from review, CI, or an incident is classified
+by a human maintainer as either a **one-off** defect or a **recurring**
+bug class. A one-off is isolated to this diff; a recurring class means
+the same failure could re-emerge in a different diff because an
+invariant is missing or under-specified.
+
+Agents may propose the classification and cite prior register entries,
+but they cannot auto-classify, self-edit their own rules, or approve
+their own rule changes. A human maintainer records the classification
+in [`docs/BUG_CLASS_REGISTER.md`](BUG_CLASS_REGISTER.md).
+
+A recurring bug-class fix cannot receive final approval until the same
+PR ships all three linked artifacts:
+
+- a **regression test** that fails on the pre-fix code and passes after
+  the fix;
+- an **update to the nearest relevant agent rule or instruction** (the
+  closest applicable rule that could have prevented recurrence, not
+  merely prose appended to the register); and
+- a **register entry** in [`docs/BUG_CLASS_REGISTER.md`](BUG_CLASS_REGISTER.md)
+  that links the source finding, the invariant, the rule change, and
+  the regression test.
+
+A one-off defect requires the regression test only and is not entered
+in the register. Findings whose classification a human maintainer has
+not yet decided stay in the register with status `DRAFT` — the
+vocabulary is closed to `DRAFT`, `SHADOW`, `BLOCKING`, and
+`SUSPENDED`, matching the [reviewer-assurance](REVIEWER_ASSURANCE.md)
+vocabulary.
+
+This is a documentation-parity gate enforced by human review. The
+scaffold ships documentation-parity checks that assert the process
+docs and both bug-class registers exist and are linked; it does not
+decide whether a given fix meets the three-artifact bar — humans
+classify.
+
 ## Operating Rule
 
 Do not combine design and implementation for High-tier feature work.

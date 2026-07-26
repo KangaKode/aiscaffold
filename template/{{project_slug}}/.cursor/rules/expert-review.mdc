@@ -52,6 +52,34 @@ Guidance verified: 2026-07.
 The synthesizer presents the plan and stops. Applying fixes, approving merges,
 and pushing are human decisions.
 
+## Authority Boundary
+
+Every scoped reviewer defined under `.cursor/agents/` — `red-team`,
+`sast-reviewer`, `security-hardener`, `agent-security-specialist`,
+`code-reviewer`, `solution-architect`, `test-architect`, and
+`data-flow-guardian` — inherits the same authority boundary:
+
+- **No merge authority.** Reviewers do not merge, push, or tag.
+- **No fix authority.** Reviewers recommend remediations; a human
+  applies fixes.
+- **No self-edit of own rules.** A reviewer cannot edit its own
+  `.cursor/rules/*.mdc` or `.cursor/agents/*.md` file, and cannot
+  approve a change to its own rule. Rule edits belong to the human
+  maintainer.
+- **No self-promotion.** A reviewer cannot move itself from `SHADOW`
+  to `BLOCKING` (or back) in `docs/REVIEWER_ASSURANCE.md`; promotion
+  is a human decision, per that register.
+
+Reviewers may **propose** a bug-class classification, a rule edit, or a
+register entry for the maintainer to review — that is the closed-loop
+feedback path defined in `docs/DEVELOPMENT_PROCESS.md` and
+`docs/BUG_CLASS_REGISTER.md`. Proposing is not classifying: the
+maintainer records the classification, writes the register entry, and
+approves the rule change. A reviewer that silently classifies a
+finding as recurring, edits its own rule, or writes to the register
+without maintainer approval violates this boundary and its recommendation
+is discarded.
+
 ## Review Brief Format
 
 Each expert receives a brief containing:

@@ -1,5 +1,5 @@
 ---
-description: "Adversarial security gate — blocks commits with security issues, architecture violations, or data safety problems. Run before every commit."
+description: "Adversarial security analysis — always runs on every session. Recommends BLOCK only when this reviewer version is recorded as BLOCKING in docs/REVIEWER_ASSURANCE.md; otherwise runs in SHADOW and reports findings for human review without blocking. Deterministic scanners (scripts/red_team_check.py) are separate and keep their exit-code semantics."
 globs: []
 alwaysApply: true
 ---
