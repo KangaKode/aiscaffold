@@ -100,6 +100,27 @@ suppresses, or upgrades a dependency. Gitleaks and `pip-audit` are pinned in CI.
 Before the blocking jobs land, a read-only preflight must establish a clean
 baseline or route a finding into a separate remediation PR.
 
+### Secret-Scanning Baseline
+
+The 2026-07-26 preflight found no real secrets, but Gitleaks matched three
+deliberate fake credentials in template test and eval fixtures. Because those
+files render into every generated project, an unaddressed baseline would fail
+downstream CI on its first run.
+
+The baseline is cleaned at the source rather than suppressed by policy:
+fixture values are stored as fragments that do not match Gitleaks in
+repository text and are assembled in memory by the consuming test or eval
+harness, preserving each fixture’s original semantics. Generated projects
+therefore ship **no** Gitleaks allowlist or ignore file; a downstream first
+run is clean because the fixtures are clean.
+
+Commits already in this repository’s history cannot be edited, so the root
+repository — and only the root repository — carries a `.gitleaksignore` listing
+the exact historical fingerprints, one commented line each. Fingerprints are
+commit-scoped, so this cannot mask a future secret, including one reintroduced
+on the same line. Root-level allowlisting by rule, path glob, directory, or
+value regex is out of scope: it would suppress unrelated future findings.
+
 Dependency-advisory exceptions use a machine-readable allowlist consumed by a
 fail-closed wrapper. Every entry includes advisory ID, reachability rationale,
 owner, compensating control, and ISO expiry date. Malformed or expired entries

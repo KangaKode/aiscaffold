@@ -27,8 +27,11 @@ Bandit, Copier/Jinja, Cursor rules and agent definitions.
   threat model.
 - Secret and known-vulnerability findings block immediately.
 - Pin `gitleaks/gitleaks-action` to commit
-  `ff98106e4c7b2bc287b24eaf42907196329070c7` (release `v2.3.9`)
-  and install `pip-audit==2.10.1`.
+  `ff98106e4c7b2bc287b24eaf42907196329070c7` (release `v2.3.9`, SHA verified
+  against the upstream tag on 2026-07-26) and install `pip-audit==2.10.1`.
+  The action is license-free for public repositories and personal accounts;
+  generated projects in a GitHub organization must supply `GITLEAKS_LICENSE`,
+  which the scaffold documents but cannot provide.
 - Highest applicable risk tier wins; changed-line count cannot downgrade a
   sensitive path or invariant.
 - Only verified findings may block; `UNVERIFIED` concerns remain visible but
@@ -166,8 +169,71 @@ Bandit, Copier/Jinja, Cursor rules and agent definitions.
 - [ ] Write audit-gate unit tests for valid active exceptions, missing fields,
   duplicate IDs, malformed dates, expired dates, and propagation of nonzero
   `pip-audit` exit codes. Assert an expired entry never reaches the auditor.
+- [ ] Write secret-scanning-baseline tests asserting that:
+  - the three known fake-credential literals
+    (`correct-key-12345`, `0123456789abcdef`, and the `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.`
+    JWT prefix) appear in no file under `template/`;
+  - the root `.gitleaksignore` exists and every non-comment, non-blank line is a
+    commit-scoped fingerprint (`<40-hex-sha>:<path>:<rule>:<line>`) — no glob,
+    wildcard, bare path, or rule-wide entry;
+  - no Gitleaks allowlist config (`.gitleaks.toml`, `gitleaks.toml`,
+    `.gitleaksignore`) exists anywhere under `template/`, so generated projects
+    ship no suppression.
 - [ ] Run `python -m unittest discover -s tests -p 'test_ci_security.py' -v`.
-  Expected: failure because neither workflow has the new security job.
+  Expected: failure because neither workflow has the new security job and the
+  baseline is not yet clean.
+
+### Task 3B: Clean the secret-scanning baseline
+
+**Files:**
+- Modify: `template/{{project_slug}}/tests/test_middleware.py.jinja`
+- Modify: `template/{{project_slug}}/tests/test_agent_identity.py.jinja`
+- Modify: `template/{{project_slug}}/evals/fixtures/injection_defense_dataset.json`
+- Modify: the eval loader that consumes the injection dataset
+- Create: `.gitleaksignore`
+
+**Interfaces:**
+- Consumes: the 2026-07-26 preflight findings.
+- Produces: template fixtures that no longer match Gitleaks, and a
+  commit-scoped historical baseline for the root repository only.
+
+The preflight established that `pip-audit==2.10.1` against `core/` is clean and
+that Gitleaks 8.30.1 reports seven history findings, all fake test values in
+three template fixtures. No real secret exists, so PR 2 continues; these steps
+clean the baseline at the source rather than suppressing it by policy.
+
+- [ ] Rewrite the three fixtures so no committed line matches Gitleaks, while
+  preserving each fixture's original test semantics:
+  - `test_middleware.py.jinja` — the `API_KEY` / credentials / assertion trio
+    currently sharing the literal `correct-key-12345`;
+  - `test_agent_identity.py.jinja` — `TEST_SIGNING_KEY`, which must still
+    produce a 64-character key meeting the documented minimum;
+  - `injection_defense_dataset.json` — the `benign-enc-jwt` case, whose input
+    must still be a structurally valid JWT that decodes to benign claims so the
+    eval's `expected: pass` disposition is unchanged.
+- [ ] Assemble secret-like values in memory (fragment join, derivation, or
+  generation) at the point of use. Do not add a Gitleaks allowlist, ignore
+  file, or inline `gitleaks:allow` comment anywhere under `template/`.
+- [ ] Where the eval dataset needs assembly, extend the loader with an explicit
+  fragment-join field rather than special-casing one record. Keep the loader's
+  behavior unchanged for records that do not use it.
+- [ ] Create the root `.gitleaksignore` with exactly the seven historical
+  fingerprints below, each preceded by a comment naming the fixture and why the
+  value is not a secret. Do not add any other entry.
+  - `76b141744c8b1cde809d26104d76cca389217f26:template/{{project_slug}}/evals/fixtures/injection_defense_dataset.json:jwt:63`
+  - `71db771c2ac3f120c0f25b8e63417ba325d1a1ad:template/{{project_slug}}/evals/fixtures/injection_defense_dataset.json:jwt:63`
+  - `211a8f723f8ac890a039603da7db89eb630d1369:template/{{project_slug}}/tests/test_agent_identity.py.jinja:generic-api-key:33`
+  - `cf51b293f04d368549d87f37d9f9160f6767963e:template/{{project_slug}}/tests/test_agent_identity.py.jinja:generic-api-key:33`
+  - `98a1baaa2463722ef422a350dad666ac3e651607:template/{{project_slug}}/tests/test_middleware.py.jinja:generic-api-key:115`
+  - `98a1baaa2463722ef422a350dad666ac3e651607:template/{{project_slug}}/tests/test_middleware.py.jinja:generic-api-key:118`
+  - `98a1baaa2463722ef422a350dad666ac3e651607:template/{{project_slug}}/tests/test_middleware.py.jinja:generic-api-key:121`
+- [ ] Run the baseline tests from Task 3. Expected: pass.
+- [ ] Run `gitleaks detect --source . --no-banner --exit-code 1` (git history)
+  and `gitleaks detect --source . --no-git --exit-code 1` restricted to tracked
+  content. Expected: zero findings with the new ignore file in place.
+- [ ] Run the affected generated tests (middleware, agent identity) and the
+  injection-defense eval against a rendered project. Expected: unchanged
+  pass/flag dispositions and unchanged eval scores.
 
 ### Task 4: Add blocking scanners
 
@@ -187,10 +253,10 @@ Bandit, Copier/Jinja, Cursor rules and agent definitions.
 - Consumes: repository history and Python dependency declarations.
 - Produces: independent blocking Gitleaks and `pip-audit` signals.
 
-- [ ] Before workflow edits, run pinned Gitleaks and `pip-audit==2.10.1`
-  read-only against the current repository/core and record the clean baseline.
-  If either finds a real issue, stop PR 2 and remediate it in a prerequisite
-  focused PR rather than weakening the new gate.
+- [ ] Confirm the Task 3B baseline is still clean immediately before the
+  workflow edits: pinned Gitleaks over history and working tree, and
+  `pip-audit==2.10.1` against `core/`. If either now finds a real issue, stop
+  and remediate it rather than weakening the new gate.
 - [ ] Add a root `security` job that checks out with `fetch-depth: 0`, runs the
   commit-pinned Gitleaks action, installs pinned `pip-audit`, and invokes the
   canonical audit gate at
@@ -226,8 +292,9 @@ Bandit, Copier/Jinja, Cursor rules and agent definitions.
   Fail on auditor errors or findings.
 - [ ] Add per-profile assertions for the rendered `security` job,
   `fetch-depth: 0`, pinned versions, intact
-  `${{ secrets.GITHUB_TOKEN }}`, audit gate, exception file, and branch
-  protection guidance.
+  `${{ secrets.GITHUB_TOKEN }}`, audit gate, exception file, branch
+  protection guidance, and the absence of any Gitleaks allowlist or ignore
+  file in the generated project.
 - [ ] Run the focused workflow test. Expected: pass.
 - [ ] Render the template and inspect the generated workflow for intact GitHub
   expressions and no raw Jinja leakage.
