@@ -58,6 +58,7 @@ TEMPLATE_WORKFLOW_JINJA = (
 ROOT_GITLEAKSIGNORE = REPO_ROOT / ".gitleaksignore"
 TEMPLATE_ROOT = REPO_ROOT / "template" / "{{project_slug}}"
 TEMPLATE_AUDIT_GATE = TEMPLATE_ROOT / "scripts" / "pip_audit_gate.py"
+TEMPLATE_PYPROJECT_JINJA = TEMPLATE_ROOT / "pyproject.toml.jinja"
 
 # Contract literals from the task brief. Any drift here means Task 4 must
 # also be updated.
@@ -141,28 +142,6 @@ def _render_template_workflow(context: dict | None = None) -> str:
     return env.from_string(_text(TEMPLATE_WORKFLOW_JINJA)).render(**ctx)
 
 
-def _job_step_texts(job: dict) -> list[str]:
-    """Return each step's full YAML text (name/uses/with/run) as one string."""
-    steps = job.get("steps") or []
-    out: list[str] = []
-    for step in steps:
-        if not isinstance(step, dict):
-            continue
-        pieces: list[str] = []
-        for key in ("name", "uses", "run"):
-            value = step.get(key)
-            if value is not None:
-                pieces.append(f"{key}: {value}")
-        with_map = step.get("with") or {}
-        if isinstance(with_map, dict):
-            for k, v in with_map.items():
-                pieces.append(f"with.{k}: {v}")
-        if "continue-on-error" in step:
-            pieces.append(f"continue-on-error: {step['continue-on-error']}")
-        out.append("\n".join(pieces))
-    return out
-
-
 def _step_run_texts(job: dict) -> list[str]:
     """Return every step's ``run:`` script text (never ``name``/``uses``/``with``).
 
@@ -176,11 +155,81 @@ def _step_run_texts(job: dict) -> list[str]:
     return out
 
 
+def _bypass_scan_texts(job: dict) -> list[str]:
+    """Return the texts subject to the scanner-bypass scan.
+
+    Only ``run:`` scripts and ``continue-on-error:`` values (both step-
+    level and job-level) are inspected -- never ``name`` (a human label),
+    ``uses`` (a version-pinned action reference), or ``with`` (typed
+    action parameters). ``name``/``uses``/``with`` cannot bypass a
+    scanner, and folding them into the scan blob would false-positive-
+    fail on a step deliberately named e.g. "never continue-on-error"
+    whose actual behavior is clean. Scoping to what actually executes
+    plus the two YAML keys that suppress step/job failure removes that
+    whole class of accidental failure.
+    """
+    texts: list[str] = []
+    if "continue-on-error" in job:
+        texts.append(f"continue-on-error: {job['continue-on-error']}")
+    for step in job.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        if isinstance(step.get("run"), str):
+            texts.append(step["run"])
+        if "continue-on-error" in step:
+            texts.append(f"continue-on-error: {step['continue-on-error']}")
+    return texts
+
+
 def _job(workflow: dict, name: str) -> dict | None:
     jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
     if not isinstance(jobs, dict):
         return None
     return jobs.get(name)
+
+
+# Jinja ``{% if ... %}`` / ``{% endif %}`` tag matcher used to reason about
+# which lines in a Jinja source live inside which conditional block. Only
+# ``if`` and ``endif`` change the active-condition stack; ``elif``/``else``
+# keep the same block open, so they are deliberately not captured here.
+_JINJA_IF_ENDIF_RE = re.compile(r"\{%\s*-?\s*(if|endif)([^%]*?)-?\s*%\}")
+
+
+def _active_conditions_at(text: str, position: int) -> list[str]:
+    """Return the stack of active Jinja ``{% if ... %}`` conditions at ``position``.
+
+    Iterates every ``{% if ... %}`` / ``{% endif %}`` tag before
+    ``position`` (in source order) and returns the list of condition
+    expressions currently in scope, innermost last. Malformed or
+    unbalanced blocks return the stack in whatever state the walk
+    produced; callers rely on the ``in`` check, which is tolerant of
+    that.
+    """
+    stack: list[str] = []
+    for match in _JINJA_IF_ENDIF_RE.finditer(text):
+        if match.start() >= position:
+            break
+        kind = match.group(1)
+        rest = match.group(2).strip()
+        if kind == "if":
+            stack.append(rest)
+        elif kind == "endif" and stack:
+            stack.pop()
+    return stack
+
+
+def _is_inside_api_gateway_guard(text: str, needle: str) -> bool:
+    """Return True if the first occurrence of ``needle`` in ``text`` lies
+    inside a ``{% if include_api_gateway %}...{% endif %}`` block.
+
+    ``needle`` must appear at least once; callers assert that separately
+    so an accidental rename of the target extra is caught rather than
+    silently reported as "not guarded".
+    """
+    idx = text.find(needle)
+    if idx == -1:
+        return False
+    return "include_api_gateway" in _active_conditions_at(text, idx)
 
 
 def _branch_protection_windows(text: str) -> list[str]:
@@ -282,12 +331,18 @@ class RootWorkflowSecurityJobTests(unittest.TestCase):
             job,
             "security job missing; cannot verify pip-audit pin.",
         )
-        blob = "\n".join(_job_step_texts(job))
+        # The pin must appear in a step's ``run:`` script (what actually
+        # executes), not merely in a step ``name:`` label. A step named
+        # "Install pip-audit==2.10.1" whose ``run:`` is
+        # ``pip install pip-audit`` (unpinned) would install a floating
+        # version despite the human-readable label.
+        blob = "\n".join(_step_run_texts(job))
         self.assertIn(
             PIP_AUDIT_PIN,
             blob,
-            f"Root security job must install {PIP_AUDIT_PIN!r} verbatim so "
-            "the auditor version is pinned in CI.",
+            f"Root security job must install {PIP_AUDIT_PIN!r} verbatim in "
+            "a step's `run:` script so the auditor version is pinned in CI. "
+            "A step `name:` mention is not an install.",
         )
 
     def test_audit_gate_invoked_against_core(self):
@@ -310,18 +365,24 @@ class RootWorkflowSecurityJobTests(unittest.TestCase):
             "step's `run:` script (there is no second copy at the root, and "
             "a mention in `name:` is not an invocation).",
         )
-        # ``core`` must appear inside the same step that runs the gate,
-        # scoping the assertion to the invocation itself. A bare ``\bcore\b``
-        # somewhere else in the job (e.g. a pre-check step or an unrelated
-        # comment referencing "the core repo") would otherwise satisfy this
-        # test even if the gate were pointed at the wrong target.
+        # ``core/`` (path-like) must appear inside the same step that runs
+        # the gate, scoping the assertion to the invocation itself. A bare
+        # ``\bcore\b`` word-boundary match would false-satisfy on unrelated
+        # tokens like ``core-team``, ``core.txt``, or ``core-scan.txt`` (a
+        # step auditing the template while writing to a file named after
+        # ``core`` could technically satisfy the older pattern without ever
+        # scoping the gate to the ``core/`` project directory). Require
+        # path syntax: preceded by a delimiter (start-of-line, whitespace,
+        # ``=``, ``/``, or a quote) and followed by ``/``.
         for run in gate_runs:
             self.assertRegex(
                 run,
-                r"\bcore\b",
+                r"(?:^|[\s=/'\"])core/",
                 "Root security job's audit-gate `run:` must scope the "
-                "invocation to `core/` (the root aiscaffold Python project); "
-                "an unrelated 'core' mention elsewhere in the job does not "
+                "invocation to the `core/` project directory using path "
+                "syntax (e.g. ``pip_audit_gate.py --target core/``, "
+                "``cd core``, or a config that references ``core/``). A "
+                "bare word like ``core-team`` or ``core.txt`` does not "
                 f"count. Offending step run:\n{run}",
             )
 
@@ -332,7 +393,9 @@ class RootWorkflowSecurityJobTests(unittest.TestCase):
             "security job missing; cannot verify absence of bypass flags.",
         )
         # A job-level ``continue-on-error: true`` would neuter the entire
-        # security job regardless of step-level flags, so check that first.
+        # security job regardless of step-level flags, so check that first
+        # with a direct structural assertion (clearer failure message than
+        # the pattern scan below, which also catches this case).
         self.assertNotEqual(
             job.get("continue-on-error"),
             True,
@@ -340,21 +403,26 @@ class RootWorkflowSecurityJobTests(unittest.TestCase):
             "which turns every step's failure into a soft pass and defeats "
             "the entire fail-closed contract.",
         )
-        step_texts = _job_step_texts(job)
-        # A workflow with zero steps would satisfy every per-step pattern
-        # vacuously; require at least one step before iterating.
+        # A workflow with zero steps cannot run any scanner and so cannot
+        # fail closed; require at least one step before iterating.
+        steps = job.get("steps") or []
         self.assertTrue(
-            step_texts,
-            "Root security job has no steps; the bypass-flag scan cannot "
-            "pass vacuously against an empty step list.",
+            steps,
+            "Root security job has no steps; a job with no steps cannot "
+            "run any scanner and so cannot fail closed.",
         )
-        for step_text in step_texts:
+        # ``_bypass_scan_texts`` deliberately excludes ``name`` / ``uses`` /
+        # ``with`` so a step named e.g. "never continue-on-error" cannot
+        # false-positive-fail this scan. See helper docstring.
+        for scan_text in _bypass_scan_texts(job):
             for label, pattern in _BYPASS_PATTERNS:
-                with self.subTest(bypass=label, step=step_text[:80]):
+                with self.subTest(bypass=label, scan=scan_text[:80]):
                     self.assertIsNone(
-                        pattern.search(step_text),
-                        f"security job step uses forbidden bypass {label!r}; "
-                        "scanners must fail closed.",
+                        pattern.search(scan_text),
+                        f"security job uses forbidden bypass {label!r} in "
+                        f"a `run:` script or `continue-on-error:` value; "
+                        "scanners must fail closed. Offending scan text: "
+                        f"{scan_text!r}.",
                     )
 
     def test_no_duplicate_root_audit_gate(self):
@@ -528,11 +596,16 @@ class TemplateRenderedWorkflowTests(unittest.TestCase):
         self._require_workflow()
         job = _job(self.workflow, "security")
         self.assertIsNotNone(job, "security job missing in rendered template ci.yml.")
-        blob = "\n".join(_job_step_texts(job))
+        # The pin must live in a step's ``run:`` script; a step named
+        # ``Install pip-audit==2.10.1`` whose ``run:`` is a bare
+        # ``pip install pip-audit`` would install an unpinned version.
+        blob = "\n".join(_step_run_texts(job))
         self.assertIn(
             PIP_AUDIT_PIN,
             blob,
-            f"Template security job must install {PIP_AUDIT_PIN!r} verbatim.",
+            f"Template security job must install {PIP_AUDIT_PIN!r} verbatim "
+            "in a step's `run:` script. A step `name:` mention is not an "
+            "install.",
         )
 
     def test_generated_install_covers_dev_and_every_rendered_optional_extra(self):
@@ -540,7 +613,11 @@ class TemplateRenderedWorkflowTests(unittest.TestCase):
         self._require_workflow()
         job = _job(self.workflow, "security")
         self.assertIsNotNone(job, "security job missing in rendered template ci.yml.")
-        blob = "\n".join(_job_step_texts(job))
+        # Scope to ``run:`` scripts: a step named ``Install extras
+        # [postgres,mcp,metrics,otel,load]`` with an unrelated ``run:``
+        # would satisfy a whole-step-blob check without installing
+        # anything. The install actually happens in the shell script.
+        blob = "\n".join(_step_run_texts(job))
         # requirements.txt.jinja carries base + dev; pyproject extras give
         # every optional set. With the render context above, pyproject
         # exposes: postgres, mcp, metrics, otel, load. All must be
@@ -550,22 +627,30 @@ class TemplateRenderedWorkflowTests(unittest.TestCase):
             "requirements.txt",
             blob,
             "Template security job must install base + development deps "
-            "via requirements.txt before running pip-audit.",
+            "via requirements.txt (referenced from a step's `run:` script) "
+            "before running pip-audit.",
         )
         # Bracket-form extras spec (``[postgres]``, ``[postgres,mcp,...]``)
         # is the only pip-supported way to install package extras from a
-        # source tree — but we do not pin the specific ``.[postgres]``
-        # invocation form: quoted variants (``"".[postgres]""``, ``".[postgres]"``,
-        # ``pkg[postgres]``, ``$(pwd)[postgres]``) are all valid ways to
-        # request the same extra. Only the extras spec itself is asserted.
+        # source tree -- but we do not pin the specific ``.[postgres]``
+        # invocation form: quoted variants (``".[postgres]"``,
+        # ``pkg[postgres]``, ``"$(pwd)[postgres]"``) are all valid ways to
+        # request the same extra. The regex requires the ``[`` to be
+        # preceded by a package-target-y character (word char, ``.``, or
+        # ``)``) so a bare YAML flow list (``env: [postgres, mcp]``) or
+        # an echoed string (``echo "[postgres,mcp]"``) does not
+        # accidentally satisfy the check.
         for extra in (*UNCONDITIONAL_EXTRAS, *API_GATEWAY_ONLY_EXTRAS):
             with self.subTest(extra=extra):
                 self.assertRegex(
                     blob,
-                    rf"\[[^]]*\b{extra}\b[^]]*\]",
+                    rf"(?<=[\w.)])\[[^]]*\b{extra}\b[^]]*\]",
                     f"Template security job must install the {extra!r} extra "
                     "(rendered from pyproject.toml.jinja) so pip-audit sees "
-                    "the same resolved set generated projects actually use.",
+                    "the same resolved set generated projects actually use. "
+                    "The extras spec must be preceded by a package target "
+                    "(e.g. `.[postgres]`, `pkg[postgres]`, or "
+                    "`\"$(pwd)[postgres]\"`), not a bare flow list.",
                 )
 
     def test_audit_gate_invoked_locally(self):
@@ -592,7 +677,8 @@ class TemplateRenderedWorkflowTests(unittest.TestCase):
         job = _job(self.workflow, "security")
         self.assertIsNotNone(job, "security job missing in rendered template ci.yml.")
         # Job-level ``continue-on-error: true`` neuters the whole job; check
-        # it before scanning steps.
+        # it before scanning steps (clearer failure message than the
+        # pattern scan, which also catches this case).
         self.assertNotEqual(
             job.get("continue-on-error"),
             True,
@@ -600,19 +686,21 @@ class TemplateRenderedWorkflowTests(unittest.TestCase):
             "`continue-on-error: true`, which turns every step's failure "
             "into a soft pass and defeats the fail-closed contract.",
         )
-        step_texts = _job_step_texts(job)
+        steps = job.get("steps") or []
         self.assertTrue(
-            step_texts,
-            "Rendered template security job has no steps; the bypass-flag "
-            "scan cannot pass vacuously against an empty step list.",
+            steps,
+            "Rendered template security job has no steps; a job with no "
+            "steps cannot run any scanner and so cannot fail closed.",
         )
-        for step_text in step_texts:
+        for scan_text in _bypass_scan_texts(job):
             for label, pattern in _BYPASS_PATTERNS:
-                with self.subTest(bypass=label, step=step_text[:80]):
+                with self.subTest(bypass=label, scan=scan_text[:80]):
                     self.assertIsNone(
-                        pattern.search(step_text),
-                        f"Template security-job step uses forbidden bypass "
-                        f"{label!r}; scanners must fail closed.",
+                        pattern.search(scan_text),
+                        f"Template security job uses forbidden bypass "
+                        f"{label!r} in a `run:` script or "
+                        "`continue-on-error:` value; scanners must fail "
+                        f"closed. Offending scan text: {scan_text!r}.",
                     )
 
     def test_summary_needs_test_lint_security(self):
@@ -711,12 +799,18 @@ class TemplateRenderedWorkflowNoApiGatewayTests(unittest.TestCase):
             "security job missing in API-gateway-off render; cannot verify "
             "conditional-extras behavior.",
         )
-        blob = "\n".join(_job_step_texts(job))
+        # Scope to ``run:`` scripts and use the anchored extras pattern
+        # (``[`` preceded by a word char, ``.``, or ``)``) so a bare
+        # YAML flow list or an echoed string cannot false-fail this
+        # negative assertion. See the positive assertion in
+        # ``test_generated_install_covers_dev_and_every_rendered_optional_extra``
+        # for the pattern rationale.
+        blob = "\n".join(_step_run_texts(job))
         for extra in API_GATEWAY_ONLY_EXTRAS:
             with self.subTest(extra=extra):
                 self.assertNotRegex(
                     blob,
-                    rf"\[[^]]*\b{extra}\b[^]]*\]",
+                    rf"(?<=[\w.)])\[[^]]*\b{extra}\b[^]]*\]",
                     f"Template security job installs the {extra!r} extra "
                     "even though include_api_gateway=False. The load extra "
                     "is only defined in pyproject.toml.jinja when the API "
@@ -733,15 +827,17 @@ class TemplateRenderedWorkflowNoApiGatewayTests(unittest.TestCase):
             "security job missing in API-gateway-off render; cannot verify "
             "that unconditional extras still install.",
         )
-        blob = "\n".join(_job_step_texts(job))
+        blob = "\n".join(_step_run_texts(job))
         for extra in UNCONDITIONAL_EXTRAS:
             with self.subTest(extra=extra):
                 self.assertRegex(
                     blob,
-                    rf"\[[^]]*\b{extra}\b[^]]*\]",
+                    rf"(?<=[\w.)])\[[^]]*\b{extra}\b[^]]*\]",
                     f"Template security job (API gateway OFF) must still "
                     f"install the {extra!r} extra: it is unconditional in "
-                    "pyproject.toml.jinja.",
+                    "pyproject.toml.jinja. The extras spec must be preceded "
+                    "by a package target (e.g. `.[postgres]`, "
+                    "`pkg[postgres]`), not a bare flow list.",
                 )
 
 
@@ -780,6 +876,71 @@ class GeneratedBranchProtectionDocumentationTests(unittest.TestCase):
             "section -- that the summary job (which depends on test, lint, "
             "and security) is the required check.",
         )
+
+
+class PyprojectExtrasGuardTests(unittest.TestCase):
+    """Guard that ``pyproject.toml.jinja``'s extras layout matches the
+    assumptions baked into ``UNCONDITIONAL_EXTRAS`` and
+    ``API_GATEWAY_ONLY_EXTRAS`` above.
+
+    The rendered-workflow tests hard-code those two tuples: the security
+    job must install every unconditional extra in both render contexts,
+    and must install ``load`` only when ``include_api_gateway=True``. If
+    a future edit relocates ``load`` outside the
+    ``{% if include_api_gateway %}`` guard, or wraps an unconditional
+    extra inside it, both tuples become silently wrong and the CI
+    contract loses meaning. This class asserts the source-level shape
+    directly so the drift is caught at test time rather than at install
+    time in a generated project.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = _text(TEMPLATE_PYPROJECT_JINJA)
+
+    def test_load_extra_is_guarded_by_api_gateway(self):
+        needle = "load = ["
+        self.assertIn(
+            needle,
+            self.text,
+            f"pyproject.toml.jinja no longer defines a {needle!r} extra. "
+            "API_GATEWAY_ONLY_EXTRAS lists 'load' and the API-gateway-off "
+            "workflow tests hard-code that assumption; update both if the "
+            "extra was intentionally removed.",
+        )
+        self.assertTrue(
+            _is_inside_api_gateway_guard(self.text, needle),
+            "pyproject.toml.jinja: 'load = [...]' must live inside a "
+            "'{% if include_api_gateway %}' block so the extra is only "
+            "defined when the generated project ships the API gateway. "
+            "API_GATEWAY_ONLY_EXTRAS relies on this shape; moving 'load' "
+            "outside the guard would silently invalidate the "
+            "TemplateRenderedWorkflowNoApiGatewayTests contract without "
+            "changing any workflow test.",
+        )
+
+    def test_unconditional_extras_are_not_guarded_by_api_gateway(self):
+        for extra in UNCONDITIONAL_EXTRAS:
+            needle = f"{extra} = ["
+            with self.subTest(extra=extra):
+                self.assertIn(
+                    needle,
+                    self.text,
+                    f"pyproject.toml.jinja no longer defines a "
+                    f"{needle!r} extra. UNCONDITIONAL_EXTRAS lists "
+                    f"{extra!r}; update the tuple and the workflow tests "
+                    "together if this was intentional.",
+                )
+                self.assertFalse(
+                    _is_inside_api_gateway_guard(self.text, needle),
+                    f"pyproject.toml.jinja: {needle!r} is inside a "
+                    "'{% if include_api_gateway %}' block, but "
+                    f"UNCONDITIONAL_EXTRAS lists {extra!r} as "
+                    "always-defined. Either move the extra out of the "
+                    "guard or move it from UNCONDITIONAL_EXTRAS to "
+                    "API_GATEWAY_ONLY_EXTRAS -- silently splitting the "
+                    "two invariants across files loses the CI contract.",
+                )
 
 
 class SecretScanningBaselineTests(unittest.TestCase):

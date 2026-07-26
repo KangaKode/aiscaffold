@@ -213,6 +213,12 @@ class ExceptionsFileValidationTests(unittest.TestCase):
                 # Distinguish from the "expired" case: the entry here is
                 # not past its deadline, the date literal is unparseable.
                 # Word 'expired' alone would collapse both failure modes.
+                # 'invalid' overlaps with the missing-field disjunction
+                # (a gate could emit "Invalid entry: missing required
+                # key expires" for every cause), so ALSO require the
+                # offending date literal in the message. That both keeps
+                # the cause distinguishable and points operators at the
+                # exact bad entry.
                 self.assertRegex(
                     message,
                     r"(?i)invalid|malformed|parse|iso|format",
@@ -220,6 +226,16 @@ class ExceptionsFileValidationTests(unittest.TestCase):
                     "'invalid'/'malformed'/'parse'/'iso'/'format' so the "
                     "cause is distinguishable from an actually-expired "
                     f"entry. Got: {message!r}.",
+                )
+                self.assertIn(
+                    bad_date,
+                    message,
+                    f"Malformed-date error for expires={bad_date!r} must "
+                    "include the offending date literal so the cause is "
+                    "distinguishable from a missing-field error whose "
+                    "message might read 'Invalid entry: missing required "
+                    "key expires'. Got: "
+                    f"{message!r}.",
                 )
 
     def test_expired_entry_raises(self):
@@ -330,25 +346,60 @@ class PipAuditExitCodePropagationTests(unittest.TestCase):
 
     def test_pip_audit_zero_exit_propagates(self):
         path = self._write_exceptions([])
-        self.gate.run_pip_audit = lambda args: 0
+        calls: list[list[str]] = []
+
+        def sentinel(args):
+            calls.append(list(args))
+            return 0
+
+        self.gate.run_pip_audit = sentinel
         rc = self.gate.main(["--exceptions", str(path)])
         self.assertEqual(
             rc,
             0,
             "Gate must return 0 verbatim when pip-audit exits 0.",
         )
+        # A ``main`` that returns 0 without ever invoking ``run_pip_audit``
+        # (e.g. one that short-circuits on an empty exceptions list)
+        # would satisfy the return-code assertion vacuously. Assert
+        # exactly one invocation so "returns 0" cannot be reached
+        # without actually auditing.
+        self.assertEqual(
+            len(calls),
+            1,
+            "Gate must invoke pip-audit exactly once for a valid exceptions "
+            "file; a `main` that returns 0 without auditing would falsely "
+            f"pass the exit-code assertion. calls={calls!r}.",
+        )
 
     def test_pip_audit_nonzero_exit_propagates(self):
         path = self._write_exceptions([])
         for expected in (1, 2, 42):
             with self.subTest(pip_audit_rc=expected):
-                self.gate.run_pip_audit = lambda args, expected=expected: expected
+                calls: list[list[str]] = []
+
+                def sentinel(args, expected=expected):
+                    calls.append(list(args))
+                    return expected
+
+                self.gate.run_pip_audit = sentinel
                 rc = self.gate.main(["--exceptions", str(path)])
                 self.assertEqual(
                     rc,
                     expected,
                     "Gate must return pip-audit's exact exit code, never "
                     "collapse it to a canned status.",
+                )
+                # Same rationale as the zero-exit test: assert exactly
+                # one invocation so a short-circuiting ``main`` cannot
+                # falsely propagate a canned nonzero either.
+                self.assertEqual(
+                    len(calls),
+                    1,
+                    "Gate must invoke pip-audit exactly once for a valid "
+                    "exceptions file; a `main` that returns a canned "
+                    "nonzero without auditing would falsely pass. "
+                    f"calls={calls!r}.",
                 )
 
     def test_expired_entry_never_reaches_pip_audit(self):
@@ -425,12 +476,20 @@ class PipAuditExitCodePropagationTests(unittest.TestCase):
             for i in range(len(args) - 1)
             if args[i] == "--ignore-vuln"
         ]
-        self.assertIn(
-            ("--ignore-vuln", "GHSA-aaaa-bbbb-cccc"),
+        # The fixture has exactly one active entry, so pip-audit must
+        # receive exactly one adjacent ``--ignore-vuln <id>`` pair. Using
+        # ``assertIn`` here would permit extra ``--ignore-vuln`` pairs --
+        # e.g. a gate that layered a hard-coded advisory ignore on top of
+        # the file-driven ones would still pass. Assert full-list
+        # equality so only the file's exceptions can reach pip-audit.
+        self.assertEqual(
             pairs,
-            "Active exception must be passed to pip-audit as an adjacent "
-            "'--ignore-vuln <id>' pair (pip-audit parses them positionally). "
-            f"Got argv: {args!r}.",
+            [("--ignore-vuln", "GHSA-aaaa-bbbb-cccc")],
+            "Gate must pass pip-audit exactly the ``--ignore-vuln <id>`` "
+            "pairs from the exceptions file (one active entry -> exactly "
+            "one pair). Extra pairs indicate a hard-coded advisory "
+            f"ignore layered on top of the file. Got argv: {args!r}, "
+            f"pairs: {pairs!r}.",
         )
 
 
