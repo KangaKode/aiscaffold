@@ -42,7 +42,15 @@ trigger or reproduction, defense challenge, impact, and remediation.
 Concerns that cannot meet that bar are reported as `UNVERIFIED` (see
 below) rather than upgraded to blockers.
 
-## Blocking Checks (fail the commit)
+## Blocking-Class Checks (recommendation gated by REVIEWER_ASSURANCE.md)
+
+The checks below name the *severity category* of a finding, not an
+autonomous commit failure. Whether this reviewer may recommend `BLOCK`
+on any hit is governed by the Assurance Register Gate above: today
+every prompt reviewer ships as `SHADOW`, so evidence-complete hits
+here are reported as non-blocking `SHADOW-REPORT` findings (see
+Review Process step 4) unless this reviewer version is recorded as
+`BLOCKING` in `docs/REVIEWER_ASSURANCE.md`.
 
 ### Secrets Exposure
 - API keys, tokens, or passwords as string literals in source code
@@ -103,19 +111,39 @@ below) rather than upgraded to blockers.
    in `docs/REVIEWER_ASSURANCE.md`: state the issue, cite the file and
    line, provide the remediation, and recommend `BLOCK`.
 4. If any blocking pattern found *and* this reviewer version is `SHADOW`
-   (or `DRAFT`/`SUSPENDED`): report the finding for review but do not
-   recommend `BLOCK`. Route it through the `UNVERIFIED` / follow-up
-   channel so the human maintainer decides.
+   (or `DRAFT`/`SUSPENDED`): report the finding as a non-blocking
+   `SHADOW-REPORT` with the complete proof-of-finding fields attached
+   (location, execution/exploit path, trigger/reproduction, defense
+   challenge, impact, remediation). Do **not** recommend `BLOCK`, and do
+   **not** relabel the evidence-complete finding as `UNVERIFIED` —
+   `UNVERIFIED` is reserved for findings that fail the proof-of-finding
+   contract in step 2 (see the `UNVERIFIED (non-blocking)` section
+   below). The human maintainer decides whether to act on the
+   `SHADOW-REPORT`.
 5. If only warnings: list them and approve the commit.
 6. If clean: approve.
 
-### UNVERIFIED (non-blocking)
+### SHADOW-REPORT (non-blocking, evidence-complete)
+
+`SHADOW-REPORT` is the disposition for a finding that meets the
+proof-of-finding contract in full but cannot be recommended as `BLOCK`
+because this reviewer version is not `BLOCKING` in the assurance
+register. It is non-blocking, carries the six proof-of-finding fields,
+and is offered to the human maintainer as a candidate that would have
+been a `BLOCK` if the reviewer were promoted. Every prompt reviewer
+ships as `SHADOW` today, so this is the default disposition for any
+step-4 hit above.
+
+### UNVERIFIED (non-blocking, incomplete evidence)
 
 `UNVERIFIED` is the label for a concern that this rule wants recorded
-but cannot elevate to a blocker under the proof-of-finding contract.
-`UNVERIFIED` findings are non-blocking, must not appear in the `BLOCK`
-list, and do not count toward a clean-slate target. Promoting an
-`UNVERIFIED` finding to `BLOCK` requires filling in the missing
+but cannot elevate to a `SHADOW-REPORT` or a `BLOCK` because one or
+more proof-of-finding fields is missing (see step 2). `UNVERIFIED`
+findings are non-blocking, must not appear in the `BLOCK` list, and do
+not count toward a clean-slate target. `UNVERIFIED` is not a fallback
+label for evidence-complete findings that lose blocking authority under
+`SHADOW` — those are `SHADOW-REPORT`. Promoting an `UNVERIFIED`
+finding to `SHADOW-REPORT` or `BLOCK` requires filling in the missing
 proof-of-finding fields — never a rewording of the same suspicion.
 
 Your output is a recommendation. A human decides whether to commit; you

@@ -833,5 +833,319 @@ class ScopedReviewerAssuranceGateTests(unittest.TestCase):
         )
 
 
+TEMPLATE_SAST_AGENT = TEMPLATE_AGENTS_DIR / "sast-reviewer.md"
+TEMPLATE_CODE_REVIEWER_AGENT = TEMPLATE_AGENTS_DIR / "code-reviewer.md"
+
+
+def _window_around(text: str, needle: str, before: int = 400, after: int = 400) -> str | None:
+    """Return the text window surrounding the first occurrence of ``needle``.
+
+    Windowed matching tolerates line-wrapping — the same approach used by
+    ``AlwaysAppliedReviewerConsultationTests`` and
+    ``ScopedReviewerAssuranceGateTests`` — so a strict single-line regex
+    does not falsely reject a legitimate multi-line clause.
+    """
+    idx = text.find(needle)
+    if idx < 0:
+        return None
+    start = max(0, idx - before)
+    end = min(len(text), idx + len(needle) + after)
+    return text[start:end]
+
+
+class BugbotRoundTwoRegressionTests(unittest.TestCase):
+    """SHADOW-first honesty gaps flagged by Bugbot's re-review of PR 3.
+
+    Four honesty leaks remained after ``fed04be`` closed the
+    unconditional "prevents the commit" wording in the on-demand
+    ``red-team`` agent and added the assurance-register gate to
+    ``expert-review.mdc``'s Proof of Finding section:
+
+    1. ``sast-reviewer.md`` still declared a ``CONFIRMED`` finding is a
+       blocker with no consultation of ``docs/REVIEWER_ASSURANCE.md``.
+       A CONFIRMED four-gate/dual-pass survivor is a *candidate* for
+       ``BLOCK``; recommending ``BLOCK`` requires the reviewer version
+       to be recorded as ``BLOCKING`` in the register. Otherwise the
+       finding ships as a non-blocking ``SHADOW-REPORT`` (or
+       equivalent) with the four-gate evidence attached.
+    2. ``red-team.mdc``'s Review Process step 4 relabeled every
+       evidence-complete blocking-pattern hit as ``UNVERIFIED`` when
+       the reviewer version was not ``BLOCKING``. ``UNVERIFIED`` is
+       reserved for findings that fail the proof-of-finding contract;
+       evidence-complete findings under SHADOW must be reported as
+       non-blocking ``SHADOW-REPORT`` findings with the full evidence
+       attached, not laundered through the ``UNVERIFIED`` channel.
+    3. ``red-team.mdc``'s ``## Blocking Checks (fail the commit)``
+       heading claimed autonomous commit failure and contradicted the
+       SHADOW-first Assurance Register Gate documented immediately
+       above it. The heading must acknowledge the register gate.
+    4. ``expert-review.mdc``'s mandatory expert deliverable template
+       listed ``BLOCK`` as a final verdict without naming the
+       assurance-register gate or a non-blocking ``SHADOW-REPORT``
+       alternative. Every scoped reviewer copies this template, so the
+       gate belongs in the template itself, not only in the Proof of
+       Finding prose.
+
+    The tests below fail on the pre-fix wording and pass once each
+    surface acknowledges the SHADOW-first gate. Deterministic scanners
+    (``scripts/red_team_check.py``, ``scripts/agent_review.py``) are
+    intentionally out of scope — their exit-code semantics live in
+    Python, not in prompt reviewers.
+    """
+
+    def test_sast_reviewer_gates_confirmed_blocker_on_assurance_register(self):
+        self.assertTrue(
+            TEMPLATE_SAST_AGENT.exists(),
+            f"sast-reviewer agent missing at {TEMPLATE_SAST_AGENT}.",
+        )
+        text = _text(TEMPLATE_SAST_AGENT)
+        forbidden = re.compile(
+            r"a\s+confirmed\s+finding\s+is\s+a\s+blocker\.",
+            re.IGNORECASE,
+        )
+        self.assertIsNone(
+            forbidden.search(text),
+            "sast-reviewer.md still contains the unconditional wording "
+            "'A CONFIRMED finding is a blocker.' without any consultation "
+            "of docs/REVIEWER_ASSURANCE.md. Restate it as a *candidate* "
+            "for BLOCK gated on the reviewer version being recorded as "
+            "``BLOCKING`` in the assurance register; otherwise report as "
+            "a non-blocking SHADOW-REPORT with the four-gate evidence "
+            "attached.",
+        )
+        self.assertIn(
+            "REVIEWER_ASSURANCE.md",
+            text,
+            "sast-reviewer.md does not reference "
+            "docs/REVIEWER_ASSURANCE.md. It must consult the register "
+            "before recommending BLOCK on a CONFIRMED four-gate/dual-pass "
+            "survivor -- otherwise it silently contradicts the "
+            "always-applied SHADOW-first rule.",
+        )
+        window = _window_around(text, "REVIEWER_ASSURANCE.md", 500, 500)
+        self.assertIsNotNone(window)
+        blocking_context_re = re.compile(
+            r"`?BLOCKING`?.{0,240}"
+            r"(?:recommend|status|allowed|record|only|reviewer|verdict)"
+            r"|(?:recommend|status|allowed|record|only|reviewer|verdict)"
+            r".{0,240}`?BLOCKING`?",
+            re.IGNORECASE | re.DOTALL,
+        )
+        only_gate_re = re.compile(
+            r"(?:only|allowed|may|permitted)"
+            r".{0,200}`?BLOCKING`?"
+            r"|`?BLOCKING`?.{0,200}"
+            r"(?:only|allowed|may|permitted)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        self.assertRegex(
+            window,
+            blocking_context_re,
+            "sast-reviewer.md references REVIEWER_ASSURANCE.md but the "
+            "window around it does not tie a blocking recommendation to "
+            "``BLOCKING`` status. The reviewer must state that a "
+            "CONFIRMED four-gate/dual-pass finding is a *candidate* for "
+            "BLOCK, and a blocking recommendation is allowed only when "
+            "this reviewer version is BLOCKING in the assurance register.",
+        )
+        self.assertRegex(
+            window,
+            only_gate_re,
+            "sast-reviewer.md references REVIEWER_ASSURANCE.md and "
+            "BLOCKING but does not gate the recommendation with "
+            "``only`` / ``allowed`` / ``may`` / ``permitted``. State the "
+            "gate explicitly: a blocking recommendation is *allowed only* "
+            "when this reviewer version is BLOCKING; otherwise the "
+            "reviewer runs in SHADOW mode and reports a non-blocking "
+            "SHADOW-REPORT.",
+        )
+
+    def test_sast_reviewer_preserves_four_gate_dual_pass_protocol(self):
+        # Guard against a fix that accidentally weakens SAST detection
+        # semantics while gating the recommendation.
+        text = _text(TEMPLATE_SAST_AGENT)
+        self.assertRegex(
+            text,
+            r"(?i)four[- ]gate|four\s+validation\s+gates|G1[^\n]{0,80}G4",
+            "sast-reviewer.md must retain the four-gate validation "
+            "protocol. The Bugbot round-2 fix gates the *recommendation*, "
+            "not detection -- the four gates and the dual-pass challenge "
+            "must remain in force.",
+        )
+        self.assertRegex(
+            text,
+            r"(?i)dual[- ]pass|pass\s+1[^\n]{0,80}pass\s+2",
+            "sast-reviewer.md must retain the dual-pass verification "
+            "protocol. Gating the recommendation on the assurance "
+            "register does not remove the requirement that every "
+            "candidate finding survives adversarial self-challenge.",
+        )
+
+    def test_red_team_rule_does_not_relabel_evidence_complete_as_unverified(self):
+        # Review Process step 4 must not route SHADOW-era
+        # evidence-complete findings through the UNVERIFIED channel.
+        # UNVERIFIED is reserved for findings that FAIL the
+        # proof-of-finding contract (see step 2).
+        text = _text(TEMPLATE_RED_TEAM_RULE)
+        forbidden = re.compile(
+            # Pre-fix wording routes step-4 evidence-complete SHADOW
+            # findings through the UNVERIFIED / follow-up channel.
+            r"route\s+it\s+through\s+the\s+`?UNVERIFIED`?"
+            r"|report\s+(?:the\s+finding\s+)?"
+            r"(?:as|through)\s+`?UNVERIFIED`?[^\n]{0,240}"
+            r"(?:SHADOW|DRAFT|SUSPENDED)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        self.assertIsNone(
+            forbidden.search(text),
+            "red-team.mdc's Review Process step 4 still routes "
+            "evidence-complete blocking-pattern hits under SHADOW / "
+            "DRAFT / SUSPENDED through the ``UNVERIFIED`` / follow-up "
+            "channel. ``UNVERIFIED`` is reserved for findings that fail "
+            "the proof-of-finding contract in step 2. An "
+            "evidence-complete finding under SHADOW is a non-blocking "
+            "SHADOW-REPORT (or equivalent), not UNVERIFIED.",
+        )
+        # Positive assertion: the SHADOW-era branch must explicitly
+        # name a non-blocking SHADOW-REPORT (or equivalent) with full
+        # proof-of-finding evidence attached.
+        self.assertRegex(
+            text,
+            r"(?i)`?SHADOW[- ]REPORT`?"
+            r"|non[- ]blocking\s+shadow\s+(?:comment|report)"
+            r"|shadow[- ]?report",
+            "red-team.mdc does not label the SHADOW-era evidence-complete "
+            "branch with a ``SHADOW-REPORT`` (or equivalent non-blocking) "
+            "disposition. Add explicit language: when evidence is "
+            "complete but the reviewer version is not BLOCKING, report "
+            "the finding as a non-blocking SHADOW-REPORT with the full "
+            "proof-of-finding fields attached.",
+        )
+
+    def test_red_team_rule_heading_does_not_claim_autonomous_commit_failure(self):
+        text = _text(TEMPLATE_RED_TEAM_RULE)
+        # The old heading "## Blocking Checks (fail the commit)"
+        # asserted autonomous commit failure and contradicted the
+        # Assurance Register Gate documented above it.
+        forbidden_heading = re.compile(
+            r"(?im)^##\s+blocking\s+checks\s*\(\s*fail\s+the\s+commit\s*\)\s*$",
+        )
+        self.assertIsNone(
+            forbidden_heading.search(text),
+            "red-team.mdc still contains the heading "
+            "``## Blocking Checks (fail the commit)`` -- that heading "
+            "claims autonomous commit failure and contradicts the "
+            "SHADOW-first Assurance Register Gate documented immediately "
+            "above it. Retitle to something like "
+            "``## Blocking-Class Checks (recommendation gated by "
+            "REVIEWER_ASSURANCE.md)``.",
+        )
+        # The renamed heading must acknowledge the register gate.
+        gated_heading = re.compile(
+            r"(?im)^##\s+blocking[- ][^\n]{0,80}"
+            r"(?:REVIEWER_ASSURANCE\.md|assurance\s+register|"
+            r"gated|recommendation)",
+        )
+        self.assertRegex(
+            text,
+            gated_heading,
+            "red-team.mdc must rename the ``Blocking Checks`` heading to "
+            "acknowledge that the blocking recommendation is gated by "
+            "docs/REVIEWER_ASSURANCE.md. Suggested: "
+            "``## Blocking-Class Checks (recommendation gated by "
+            "REVIEWER_ASSURANCE.md)``.",
+        )
+
+    def test_expert_review_finding_format_template_gates_block(self):
+        text = _text(TEMPLATE_EXPERT_REVIEW)
+        # The pre-fix template placed ``Final verdict: PROCEED / CONDITIONAL / BLOCK``
+        # with no reference to the assurance-register gate. Every scoped
+        # reviewer copies this template, so the gate must live in the
+        # template itself.
+        forbidden_template = re.compile(
+            r"(?im)^final\s+verdict:\s*proceed\s*/\s*conditional\s*/\s*block\s*$",
+        )
+        self.assertIsNone(
+            forbidden_template.search(text),
+            "expert-review.mdc still ships the mandatory expert "
+            "deliverable template with ``Final verdict: PROCEED / "
+            "CONDITIONAL / BLOCK`` and no reference to the assurance-"
+            "register gate or a non-blocking ``SHADOW-REPORT`` "
+            "alternative. Every scoped reviewer copies this template; "
+            "update it so the verdict options reflect the gate "
+            "(BLOCK allowed only when the reviewer version is BLOCKING "
+            "in docs/REVIEWER_ASSURANCE.md; otherwise SHADOW-REPORT / "
+            "non-blocking; plus UNVERIFIED for incomplete evidence).",
+        )
+        # The updated template must include the SHADOW-REPORT verdict
+        # and reference the assurance register or the BLOCKING gate.
+        self.assertRegex(
+            text,
+            r"(?i)`?SHADOW[- ]REPORT`?",
+            "expert-review.mdc's finding format template does not name "
+            "``SHADOW-REPORT`` as a verdict option. Every scoped "
+            "reviewer copies this template; the SHADOW-first default "
+            "must be visible here.",
+        )
+        # Windowed check: the verdict template must sit close to a
+        # clause naming the assurance register OR the BLOCKING gate.
+        verdict_match = re.search(
+            r"(?im)^final\s+verdict:", text,
+        )
+        self.assertIsNotNone(
+            verdict_match,
+            "expert-review.mdc no longer contains a ``Final verdict:`` "
+            "line in its finding format template. Restore the template "
+            "with an assurance-register-gated verdict set.",
+        )
+        start = max(0, verdict_match.start() - 200)
+        end = min(len(text), verdict_match.end() + 1200)
+        verdict_window = text[start:end]
+        self.assertRegex(
+            verdict_window,
+            r"(?is)REVIEWER_ASSURANCE\.md|assurance\s+register|`?BLOCKING`?",
+            "expert-review.mdc's finding format template names "
+            "SHADOW-REPORT and BLOCK but does not (within a nearby "
+            "window) tie BLOCK to the assurance-register gate or to "
+            "``BLOCKING`` status. Add the gate inline in the template "
+            "prose so reviewers copying the template also copy the "
+            "SHADOW-first constraint.",
+        )
+
+    def test_code_reviewer_blocking_severity_gates_on_assurance_register(self):
+        # Sweep: the code-reviewer severity glossary previously stated
+        # "BLOCKING: Must fix before merge." with no register context.
+        # That is a leftover unconditional blocker claim in the same
+        # honesty class as the four findings above.
+        self.assertTrue(
+            TEMPLATE_CODE_REVIEWER_AGENT.exists(),
+            f"code-reviewer agent missing at {TEMPLATE_CODE_REVIEWER_AGENT}.",
+        )
+        text = _text(TEMPLATE_CODE_REVIEWER_AGENT)
+        forbidden = re.compile(
+            r"\*\*BLOCKING\*\*:\s*Must\s+fix\s+before\s+merge\.",
+            re.IGNORECASE,
+        )
+        self.assertIsNone(
+            forbidden.search(text),
+            "code-reviewer.md still contains the unqualified severity "
+            "glossary line ``**BLOCKING**: Must fix before merge.`` "
+            "with no reference to docs/REVIEWER_ASSURANCE.md. Restate "
+            "it as a candidate for a BLOCK recommendation that is "
+            "gated on the reviewer version being recorded as "
+            "``BLOCKING`` in the assurance register; otherwise the "
+            "finding ships as a non-blocking SHADOW-REPORT per the "
+            "shared contract in expert-review.mdc.",
+        )
+        self.assertIn(
+            "REVIEWER_ASSURANCE.md",
+            text,
+            "code-reviewer.md does not reference "
+            "docs/REVIEWER_ASSURANCE.md. Its severity glossary must "
+            "point at the register so the ``BLOCKING`` label is not "
+            "read as an unconditional block.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
