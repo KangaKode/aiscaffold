@@ -1,23 +1,94 @@
 ---
-description: Expert-gated PR workflow and standing constraints for all changes to this repo
+description: Expert-gated PR workflow, risk-tier policy, and standing constraints for all changes to this repo
 alwaysApply: true
 ---
 
 # Development Process (Gated PRs)
 
-Every feature or fix follows the workflow in `docs/DEVELOPMENT_PROCESS.md` — this rule is the PR-mechanics summary of that document, not a replacement. Its design gates still apply: non-trivial changes produce the required design artifacts (architecture map, data flow, wireframes or workflow states) before implementation, and tests are planned before production logic.
+Every feature or fix follows the workflow in `docs/DEVELOPMENT_PROCESS.md` —
+this rule is the PR-mechanics summary of that document, not a replacement.
+Design ceremony is proportional to the change's risk-tier (see below); tests
+are planned before production logic.
 
-1. **Plan sign-off before code.** Non-trivial changes get a written plan (with the design artifacts above) reviewed by the relevant domain experts (security architect, SRE, template-DX) via subagents. Implementation starts only after every reviewer returns APPROVED; CHANGES-REQUIRED verdicts are folded into the plan and re-reviewed. Small test-only changes and tiny bug fixes may skip the full ceremony when the maintainer explicitly accepts the risk (same escape hatch as `docs/DEVELOPMENT_PROCESS.md`).
-2. **One focused PR per change, on a branch.** Never commit directly to `main`.
-3. **Validation before review.** `bash scripts/validate_generated.sh` must pass fully before requesting any review. Note the script exits 0 even with warnings — read its output and treat warnings as review items, not noise. Test/check counts quoted in docs are measured from actual runs, never estimated.
-4. **Post-implementation review of the actual diff.** Bugbot plus the matching domain expert review the branch. Findings are fixed with regression tests (a test that fails on the pre-fix code), then re-reviewed. Nothing is pushed or merged without an explicit final APPROVED.
-5. **Strongest model only.** Implementation and review subagents run on the strongest available model. If a subagent silently falls back to a weaker model (e.g., on API limits), discard its output and redo it — or retro-audit anything already merged.
+## Risk-Tier Policy
+
+Every change is classified into a risk-tier before implementation —
+**High** (four design artifacts), **Medium** (one concise design note;
+the default for any non-High, non-Low change), or **Low** (design
+artifacts exempt only). The **highest applicable tier wins**: a small
+diff cannot be downgraded when it touches a high-tier path or invariant.
+Record the chosen tier and rationale in the PR description.
+
+- **High** (security/auth, agent identity or permissions, enforcement,
+  migrations/schema/RLS, tenant or learning data, secrets or deployment
+  boundaries, CI workflows, hooks; path globs include `src/*/security/**`,
+  auth middleware, identity/scope dispatch, `enforcement/**`,
+  `learning/tables.py` and its migrations, `.github/workflows/**`,
+  `.cursor/hooks*`, deployment manifests, and secret configuration). High
+  requires all four design artifacts before implementation:
+  **architecture map**, **data-flow diagram**, **workflow states or
+  wireframes**, and **threat model**. Primary layout:
+  `docs/designs/<feature>/{ARCHITECTURE_MAP,DATA_FLOW,WORKFLOW_STATES,THREAT_MODEL}.md`.
+- **Medium is the default** risk-tier for any non-High, non-Low change,
+  including single-file behavior changes. Medium requires **one concise
+  design note** covering architecture impact, data movement, failure
+  behavior, risks, and planned tests.
+- **Low** applies to documentation- or presentation-only work, test-only
+  changes, and fixes under 20 gross changed lines measured as
+  **additions plus deletions** (excluding mechanically generated
+  artifacts) that do not touch high-tier paths or invariants. Low is
+  **exempt from design artifacts** only. Branch isolation, CI, applicable
+  tests, human ownership, and post-change review still apply.
+
+## PR Mechanics
+
+1. **Plan sign-off before code (proportional to risk-tier).** High
+   changes get the four design artifacts reviewed by the relevant domain
+   experts (security architect, SRE, template-DX) via subagents.
+   Medium changes get a written plan with the one concise design note
+   reviewed by the matching reviewer. Implementation starts only after
+   every required reviewer returns APPROVED; CHANGES-REQUIRED verdicts
+   are folded into the plan and re-reviewed. Low-tier changes may skip
+   the design ceremony but not the branch, CI, tests, ownership, or
+   review obligations above.
+2. **One focused PR per change, on a branch.** Never commit directly to
+   `main`.
+3. **Validation before review.** `bash scripts/validate_generated.sh`
+   must pass fully before requesting any review. Note the script exits 0
+   even with warnings — read its output and treat warnings as review
+   items, not noise. Test/check counts quoted in docs are measured from
+   actual runs, never estimated.
+4. **Post-implementation review of the actual diff.** Bugbot plus the
+   matching domain expert review the branch. Findings are fixed with
+   regression tests (a test that fails on the pre-fix code), then
+   re-reviewed. Nothing is pushed or merged without an explicit final
+   APPROVED.
+5. **Strongest model only.** Implementation and review subagents run on
+   the strongest available model. If a subagent silently falls back to
+   a weaker model (e.g., on API limits), discard its output and redo
+   it — or retro-audit anything already merged.
 
 ## Standing constraints
 
-- **Detect, never auto-act:** shipped defaults may flag, log, or refuse explicitly (4xx) — they never silently alter prompts, truncate listings, or degrade responses. Enforcement beyond flags is opt-in via env flags, default off.
-- **Honest docs:** every capability claim cites code and tests; limitations go in GOVERNANCE Non-Claims. Never overclaim.
-- **Schema changes** go through the `MIGRATIONS` mechanism in `learning/tables.py` with the frozen v1 baseline (see the BASELINE FREEZE RULE in that file). Never add columns only to the live `TABLE_COLUMNS` baseline.
-- **Line-cap headers are honest:** respect each module's stated cap; if a file must grow, update the header in the same PR rather than ignoring it.
-- **No internal codenames:** never reference private inspiration/upstream project names in code, comments, docs, commits, or PR text. The `IP_PROTECTION_PATTERNS` list in `scripts/quick_checks.py` scans for proprietary references and can be extended with generic patterns, but the private names themselves are enforced by review — committing them to the pattern list would put them in the repo and defeat the purpose.
-- **Template files that contain jinja placeholders (`{{ ... }}`) must have a `.jinja` suffix** or copier ships them unrendered.
+- **Detect, never auto-act:** shipped defaults may flag, log, or refuse
+  explicitly (4xx) — they never silently alter prompts, truncate listings,
+  or degrade responses. Enforcement beyond flags is opt-in via env flags,
+  default off.
+- **Honest docs:** every capability claim cites code and tests;
+  limitations go in GOVERNANCE Non-Claims. Never overclaim.
+- **Schema changes** go through the `MIGRATIONS` mechanism in
+  `learning/tables.py` with the frozen v1 baseline (see the BASELINE
+  FREEZE RULE in that file). Never add columns only to the live
+  `TABLE_COLUMNS` baseline.
+- **Line-cap headers are honest:** respect each module's stated cap; if
+  a file must grow, update the header in the same PR rather than
+  ignoring it.
+- **No internal codenames:** never reference private
+  inspiration/upstream project names in code, comments, docs, commits,
+  or PR text. The `IP_PROTECTION_PATTERNS` list in
+  `scripts/quick_checks.py` scans for proprietary references and can be
+  extended with generic patterns, but the private names themselves are
+  enforced by review — committing them to the pattern list would put
+  them in the repo and defeat the purpose.
+- **Template files that contain jinja placeholders (`{{ ... }}`) must
+  have a `.jinja` suffix** or copier ships them unrendered.

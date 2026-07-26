@@ -56,6 +56,11 @@ findings = []
 warnings = []
 
 MARKDOWN_LINK_RE = re.compile(r'(?<!!)\[[^\]]+\]\(([^)]+)\)')
+# Inline code spans between backticks (`...` or ``...``) may legitimately
+# contain '[' and '(' (e.g. embedded regex fragments). Strip them before
+# scanning for Markdown links so we don't false-positive on prose that
+# quotes regex syntax.
+_INLINE_CODE_SPAN_RE = re.compile(r"`+[^`\n]*`+")
 
 
 def check_banned_patterns(filepath, content):
@@ -181,7 +186,8 @@ def check_markdown_links():
             continue
 
         for line_no, line in enumerate(content.splitlines(), 1):
-            for match in MARKDOWN_LINK_RE.finditer(line):
+            scan_line = _INLINE_CODE_SPAN_RE.sub("", line)
+            for match in MARKDOWN_LINK_RE.finditer(scan_line):
                 raw_target = match.group(1).strip()
                 if not raw_target or raw_target.startswith(("#", "http://", "https://", "mailto:")):
                     continue

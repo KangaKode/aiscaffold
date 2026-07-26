@@ -13,3 +13,5 @@ build/
 .validation-venv/
 .tmp-copier-debug/
 .DS_Store
+.worktrees/
+.superpowers/

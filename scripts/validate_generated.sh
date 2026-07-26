@@ -141,29 +141,58 @@ mkdir -p "$TEST_DIR"
 if command -v copier &>/dev/null; then
     COPIER_SOURCE="$TEST_DIR/template_source"
     python3 - "$REPO_ROOT" "$COPIER_SOURCE" <<'PY'
+import os
 import shutil
 import sys
 from pathlib import Path
 
-source = Path(sys.argv[1])
+source = Path(sys.argv[1]).resolve()
 destination = Path(sys.argv[2])
 
-ignored = {
+# Depth-aware ignore: '.cursor' is ignored ONLY at the repository root
+# (that is the maintainer-only rule set for THIS repo, which must not
+# leak into generated projects). The template's own '.cursor/' tree
+# under 'template/{{project_slug}}/.cursor/' must survive the copy so
+# copier can render it into generated output. Every other entry is a
+# transient/cache directory we drop at every depth.
+NAMES_IGNORED_ANY_DEPTH = {
     ".git",
-    ".cursor",
     ".validation-venv",
     ".tmp-copier-debug",
     ".tmp-validation",
     "__pycache__",
     ".pytest_cache",
     ".ruff_cache",
+    # Not part of the template surface; these are session/plan artefacts
+    # that must never enter a rendered project.
+    ".aiscaffold",
+    ".superpowers",
+    "data",
 }
 
-shutil.copytree(
-    source,
-    destination,
-    ignore=lambda _dir, names: [name for name in names if name in ignored],
-)
+# Manual walk (not shutil.copytree) so we can copy file contents
+# without shutil.copystat on directories. macOS marks '.cursor/**'
+# with the 'com.apple.provenance' xattr, which shutil.copystat refuses
+# to propagate for unprivileged processes -- the resulting EPERM
+# regressed the entire generation step before this rewrite.
+destination.mkdir(parents=True, exist_ok=True)
+for current, dirs, files in os.walk(source):
+    current_path = Path(current)
+    dirs[:] = [d for d in dirs if d not in NAMES_IGNORED_ANY_DEPTH]
+    if current_path == source:
+        dirs[:] = [d for d in dirs if d != ".cursor"]
+    relative = current_path.relative_to(source)
+    target_dir = destination / relative
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for name in files:
+        src_file = current_path / name
+        dst_file = target_dir / name
+        try:
+            shutil.copyfile(src_file, dst_file)
+        except (OSError, shutil.SameFileError):
+            # Preserve legacy behaviour: unreadable files should not
+            # abort generation validation.
+            continue
 PY
 
     # Determine layers based on project type (mirrors copier.yml default)
@@ -263,8 +292,10 @@ def _excluded(relative: Path) -> bool:
 
 for source in template_root.rglob("*"):
     relative = source.relative_to(template_root)
-    if ".cursor" in relative.parts:
-        continue
+    # The template's nested .cursor tree ships into generated projects.
+    # The Copier _subdirectory setting (template/{{project_slug}}) already
+    # prevents the maintainer-only root .cursor from ever entering the
+    # sandbox render, so no blanket .cursor skip is needed here.
     if _excluded(relative):
         continue
     if "_copier_conf" in source.name:
@@ -682,6 +713,30 @@ has()    { grep -qE "$2" "$GEN_ROOT/$3" && pass "$1" || fail "$1"; }
 lacks()  { ! grep -qE "$2" "$GEN_ROOT/$3" 2>/dev/null && pass "$1" || fail "$1"; }
 exists() { [ -e "$GEN_ROOT/$2" ] && pass "$1" || fail "$1"; }
 absent() { [ ! -e "$GEN_ROOT/$2" ] && pass "$1" || fail "$1"; }
+
+# Risk-tier policy + design ceremony ship in EVERY profile (docs/,
+# .cursor/rules/, .cursor/agents/ are ungated by include_*). The Task 1
+# tier-policy tests already prove documentation parity at the template
+# source; these assertions prove copier ACTUALLY RENDERED that source
+# into the generated project (a source-text check alone would not catch
+# a regression like the old '.cursor'-blanket-skip fallback renderer).
+exists "risk-tier: development-process rule rendered into generated project" .cursor/rules/development-process.mdc
+has "risk-tier: rule frontmatter has alwaysApply: true" '^alwaysApply: true$' .cursor/rules/development-process.mdc
+has "risk-tier: rule mentions risk-tier framing" 'risk-tier' .cursor/rules/development-process.mdc
+has "risk-tier: rule pins 'highest applicable tier wins'" 'highest applicable tier wins' .cursor/rules/development-process.mdc
+has "risk-tier: rule includes 'additions plus deletions'" 'additions plus deletions' .cursor/rules/development-process.mdc
+has "risk-tier: rule names threat model as the 4th High artifact" 'threat model' .cursor/rules/development-process.mdc
+has "risk-tier: process doc pins 'highest applicable tier wins'" 'highest applicable tier wins' docs/DEVELOPMENT_PROCESS.md
+has "risk-tier: process doc includes 'additions plus deletions'" 'additions plus deletions' docs/DEVELOPMENT_PROCESS.md
+has "risk-tier: process doc requires threat model" '[Tt]hreat [Mm]odel' docs/DEVELOPMENT_PROCESS.md
+has "risk-tier: process doc references docs/designs/<feature>/ layout" 'docs/designs/<feature>/' docs/DEVELOPMENT_PROCESS.md
+exists "design-doc-author agent rendered into generated project" .cursor/agents/design-doc-author.md
+has "design-doc-author: names threat model as required" 'THREAT_MODEL.md' .cursor/agents/design-doc-author.md
+has "design-doc-author: uses docs/designs/<feature>/ primary layout" 'docs/designs/<feature>/' .cursor/agents/design-doc-author.md
+has "design-doc-author: states four design artifacts for High" 'four' .cursor/agents/design-doc-author.md
+has "INDEX: DEVELOPMENT_PROCESS entry mentions risk-tier policy" 'DEVELOPMENT_PROCESS.md.*[Rr]isk-tier' docs/INDEX.md
+has "INDEX: threat models section documented" '[Tt]hreat [Mm]odels' docs/INDEX.md
+lacks "INDEX: no legacy three-document assumption in Phased Model refs" 'three design documents' docs/INDEX.md
 
 # Open adversarial corpus + provenance ship in EVERY profile (tests/ is not
 # gated by include_evals). The fixture is plain .py copier never renders, so a
