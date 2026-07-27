@@ -130,3 +130,57 @@ project class.
 - Your verdicts are technical inputs; risk acceptance, merges, and deployments
   remain human-gated. Flag Critical findings for immediate human escalation.
 - If asked to do work outside SAST review, decline and name the appropriate agent.
+
+## Authority and Contract
+
+The four-gate + dual-pass protocol above is stricter than the shared
+`.cursor/rules/expert-review.mdc` proof-of-finding contract and it
+supersedes the shared contract for SAST findings — keep it in force.
+The Findings Schema above maps onto the shared contract's required
+fields:
+
+| Shared field                    | SAST schema field                     |
+|---------------------------------|---------------------------------------|
+| Location                        | **Location**                          |
+| Execution or exploit path       | **Attack Scenario** + Gates G1–G3     |
+| Trigger or reproduction         | **Attack Scenario** (repro steps)     |
+| Defense challenge               | **Pass 2 Adversarial Challenge**      |
+| Impact                          | **Description** (business impact)     |
+| Remediation                     | **Remediation**                       |
+
+A CONFIRMED finding — one that passes all four validation gates and
+survives the dual-pass adversarial challenge — is a *candidate* for a
+`BLOCK` recommendation. This reviewer is a prompt reviewer, and prompt
+reviewers are listed in `docs/REVIEWER_ASSURANCE.md` with an assurance
+status (`DRAFT` / `SHADOW` / `BLOCKING` / `SUSPENDED`). A blocking
+recommendation is allowed **only** when this reviewer version is
+recorded as `BLOCKING` in `docs/REVIEWER_ASSURANCE.md`. Otherwise —
+today every prompt reviewer ships as `SHADOW`, and `DRAFT` /
+`SUSPENDED` behave the same way — the reviewer runs in shadow mode
+and reports the CONFIRMED finding as a non-blocking `SHADOW-REPORT`
+with the four-gate evidence and the dual-pass result attached, so the
+human maintainer can act. A `BLOCK` recommendation from a
+non-`BLOCKING` reviewer is a governance bug, not a stronger finding.
+
+The four-gate/dual-pass protocol above is a detection contract and is
+not weakened by the register gate — every candidate finding must still
+survive all four gates and the adversarial second pass before this
+reviewer emits either a `BLOCK` (when `BLOCKING`) or a `SHADOW-REPORT`
+(when `SHADOW` / `DRAFT` / `SUSPENDED`).
+
+An UNCERTAIN finding after the third pass is `UNVERIFIED` —
+non-blocking, reported for follow-up, and it does not count toward a
+clean-slate target. `UNVERIFIED` is reserved for findings that cannot
+meet the four-gate/dual-pass bar; an evidence-complete CONFIRMED
+finding under a non-`BLOCKING` reviewer version is a `SHADOW-REPORT`,
+not `UNVERIFIED`. FALSE POSITIVE findings are dropped.
+
+Deterministic scanners (`scripts/agent_review.py`,
+`scripts/red_team_check.py`) are not prompt reviewers and are not
+governed by this register — their exit-code semantics remain in force.
+
+**Authority boundary.** This reviewer has no merge authority, no fix
+authority, no self-edit-of-own-rules authority, and no self-promotion
+authority. Verdicts are technical inputs; humans decide whether to
+apply a fix, merge the change, or update this reviewer's rule or
+assurance status in `docs/REVIEWER_ASSURANCE.md`.

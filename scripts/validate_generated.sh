@@ -738,6 +738,37 @@ has "INDEX: DEVELOPMENT_PROCESS entry mentions risk-tier policy" 'DEVELOPMENT_PR
 has "INDEX: threat models section documented" '[Tt]hreat [Mm]odels' docs/INDEX.md
 lacks "INDEX: no legacy three-document assumption in Phased Model refs" 'three design documents' docs/INDEX.md
 
+# Task 7 -- bug-class register + closed-loop completion gate must render in
+# every profile. The root repo's BUG_CLASS_REGISTER.md is maintainer-only
+# and is NOT rendered into generated projects; only the template register
+# under template/{{project_slug}}/docs/ is copier-rendered. Assertions
+# below target the RENDERED generated-project copy.
+exists "bug-class: register rendered into generated project" docs/BUG_CLASS_REGISTER.md
+has "bug-class: register names 'recurring bug class'" '[Rr]ecurring bug class' docs/BUG_CLASS_REGISTER.md
+has "bug-class: register carries closed-vocabulary hint (DRAFT)" '`DRAFT`' docs/BUG_CLASS_REGISTER.md
+has "bug-class: register carries closed-vocabulary hint (SHADOW)" '`SHADOW`' docs/BUG_CLASS_REGISTER.md
+has "bug-class: register carries closed-vocabulary hint (BLOCKING)" '`BLOCKING`' docs/BUG_CLASS_REGISTER.md
+has "bug-class: register carries closed-vocabulary hint (SUSPENDED)" '`SUSPENDED`' docs/BUG_CLASS_REGISTER.md
+has "bug-class: register begins empty (no invented history)" 'none yet' docs/BUG_CLASS_REGISTER.md
+has "bug-class: register schema names regression test field" '[Rr]egression test' docs/BUG_CLASS_REGISTER.md
+has "bug-class: register schema names owner field" 'Owner' docs/BUG_CLASS_REGISTER.md
+has "bug-class: register denies self-edit of own rules" 'self-edit' docs/BUG_CLASS_REGISTER.md
+has "bug-class: process doc classifies as one-off vs recurring" 'one-off.*recurring|recurring.*one-off' docs/DEVELOPMENT_PROCESS.md
+has "bug-class: process doc names regression test in completion gate" 'regression test' docs/DEVELOPMENT_PROCESS.md
+has "bug-class: process doc names rule/instruction update artifact" 'agent rule or instruction' docs/DEVELOPMENT_PROCESS.md
+has "bug-class: process doc references the register path" 'BUG_CLASS_REGISTER.md' docs/DEVELOPMENT_PROCESS.md
+has "bug-class: process doc states agents cannot auto-classify" 'cannot auto-classify' docs/DEVELOPMENT_PROCESS.md
+lacks "bug-class: process doc does not overclaim CI enforcement of the gate" 'CI enforces the (three-artifact|completion) (gate|bar)' docs/DEVELOPMENT_PROCESS.md
+has "bug-class: dev-process rule references the register path" 'BUG_CLASS_REGISTER.md' .cursor/rules/development-process.mdc
+has "bug-class: dev-process rule mentions recurring bug class" 'recurring bug class' .cursor/rules/development-process.mdc
+has "bug-class: INDEX links the bug-class register" 'BUG_CLASS_REGISTER.md' docs/INDEX.md
+has "bug-class: expert-review names authority boundary" '[Aa]uthority [Bb]oundary' .cursor/rules/expert-review.mdc
+has "bug-class: expert-review denies self-promotion" 'self-promot' .cursor/rules/expert-review.mdc
+# Red-team frontmatter honesty: description must not claim it "blocks
+# commits" -- analysis always runs, blocking is gated on assurance status.
+lacks "bug-class: red-team frontmatter no longer claims 'blocks commits'" 'blocks commits with security issues' .cursor/rules/red-team.mdc
+has "bug-class: red-team frontmatter references assurance register" 'REVIEWER_ASSURANCE.md' .cursor/rules/red-team.mdc
+
 # Task 4 -- rendered CI security job must ship in EVERY profile. These are
 # source-text assertions on the RENDERED workflow (the .jinja is copier's
 # input; the .yml here is copier's output), so they prove copier actually

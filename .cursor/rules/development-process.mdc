@@ -62,7 +62,16 @@ Record the chosen tier and rationale in the PR description.
    matching domain expert review the branch. Findings are fixed with
    regression tests (a test that fails on the pre-fix code), then
    re-reviewed. Nothing is pushed or merged without an explicit final
-   APPROVED.
+   APPROVED. Every confirmed finding is then classified by a human
+   maintainer as either a one-off defect or a recurring bug class; a
+   recurring-class fix cannot receive final approval until the same PR
+   ships a regression test, an update to the nearest relevant agent
+   rule or instruction, and a register entry in
+   `docs/BUG_CLASS_REGISTER.md` linking the source finding, invariant,
+   rule change, and regression test. Agents may propose entries but
+   cannot auto-classify, self-edit their own rules, or approve their
+   own rule changes. See `docs/DEVELOPMENT_PROCESS.md` for the full
+   contract.
 5. **Strongest model only.** Implementation and review subagents run on
    the strongest available model. If a subagent silently falls back to
    a weaker model (e.g., on API limits), discard its output and redo
