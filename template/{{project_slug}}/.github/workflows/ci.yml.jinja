@@ -132,6 +132,15 @@ jobs:
           python scripts/pip_audit_gate.py \
             --exceptions .github/pip-audit-exceptions.json
 
+      # Reviewer-eval deterministic runner. Runs only the DETERMINISTIC
+      # half of reviewer-evals/cases.json against red_team_check; it
+      # does NOT execute prompt reviewers (MANUAL_AGENT cases are a
+      # human-review checklist). Exits nonzero on schema errors,
+      # missed vulnerabilities, or false-blocks on safe near-misses.
+      # See reviewer-evals/README.md for the coverage matrix.
+      - name: Reviewer-eval deterministic runner
+        run: python scripts/reviewer_eval.py --quiet
+
   summary:
     # `summary` is the SINGLE check to require in branch protection: it
     # aggregates test + lint + security. `if: always()` runs even when

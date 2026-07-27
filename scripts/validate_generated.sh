@@ -530,6 +530,29 @@ else
 fi
 
 # =========================================================================
+# Step 7b: Reviewer-eval deterministic runner
+# =========================================================================
+# The shipped reviewer-eval runner (scripts/reviewer_eval.py) validates
+# the seeded reviewer-evals/cases.json fixture and exercises every
+# DETERMINISTIC case through red_team_check. Exits nonzero on schema
+# errors, missed vulnerabilities, or false-blocks on safe near-misses.
+# MANUAL_AGENT cases are NOT executed here (CI does not run prompt
+# reviewers); see reviewer-evals/README.md for the manual-review recipe.
+section "Step 7b: Reviewer-eval deterministic runner"
+REVIEWER_EVAL_RUNNER="$GEN_ROOT/scripts/reviewer_eval.py"
+REVIEWER_EVAL_CASES="$GEN_ROOT/reviewer-evals/cases.json"
+if [ -f "$REVIEWER_EVAL_RUNNER" ] && [ -f "$REVIEWER_EVAL_CASES" ]; then
+    if (cd "$GEN_ROOT" && python3 scripts/reviewer_eval.py --quiet >/dev/null 2>&1); then
+        pass "Reviewer-eval runner: DETERMINISTIC cases pass"
+    else
+        fail "Reviewer-eval runner: failures reported (rerun locally without --quiet for detail)"
+        (cd "$GEN_ROOT" && python3 scripts/reviewer_eval.py 2>&1 | sed 's/^/    /' | head -40)
+    fi
+else
+    fail "Reviewer-eval runner or cases.json missing in generated project"
+fi
+
+# =========================================================================
 # Step 8: Unit Tests (run pytest on generated project) + import sweep
 # =========================================================================
 section "Step 8: Unit Tests"
@@ -825,6 +848,65 @@ has "security: GOVERNANCE flags branch-protection external-only" \
     'Branch protection cannot be configured' docs/GOVERNANCE.md
 has "security: GOVERNANCE flags exceptions file as human review" \
     'exceptions file is a HUMAN review record' docs/GOVERNANCE.md
+
+# Task 8 -- reviewer-eval fixture, README, shipped runner, and CI wiring must
+# render in EVERY profile. The runner is not gated by include_evals: it
+# exercises red_team_check against the seeded corpus and ships alongside
+# other security scripts (pip_audit_gate, red_team_check). Per-profile
+# render assertions belt-and-brace the unit-level contract already covered
+# by tests/test_reviewer_evals.py.
+exists "reviewer-evals: fixture ships in all profiles" reviewer-evals/cases.json
+exists "reviewer-evals: README ships in all profiles" reviewer-evals/README.md
+exists "reviewer-evals: shipped runner ships in all profiles" scripts/reviewer_eval.py
+has "reviewer-evals: README documents DETERMINISTIC mode" \
+    'DETERMINISTIC' reviewer-evals/README.md
+has "reviewer-evals: README documents MANUAL_AGENT mode" \
+    'MANUAL_AGENT' reviewer-evals/README.md
+has "reviewer-evals: README publishes coverage matrix" \
+    'Coverage matrix|coverage matrix' reviewer-evals/README.md
+has "reviewer-evals: README lists hardcoded_secret domain" \
+    'hardcoded_secret' reviewer-evals/README.md
+has "reviewer-evals: README lists sql_injection domain" \
+    'sql_injection' reviewer-evals/README.md
+has "reviewer-evals: README lists unsafe_shell domain" \
+    'unsafe_shell' reviewer-evals/README.md
+has "reviewer-evals: README lists path_traversal domain" \
+    'path_traversal' reviewer-evals/README.md
+has "reviewer-evals: README lists missing_auth domain" \
+    'missing_auth' reviewer-evals/README.md
+has "reviewer-evals: README lists missing_tenant_scope domain" \
+    'missing_tenant_scope' reviewer-evals/README.md
+has "reviewer-evals: README lists prompt_injection_boundary domain" \
+    'prompt_injection_boundary' reviewer-evals/README.md
+lacks "reviewer-evals: README does not overclaim manual as deterministic" \
+    'path traversal is deterministically|missing auth is deterministically|prompt injection is deterministically|ci runs prompt reviewers' \
+    reviewer-evals/README.md
+has "reviewer-evals: runner has --quiet flag documented" \
+    '"--quiet"' scripts/reviewer_eval.py
+# The security CI job invokes the runner unconditionally (reviewer-evals
+# ship in every profile). Assert the invocation renders in the workflow.
+has "reviewer-evals: CI security job runs reviewer_eval.py" \
+    'scripts/reviewer_eval\.py' .github/workflows/ci.yml
+# The runner ships as a plain .py; a stray .jinja suffix would send the
+# raw template into a generated project.
+absent "reviewer-evals: runner has no leftover .jinja copy" \
+    scripts/reviewer_eval.py.jinja
+# The seeded corpus is a JSON list with the 14 cases the fixture ships.
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if isinstance(d,list) and len(d)==14 else 1)" \
+        "$GEN_ROOT/reviewer-evals/cases.json" 2>/dev/null; then
+    pass "reviewer-evals: cases.json is a 14-entry JSON list"
+else
+    fail "reviewer-evals: cases.json is not a 14-entry JSON list (Task 8 seeds 7 domains x vulnerable/safe pair)"
+fi
+# Belt-and-braces: no committed line contains the assembled fake credential
+# marker. tests/test_reviewer_evals.py asserts this at the unit level; the
+# shell check catches regressions where the fixture is edited without
+# re-running the tests.
+if grep -RFq 'password = "seed-abc123def4560"' "$GEN_ROOT/reviewer-evals" 2>/dev/null; then
+    fail "reviewer-evals: assembled fake-credential marker leaked into fixture text"
+else
+    pass "reviewer-evals: no assembled fake-credential marker in fixture text"
+fi
 
 # Open adversarial corpus + provenance ship in EVERY profile (tests/ is not
 # gated by include_evals). The fixture is plain .py copier never renders, so a
