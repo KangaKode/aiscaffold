@@ -235,6 +235,7 @@ look older than it is.
 | Baseline | Path | Outcome |
 |----------|------|---------|
 | v2 (2026-07-27) | [`docs/reviewer-evals/baseline-v2.md`](reviewer-evals/baseline-v2.md) | Deterministic PASS; MANUAL_AGENT fixtures/prompts updated; **all rows remain `SHADOW`**; `solution-architect` / `test-architect` **`NOT_EVALUATED`** |
+| promotion proposal v1 (2026-07-27) | [`docs/reviewer-evals/promotion-proposal-v1.md`](reviewer-evals/promotion-proposal-v1.md) | MANUAL_AGENT G1–G4 scorecard for seven candidates; **hold on flips**; next scheduled candidate **`sast-reviewer`** after named gate-5 sign-off |
 
 ## Non-claims
 

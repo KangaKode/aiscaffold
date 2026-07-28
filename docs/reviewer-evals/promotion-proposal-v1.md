@@ -1,10 +1,13 @@
-# Promotion proposal v1 (gates 1–4 evidence; gate 5 pending)
+# Promotion proposal v1 (gates 1–4 evidence; gate 5 held)
 
-**Status:** candidates only. **No register rows are `BLOCKING`.**
-Gate 5 requires a named human maintainer (`KangaKode` / Brian) to
-approve specific rows below before any flip.
+**Status:** evidence record only. **No register rows are `BLOCKING`.**
+Maintainer decision (2026-07-27): **hold on flips** — land this
+proposal as an attributable MANUAL_AGENT scorecard, then stage the
+first `SHADOW` → `BLOCKING` promotion in a follow-up PR.
 
-**Branch:** `feat/reviewer-assurance-promotion-v1`
+**Branch / PR intent:** evidence-only (this document + register
+pointers). Register tables stay `SHADOW` / empty promotion records.
+
 **Evaluation date:** 2026-07-27
 **Fixture-set git blob SHA:** `1b4884f8a9340cff0eabfcebf6aba6bb57692b2f`
 (`template/{{project_slug}}/reviewer-evals/cases.json`)
@@ -14,7 +17,9 @@ approve specific rows below before any flip.
 `46bc4c4f6d7fc686fb60a2bd23d7ae45c61f479c48fd05fe01e29d7e230955ec`
 **Operator:** implementation agent coordinating fresh per-reviewer
 subagent contexts (MANUAL_AGENT recipe). This is point-in-time
-evidence, not CI automation.
+evidence, not CI automation. Evaluator identity for any future
+promotion record must say so explicitly unless a named maintainer
+re-runs the cases in a live Cursor UI session.
 
 ## Deterministic (gate for DETERMINISTIC cases)
 
@@ -59,13 +64,31 @@ reviewer-evals: PASS (16 case(s) validated; 6 DETERMINISTIC case(s) executed).
   `0b1f5410-a6b3-418f-b0e7-36263a343b01`; data-flow-guardian
   `81c7208c-4c7c-40b3-9183-464c7c6d1770`.
 
-## Recommended promotion set (pending gate 5)
+## Maintainer decision: hold on flips; stage promotions
 
-Promote all seven **YES** candidates to `BLOCKING` in one tiny PR after
-human approval, leave architects `SHADOW` / `NOT_EVALUATED`.
+Expert panel (PM / security / SRE+DX) recommended against promoting
+all seven candidates in one PR on subagent-only evidence. Maintainer
+accepted:
 
-**Do not promote** without an explicit maintainer reply naming the
-approved reviewers (or “approve all seven candidates”).
+1. **This PR — evidence only.** Commit the G1–G4 scorecard. Flip
+   zero register rows.
+2. **Next PR — first enforcement.** Promote **`sast-reviewer` only**
+   after named gate-5 sign-off (`KangaKode`), with either a short live
+   Cursor gate-4 replay or an explicit promotion-record note that the
+   MANUAL_AGENT evaluator was a Cursor subagent. Prefer starting in
+   the root register; keep the template register at `SHADOW` until a
+   separate honesty pass if blast radius to generated projects is a
+   concern.
+3. **After that.** Watch real PRs for misses / false blocks /
+   injection-following. Promote further candidates on the same bar,
+   or `SUSPEND` if they misbehave. Leave `solution-architect` /
+   `test-architect` `NOT_EVALUATED` until domain fixtures exist.
+
+## Candidates (not promoted in this PR)
+
+Seven reviewers cleared G1–G4 on this fixture (see scorecard above).
+None move to `BLOCKING` here. First scheduled candidate for a
+follow-up promotion PR: **`sast-reviewer` (v0)**.
 
 ## Non-claims
 
@@ -73,5 +96,7 @@ approved reviewers (or “approve all seven candidates”).
 - Agent-operated MANUAL_AGENT runs are still point-in-time; model
   drift can invalidate them (material-change / suspension rules apply).
 - Empty architect coverage is not a vacuous pass.
+- Landing this proposal does **not** grant `BLOCK` authority to any
+  prompt reviewer.
 
 Guidance verified: 2026-07.

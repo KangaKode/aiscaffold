@@ -919,8 +919,11 @@ fi
 # alongside the source-text unit tests in tests/test_review_governance.py.
 exists "reviewer-assurance: doc rendered into generated project" docs/REVIEWER_ASSURANCE.md
 exists "reviewer-assurance: baseline v2 artifact ships" docs/reviewer-evals/baseline-v2.md
+exists "reviewer-assurance: promotion proposal v1 ships" docs/reviewer-evals/promotion-proposal-v1.md
 has "reviewer-assurance: register points at baseline v2" \
     'baseline-v2\.md' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: register points at promotion proposal v1" \
+    'promotion-proposal-v1\.md' docs/REVIEWER_ASSURANCE.md
 has "reviewer-assurance: baseline history names NOT_EVALUATED" \
     'NOT_EVALUATED' docs/REVIEWER_ASSURANCE.md
 # State vocabulary (closed to DRAFT / SHADOW / BLOCKING / SUSPENDED).
