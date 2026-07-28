@@ -1548,6 +1548,63 @@ class Task9AssuranceContractTests(unittest.TestCase):
                 )
 
 
+class BaselineV2HonestyRegressionTests(unittest.TestCase):
+    """Bugbot regressions from the PR4 fixture/prompt gap-fix.
+
+    These pin honesty invariants that failed once on the gap-fix
+    branch: root promotion docs must not invent a root-level runner,
+    and material prompt edits in baseline v2 must bump register
+    versions off ``v0``.
+    """
+
+    # Reviewers whose prompts were materially edited in baseline v2.
+    _V1_REVIEWERS = (
+        "red-team (always-applied rule)",
+        "red-team (agent)",
+        "code-reviewer",
+        "data-flow-guardian",
+    )
+
+    def test_root_promotion_procedure_names_template_runner_path(self):
+        text = _text(ROOT_REVIEWER_ASSURANCE)
+        self.assertIn(
+            "template/{{project_slug}}/scripts/reviewer_eval.py",
+            text,
+            "docs/REVIEWER_ASSURANCE.md must tell roundtable maintainers "
+            "to run the template-tree reviewer_eval.py; there is no "
+            "root-level scripts/reviewer_eval.py.",
+        )
+        # Ban the bare root command as the only instruction.
+        self.assertNotRegex(
+            text,
+            r"(?im)^1\.\s+\*\*Run the shipped deterministic command\.\*\*"
+            r"[^\n]*\n[^\n]*`python scripts/reviewer_eval\.py`",
+            "Root assurance doc must not lead with `python "
+            "scripts/reviewer_eval.py` as if that path existed at the "
+            "repository root.",
+        )
+
+    def test_materially_edited_reviewers_are_version_v1(self):
+        for name, path in ASSURANCE_ASSETS.items():
+            text = _text(path)
+            for reviewer in self._V1_REVIEWERS:
+                with self.subTest(asset=name, reviewer=reviewer):
+                    row_pattern = re.compile(
+                        rf"(?im)^\|\s*{re.escape(reviewer)}[^\n]*\|"
+                        rf"[^\n]*\|\s*v1\s*\|\s*`?SHADOW`?\s*\|",
+                    )
+                    self.assertRegex(
+                        text,
+                        row_pattern,
+                        f"{name}: reviewer {reviewer!r} must be version "
+                        "v1 after the baseline-v2 material prompt edits "
+                        "(Path Traversal / API Auth / Tenant Scope "
+                        "checklist additions). Leaving v0 after a "
+                        "material change violates the material-change "
+                        "version-bump rule in the same document.",
+                    )
+
+
 class Task9GovernanceNonClaimTests(unittest.TestCase):
     """Task 9 adds explicit GOVERNANCE Non-Claims for manual prompt-reviewer results.
 

@@ -31,10 +31,11 @@ lands this file; record it in any future promotion-record row.
    `reviewer_injection_force_block_safe` — payloads addressed at the
    *reviewer*, distinct from `prompt_injection_boundary_*` (app LLM
    boundary).
-2. **Prompt category gaps closed** (material edits; rows stay
-   `SHADOW`): Path Traversal on `red-team.mdc`; API Auth + Tenant
-   Scope on `red-team.md`; API Auth on `code-reviewer.md`; explicit
-   tenant-scope bullet on `data-flow-guardian.md`.
+2. **Prompt category gaps closed** (material edits; version bumped
+   to `v1`, rows stay `SHADOW`): Path Traversal on `red-team.mdc`;
+   API Auth + Tenant Scope on `red-team.md`; API Auth on
+   `code-reviewer.md`; explicit tenant-scope bullet on
+   `data-flow-guardian.md`.
 3. **Scope mismatch fixed.** `agent-security-specialist` removed from
    `missing_auth_*` `manual_reviewers` (kept on prompt-injection /
    reviewer-injection cases).

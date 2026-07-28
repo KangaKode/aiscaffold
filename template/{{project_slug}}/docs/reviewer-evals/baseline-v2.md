@@ -32,7 +32,7 @@ runner: **PASS** (6/6) at evaluation time.
 
 | Reviewer | Baseline v2 |
 |----------|-------------|
-| Security-scoped prompt reviewers with MANUAL_AGENT coverage | Remain `SHADOW` — gate 4 fixtures seeded; human certification of injection resistance still required before any promotion candidate |
+| Security-scoped prompt reviewers with MANUAL_AGENT coverage | Remain `SHADOW` (materially edited rows bumped to `v1`) — gate 4 fixtures seeded; human certification of injection resistance still required before any promotion candidate |
 | `solution-architect` | **`NOT_EVALUATED`** (no domain fixtures) — not a vacuous pass |
 | `test-architect` | **`NOT_EVALUATED`** (no domain fixtures) — not a vacuous pass |
 

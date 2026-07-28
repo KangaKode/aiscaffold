@@ -43,15 +43,15 @@ semantics stand.
 
 | Reviewer                          | Kind          | File                                                          | Version | Status   |
 |-----------------------------------|---------------|---------------------------------------------------------------|---------|----------|
-| red-team (always-applied rule)    | prompt rule   | `template/{{project_slug}}/.cursor/rules/red-team.mdc`        | v0      | `SHADOW` |
-| red-team (agent)                  | prompt agent  | `template/{{project_slug}}/.cursor/agents/red-team.md`        | v0      | `SHADOW` |
+| red-team (always-applied rule)    | prompt rule   | `template/{{project_slug}}/.cursor/rules/red-team.mdc`        | v1      | `SHADOW` |
+| red-team (agent)                  | prompt agent  | `template/{{project_slug}}/.cursor/agents/red-team.md`        | v1      | `SHADOW` |
 | sast-reviewer                     | prompt agent  | `template/{{project_slug}}/.cursor/agents/sast-reviewer.md`   | v0      | `SHADOW` |
 | security-hardener                 | prompt agent  | `template/{{project_slug}}/.cursor/agents/security-hardener.md` | v0    | `SHADOW` |
 | agent-security-specialist         | prompt agent  | `template/{{project_slug}}/.cursor/agents/agent-security-specialist.md` | v0 | `SHADOW` |
-| code-reviewer                     | prompt agent  | `template/{{project_slug}}/.cursor/agents/code-reviewer.md`   | v0      | `SHADOW` |
+| code-reviewer                     | prompt agent  | `template/{{project_slug}}/.cursor/agents/code-reviewer.md`   | v1      | `SHADOW` |
 | solution-architect                | prompt agent  | `template/{{project_slug}}/.cursor/agents/solution-architect.md` | v0   | `SHADOW` |
 | test-architect                    | prompt agent  | `template/{{project_slug}}/.cursor/agents/test-architect.md`  | v0      | `SHADOW` |
-| data-flow-guardian                | prompt agent  | `template/{{project_slug}}/.cursor/agents/data-flow-guardian.md` | v0   | `SHADOW` |
+| data-flow-guardian                | prompt agent  | `template/{{project_slug}}/.cursor/agents/data-flow-guardian.md` | v1   | `SHADOW` |
 
 "Version" is a maintainer-assigned label pinned to a specific reviewer
 prompt. When a reviewer's rule or agent file changes in a way that is
@@ -167,12 +167,16 @@ only through the promotion protocol above.
 Promotion is a downstream, manual procedure performed by a human
 maintainer. It has four steps:
 
-1. **Run the shipped deterministic command.** From the project
-   root: `python scripts/reviewer_eval.py` (or the documented
-   root-repo equivalent). This proves every `DETERMINISTIC` case
-   still fires its expected rule IDs and no safe case false-blocks
-   at the scanner layer. Fixture-set version is the `cases.json`
-   git SHA at the moment of the run — record it.
+1. **Run the shipped deterministic command.** From the **roundtable
+   repository root** (this file):
+   `python template/{{project_slug}}/scripts/reviewer_eval.py`
+   (the runner and `reviewer-evals/cases.json` live under the Copier
+   template tree — there is no root-level `scripts/reviewer_eval.py`).
+   In a **generated project**, run `python scripts/reviewer_eval.py`
+   from that project's root instead. This proves every
+   `DETERMINISTIC` case still fires its expected rule IDs and no safe
+   case false-blocks at the scanner layer. Fixture-set version is the
+   `cases.json` git SHA at the moment of the run — record it.
 2. **Feed the reviewer's `MANUAL_AGENT` cases in fresh contexts.**
    For each case in `reviewer-evals/cases.json` whose
    `manual_reviewers` list names this reviewer AND whose

@@ -713,6 +713,23 @@ class ReadmeCoverageMatrixTests(unittest.TestCase):
                     "not execute prompt reviewers.",
                 )
 
+    def test_manual_recipe_assembly_one_liner_is_runnable(self):
+        # Bugbot regression: the recipe must not reference an undefined
+        # index ``i`` in a sample ``python -c`` one-liner.
+        self.assertNotRegex(
+            self.text,
+            r"cases\.json'\)\[i\]",
+            "README manual recipe uses undefined index [i] in the "
+            "assembly one-liner; operators get NameError. Look up a "
+            "case by id instead.",
+        )
+        self.assertIn(
+            "x['id']",
+            self.text,
+            "README manual recipe should show assembling a case by id "
+            "(e.g. next(x for x in cases if x['id']==...)).",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

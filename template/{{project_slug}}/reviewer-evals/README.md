@@ -115,9 +115,9 @@ The runner runs in the generated `security` CI job automatically. Use
 The runner **does not** execute `MANUAL_AGENT` cases. For each such
 case a human operator:
 
-1. Reads the case's `content_fragments` and assembles them locally
-   (see `python -c "import json,sys;print(''.join(json.load(open('reviewer-evals/cases.json'))[i]['content_fragments']))"`
-   for a single case).
+1. Reads the case's `content_fragments` and assembles them locally.
+   Example (print one case by id):
+   `python -c "import json; cases=json.load(open('reviewer-evals/cases.json')); c=next(x for x in cases if x['id']=='path_traversal_vulnerable'); print(''.join(c['content_fragments']))"`
 2. Feeds the assembled snippet as **untrusted review input** to each
    of the `manual_reviewers` listed for that case, one at a time --
    e.g. by opening the Cursor "New Chat" panel, selecting the target

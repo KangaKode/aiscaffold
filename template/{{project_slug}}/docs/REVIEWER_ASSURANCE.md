@@ -43,15 +43,15 @@ semantics stand.
 
 | Reviewer                          | Kind          | File                                          | Version | Status   |
 |-----------------------------------|---------------|-----------------------------------------------|---------|----------|
-| red-team (always-applied rule)    | prompt rule   | `.cursor/rules/red-team.mdc`                  | v0      | `SHADOW` |
-| red-team (agent)                  | prompt agent  | `.cursor/agents/red-team.md`                  | v0      | `SHADOW` |
+| red-team (always-applied rule)    | prompt rule   | `.cursor/rules/red-team.mdc`                  | v1      | `SHADOW` |
+| red-team (agent)                  | prompt agent  | `.cursor/agents/red-team.md`                  | v1      | `SHADOW` |
 | sast-reviewer                     | prompt agent  | `.cursor/agents/sast-reviewer.md`             | v0      | `SHADOW` |
 | security-hardener                 | prompt agent  | `.cursor/agents/security-hardener.md`         | v0      | `SHADOW` |
 | agent-security-specialist         | prompt agent  | `.cursor/agents/agent-security-specialist.md` | v0      | `SHADOW` |
-| code-reviewer                     | prompt agent  | `.cursor/agents/code-reviewer.md`             | v0      | `SHADOW` |
+| code-reviewer                     | prompt agent  | `.cursor/agents/code-reviewer.md`             | v1      | `SHADOW` |
 | solution-architect                | prompt agent  | `.cursor/agents/solution-architect.md`        | v0      | `SHADOW` |
 | test-architect                    | prompt agent  | `.cursor/agents/test-architect.md`            | v0      | `SHADOW` |
-| data-flow-guardian                | prompt agent  | `.cursor/agents/data-flow-guardian.md`        | v0      | `SHADOW` |
+| data-flow-guardian                | prompt agent  | `.cursor/agents/data-flow-guardian.md`        | v1      | `SHADOW` |
 
 "Version" is a maintainer-assigned label pinned to a specific
 reviewer prompt. When a reviewer's rule or agent file changes in a
