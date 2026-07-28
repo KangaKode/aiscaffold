@@ -68,7 +68,13 @@ Every scoped reviewer defined under `.cursor/agents/` — `red-team`,
   maintainer.
 - **No self-promotion.** A reviewer cannot move itself from `SHADOW`
   to `BLOCKING` (or back) in `docs/REVIEWER_ASSURANCE.md`; promotion
-  is a human decision, per that register.
+  is a human decision, per that register. Promotion requires the
+  five-gate protocol documented there — all vulnerable cases in the
+  reviewer's declared domain detected, zero false blocking on safe
+  cases, complete evidence, injection resistance, and recorded
+  human approval — and a **material change** to a reviewer's
+  prompt, scope, tools, or observed model behavior returns it to
+  `SHADOW`. Behavior-neutral editorial changes are exempt.
 
 Reviewers may **propose** a bug-class classification, a rule edit, or a
 register entry for the maintainer to review — that is the closed-loop

@@ -90,3 +90,15 @@ invariant. Record the chosen tier and rationale in the PR description.
 - **Line-cap headers are honest:** respect each module's stated cap;
   if a file must grow, update the header in the same PR rather than
   ignoring it.
+- **Prompt reviewers are SHADOW-first.** A prompt reviewer
+  (`.cursor/rules/*.mdc`, `.cursor/agents/*.md`) may recommend
+  `BLOCK` only when its version is recorded as `BLOCKING` in
+  `docs/REVIEWER_ASSURANCE.md`. Every prompt reviewer ships as
+  `SHADOW`; promotion requires all vulnerable cases in the
+  reviewer's declared domain detected, zero false blocking on safe
+  cases, complete evidence, injection resistance, and recorded
+  human approval — see `docs/REVIEWER_ASSURANCE.md` for the full
+  protocol. A material change to a reviewer (prompt, scope, tools,
+  or observed model behavior) returns it to SHADOW; behavior-neutral
+  editorial changes are exempt. Prompt-reviewer runs are manual
+  because no authenticated agent runner exists in CI.

@@ -168,6 +168,36 @@ checks that the process docs and both bug-class registers exist and
 are linked; it does not decide whether a given fix meets the
 three-artifact bar — humans classify.
 
+## Reviewer Assurance and Promotion
+
+Prompt reviewers (`.cursor/rules/*.mdc` and `.cursor/agents/*.md`
+under `template/{{project_slug}}/`) may only recommend `BLOCK`
+when their version is recorded as `BLOCKING` in
+[`docs/REVIEWER_ASSURANCE.md`](REVIEWER_ASSURANCE.md). Every prompt
+reviewer ships as `SHADOW` today; the register is the single source
+of truth that gates a blocking recommendation.
+
+Promotion from `SHADOW` to `BLOCKING` follows the protocol in
+`docs/REVIEWER_ASSURANCE.md`: all vulnerable cases in the reviewer's
+declared domain detected, zero false blocking on safe cases,
+complete evidence, injection resistance, and recorded human
+approval. The evaluation is manual — the deterministic half of
+`reviewer-evals/cases.json` runs in CI via
+`template/{{project_slug}}/scripts/reviewer_eval.py`, but the
+`MANUAL_AGENT` cases must be fed to each reviewer in a fresh
+context by a human operator (no authenticated agent runner exists
+in GitHub Actions).
+
+**Material changes reset the assurance state to `SHADOW`.** Any
+material change to a reviewer's prompt, scope, tools, or observed
+model behavior returns the row to `SHADOW` and bumps the reviewer
+version; behavior-neutral editorial changes (typos, wording
+tightenings, link fixes) are exempt. A `BLOCKING` reviewer is suspended when it misses a seeded
+case, false-blocks a safe case, follows instructions embedded in
+untrusted fixtures, or emits verdicts outside its declared scope.
+Agents cannot self-promote; only a named human maintainer moves a
+row.
+
 ## Why This Matters
 
 AI assistants can write code quickly, but speed without review creates fragile

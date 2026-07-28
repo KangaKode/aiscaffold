@@ -908,6 +908,132 @@ else
     pass "reviewer-evals: no assembled fake-credential marker in fixture text"
 fi
 
+# Task 9 -- reviewer-assurance shadow/promotion contract must render in
+# EVERY profile. The template counterpart lives at
+# template/{{project_slug}}/docs/REVIEWER_ASSURANCE.md; these assertions
+# target the RENDERED generated-project copy so a regression in copier
+# rendering (e.g. a doc dropped by an errant _exclude glob) is caught
+# alongside the source-text unit tests in tests/test_review_governance.py.
+exists "reviewer-assurance: doc rendered into generated project" docs/REVIEWER_ASSURANCE.md
+# State vocabulary (closed to DRAFT / SHADOW / BLOCKING / SUSPENDED).
+has "reviewer-assurance: state DRAFT documented" '`DRAFT`' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: state SHADOW documented" '`SHADOW`' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: state BLOCKING documented" '`BLOCKING`' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: state SUSPENDED documented" '`SUSPENDED`' docs/REVIEWER_ASSURANCE.md
+# Promotion contract: five gates and the human-approval requirement.
+has "reviewer-assurance: promotion criteria heading" \
+    '[Pp]romotion [Cc]riteria' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion gate 1 all vulnerable detected" \
+    'll [Vv]ulnerable [Cc]ases [Dd]etected' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion gate 2 zero false blocking on safe" \
+    'ero [Ff]alse [Bb]locking' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion gate 3 complete evidence" \
+    'omplete [Ee]vidence' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion gate 4 injection resistance" \
+    'njection [Rr]esistance' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion gate 5 recorded human approval" \
+    'ecorded [Hh]uman [Aa]pproval' docs/REVIEWER_ASSURANCE.md
+# Material-change reset (prompt / scope / tools / model behavior) plus
+# the behavior-neutral editorial exemption.
+has "reviewer-assurance: material change returns row to SHADOW" \
+    '[Mm]aterial [Cc]hange' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: material change names prompt" \
+    'prompt' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: material change names scope" \
+    'scope' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: material change names tools" \
+    'tools' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: material change names model behavior" \
+    'model behavior' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: behavior-neutral editorial exemption" \
+    '[Bb]ehavior-neutral editorial' docs/REVIEWER_ASSURANCE.md
+# Suspension triggers: four events that demote to SUSPENDED.
+has "reviewer-assurance: suspension trigger missed seeded cases" \
+    '[Mm]issed [Ss]eeded [Cc]ases' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: suspension trigger false blocking" \
+    '[Ff]alse [Bb]locking' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: suspension trigger instruction-following untrusted" \
+    '[Ii]nstruction-[Ff]ollowing [Ff]rom [Uu]ntrusted' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: suspension trigger scope overreach" \
+    '[Ss]cope [Oo]verreach' docs/REVIEWER_ASSURANCE.md
+# Manual vs deterministic honesty: prompt-reviewer runs are manual because
+# no authenticated agent runner exists in CI.
+has "reviewer-assurance: prompt-reviewer runs are manual" \
+    '[Pp]rompt-[Rr]eviewer [Rr]uns[^\.]*[Mm]anual' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: no authenticated agent runner in CI" \
+    'no authenticated agent runner' docs/REVIEWER_ASSURANCE.md
+# Downstream promotion procedure: run shipped command, feed MANUAL_AGENT
+# cases in fresh contexts, record case IDs, obtain human approval.
+has "reviewer-assurance: names shipped runner scripts/reviewer_eval.py" \
+    'scripts/reviewer_eval\.py' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: names MANUAL_AGENT case scope" \
+    'MANUAL_AGENT' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: fresh contexts requirement" \
+    '[Ff]resh [Cc]ontext' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: record case IDs and evidence" \
+    'case ID' docs/REVIEWER_ASSURANCE.md
+# Promotion record schema fields.
+has "reviewer-assurance: promotion record schema heading" \
+    '[Pp]romotion [Rr]ecord [Ss]chema' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Reviewer" \
+    'Reviewer' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Version" \
+    'Version' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Fixture-set version" \
+    '[Ff]ixture-set version' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Detection result" \
+    '[Dd]etection result' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Safe-case result" \
+    '[Ss]afe-case result' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Injection-resistance result" \
+    '[Ii]njection-resistance result' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Evidence review" \
+    '[Ee]vidence review' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Human approver" \
+    '[Hh]uman approver' docs/REVIEWER_ASSURANCE.md
+# No reviewer row currently BLOCKING (Task 10 records baselines).
+# Use POSIX character classes because BSD grep does not honour \s/[^\n].
+if grep -qE '^\|.+`BLOCKING`[[:space:]]*\|[[:space:]]*$' "$GEN_ROOT/docs/REVIEWER_ASSURANCE.md" 2>/dev/null; then
+    fail "reviewer-assurance: at least one register row is BLOCKING (Task 9 must keep every prompt reviewer at SHADOW; Task 10 records the baseline)"
+else
+    pass "reviewer-assurance: no register row currently BLOCKING"
+fi
+# Every prompt-reviewer row is present AND marked SHADOW.
+for reviewer in red-team sast-reviewer security-hardener \
+        agent-security-specialist code-reviewer solution-architect \
+        test-architect data-flow-guardian; do
+    if grep -qE "^\|[[:space:]]*${reviewer}.*\`SHADOW\`[[:space:]]*\|" "$GEN_ROOT/docs/REVIEWER_ASSURANCE.md" 2>/dev/null; then
+        pass "reviewer-assurance: ${reviewer} row present and SHADOW"
+    else
+        fail "reviewer-assurance: ${reviewer} row missing or not SHADOW"
+    fi
+done
+# INDEX links to the assurance register.
+has "reviewer-assurance: INDEX links the assurance register" \
+    'REVIEWER_ASSURANCE\.md' docs/INDEX.md
+# DEVELOPMENT_PROCESS references the assurance contract and the
+# SHADOW-reset invariant so a maintainer sees the gate from the
+# process doc alone.
+has "reviewer-assurance: process doc references the assurance register" \
+    'REVIEWER_ASSURANCE\.md' docs/DEVELOPMENT_PROCESS.md
+has "reviewer-assurance: process doc names SHADOW-reset invariant" \
+    'returns the row to `SHADOW`' docs/DEVELOPMENT_PROCESS.md
+# GOVERNANCE Non-Claim: manual prompt-reviewer results are point-in-time
+# evidence, not CI automation, not proof against unknown attacks.
+has "reviewer-assurance: GOVERNANCE Non-Claim names manual prompt-reviewer point-in-time" \
+    '[Mm]anual [Pp]rompt-[Rr]eviewer' docs/GOVERNANCE.md
+has "reviewer-assurance: GOVERNANCE Non-Claim states point-in-time" \
+    'point-in-time' docs/GOVERNANCE.md
+has "reviewer-assurance: GOVERNANCE Non-Claim disclaims unknown-attack proof" \
+    'not proof against unknown attacks' docs/GOVERNANCE.md
+# The always-applied red-team rule and expert-review protocol both point
+# at the assurance register. These are the always-applied gates that
+# actually consult REVIEWER_ASSURANCE.md at review time.
+has "reviewer-assurance: red-team rule references assurance register" \
+    'REVIEWER_ASSURANCE\.md' .cursor/rules/red-team.mdc
+has "reviewer-assurance: expert-review rule references assurance register" \
+    'REVIEWER_ASSURANCE\.md' .cursor/rules/expert-review.mdc
+
 # Open adversarial corpus + provenance ship in EVERY profile (tests/ is not
 # gated by include_evals). The fixture is plain .py copier never renders, so a
 # raw jinja sequence would survive to runtime -- assert there is none, and that
