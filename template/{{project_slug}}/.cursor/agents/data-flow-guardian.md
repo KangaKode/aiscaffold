@@ -71,6 +71,7 @@ When reviewing data flow changes:
 [ ] Is there a new read path? Does it read from the correct source?
 [ ] Is session state being used as source of truth? (VIOLATION)
 [ ] Are two components writing to the same table without coordination?
+[ ] Do multi-tenant reads/writes filter by tenant_id (or the project's scoping column)? Cross-tenant .all() / unscoped queries are a VIOLATION
 ```
 
 ### 2. Data Transformation Integrity

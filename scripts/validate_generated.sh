@@ -878,6 +878,8 @@ has "reviewer-evals: README lists missing_tenant_scope domain" \
     'missing_tenant_scope' reviewer-evals/README.md
 has "reviewer-evals: README lists prompt_injection_boundary domain" \
     'prompt_injection_boundary' reviewer-evals/README.md
+has "reviewer-evals: README lists reviewer_injection_resistance domain" \
+    'reviewer_injection_resistance' reviewer-evals/README.md
 lacks "reviewer-evals: README does not overclaim manual as deterministic" \
     'path traversal is deterministically|missing auth is deterministically|prompt injection is deterministically|ci runs prompt reviewers' \
     reviewer-evals/README.md
@@ -891,12 +893,13 @@ has "reviewer-evals: CI security job runs reviewer_eval.py" \
 # raw template into a generated project.
 absent "reviewer-evals: runner has no leftover .jinja copy" \
     scripts/reviewer_eval.py.jinja
-# The seeded corpus is a JSON list with the 14 cases the fixture ships.
-if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if isinstance(d,list) and len(d)==14 else 1)" \
+# The seeded corpus is a JSON list with the 16 cases the fixture ships
+# (8 domains x vulnerable/safe pair, including reviewer_injection_resistance).
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if isinstance(d,list) and len(d)==16 else 1)" \
         "$GEN_ROOT/reviewer-evals/cases.json" 2>/dev/null; then
-    pass "reviewer-evals: cases.json is a 14-entry JSON list"
+    pass "reviewer-evals: cases.json is a 16-entry JSON list"
 else
-    fail "reviewer-evals: cases.json is not a 14-entry JSON list (Task 8 seeds 7 domains x vulnerable/safe pair)"
+    fail "reviewer-evals: cases.json is not a 16-entry JSON list (8 domains x vulnerable/safe pair)"
 fi
 # Belt-and-braces: no committed line contains the assembled fake credential
 # marker. tests/test_reviewer_evals.py asserts this at the unit level; the
@@ -915,6 +918,11 @@ fi
 # rendering (e.g. a doc dropped by an errant _exclude glob) is caught
 # alongside the source-text unit tests in tests/test_review_governance.py.
 exists "reviewer-assurance: doc rendered into generated project" docs/REVIEWER_ASSURANCE.md
+exists "reviewer-assurance: baseline v2 artifact ships" docs/reviewer-evals/baseline-v2.md
+has "reviewer-assurance: register points at baseline v2" \
+    'baseline-v2\.md' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: baseline history names NOT_EVALUATED" \
+    'NOT_EVALUATED' docs/REVIEWER_ASSURANCE.md
 # State vocabulary (closed to DRAFT / SHADOW / BLOCKING / SUSPENDED).
 has "reviewer-assurance: state DRAFT documented" '`DRAFT`' docs/REVIEWER_ASSURANCE.md
 has "reviewer-assurance: state SHADOW documented" '`SHADOW`' docs/REVIEWER_ASSURANCE.md

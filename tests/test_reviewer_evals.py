@@ -20,7 +20,8 @@ Contract this file pins:
 - The three deterministic domains (``hardcoded_secret``,
   ``sql_injection``, ``unsafe_shell``) ship as ``DETERMINISTIC``; the
   four manual domains (``path_traversal``, ``missing_auth``,
-  ``missing_tenant_scope``, ``prompt_injection_boundary``) ship as
+  ``missing_tenant_scope``, ``prompt_injection_boundary``,
+  ``reviewer_injection_resistance``) ship as
   ``MANUAL_AGENT`` -- this task must not claim manual-only coverage as
   deterministically proven.
 - The prompt-injection case's fragments are stored as plain JSON
@@ -74,6 +75,7 @@ MANUAL_DOMAINS = {
     "missing_auth",
     "missing_tenant_scope",
     "prompt_injection_boundary",
+    "reviewer_injection_resistance",
 }
 ALL_DOMAINS = DETERMINISTIC_DOMAINS | MANUAL_DOMAINS
 
@@ -151,7 +153,7 @@ class CasesSchemaTests(unittest.TestCase):
             len(self.cases),
             0,
             f"{CASES_PATH.name} must contain at least one case; PR 4 seeds "
-            "a vulnerable+safe pair for each of the seven domains.",
+            "a vulnerable+safe pair for each of the eight domains.",
         )
 
     def test_every_case_has_all_required_fields(self):
@@ -306,7 +308,7 @@ class CasesSchemaTests(unittest.TestCase):
                     case["domain"],
                     ALL_DOMAINS,
                     f"case {case['id']}: domain {case['domain']!r} is not in "
-                    f"the seven-domain coverage matrix {sorted(ALL_DOMAINS)}.",
+                    f"the eight-domain coverage matrix {sorted(ALL_DOMAINS)}.",
                 )
 
     def test_vulnerable_deterministic_cases_declare_expected_rules(self):
@@ -378,7 +380,7 @@ class CasesSchemaTests(unittest.TestCase):
         self.assertTrue(
             pi_cases,
             "cases.json must include prompt_injection_boundary cases so "
-            "the corpus covers the seventh domain.",
+            "the corpus covers the prompt_injection_boundary domain.",
         )
         for case in pi_cases:
             with self.subTest(id=case["id"]):
@@ -388,6 +390,39 @@ class CasesSchemaTests(unittest.TestCase):
                     "prompt-injection cases must ship as MANUAL_AGENT; "
                     "the deterministic runner must never execute or "
                     "interpret their fragments as instructions.",
+                )
+
+    def test_reviewer_injection_resistance_cases_are_manual(self):
+        # Gate-4 fixtures target the reviewer, not application LLM
+        # boundaries. They must stay MANUAL_AGENT and must never claim
+        # deterministic rule IDs.
+        ri_cases = [
+            c for c in self.cases if c["domain"] == "reviewer_injection_resistance"
+        ]
+        self.assertTrue(
+            ri_cases,
+            "cases.json must include reviewer_injection_resistance cases "
+            "so gate 4 of REVIEWER_ASSURANCE.md has a fixture to score.",
+        )
+        for case in ri_cases:
+            with self.subTest(id=case["id"]):
+                self.assertEqual(case["execution_mode"], "MANUAL_AGENT")
+                self.assertEqual(case["expected_rule_ids"], [])
+
+    def test_missing_auth_does_not_list_agent_security_specialist(self):
+        # Scope honesty: agent-security-specialist owns agent-credential
+        # lifecycle and prompt-injection at agent boundaries, not general
+        # API auth on user-facing routes.
+        for case in self.cases:
+            if case["domain"] != "missing_auth":
+                continue
+            with self.subTest(id=case["id"]):
+                self.assertNotIn(
+                    "agent-security-specialist",
+                    case["manual_reviewers"],
+                    f"case {case['id']}: agent-security-specialist must not "
+                    "be listed on missing_auth; keep it on "
+                    "prompt_injection_boundary / reviewer_injection_resistance.",
                 )
 
 
@@ -642,7 +677,7 @@ class ReadmeCoverageMatrixTests(unittest.TestCase):
                     domain,
                     self.text,
                     f"README does not name domain {domain!r}; the "
-                    "coverage matrix must enumerate all seven domains.",
+                    "coverage matrix must enumerate all eight domains.",
                 )
 
     def test_readme_names_execution_modes(self):

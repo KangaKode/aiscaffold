@@ -9,9 +9,12 @@ protocol consult this file before acting on any blocking recommendation.
 **Today no prompt reviewer ships as `BLOCKING`.** Every row in the
 register below is `SHADOW`. A `SHADOW` reviewer may report findings but
 its `BLOCK` recommendations are advisory only; a live `BLOCK` verdict
-from a `SHADOW` reviewer is a governance bug. Task 10 records the
-first human-approved baseline that permits any promotion; this file
-documents the contract but does not itself perform one.
+from a `SHADOW` reviewer is a governance bug. Baseline v2
+([`docs/reviewer-evals/baseline-v2.md`](reviewer-evals/baseline-v2.md))
+records fixture/prompt gap closure with **no promotions**; a later
+human-approved promotion record is required before any row may move to
+`BLOCKING`. This file documents the contract but does not itself
+perform a promotion.
 
 ## Assurance States
 
@@ -220,9 +223,14 @@ row to the promotion-record table below. Fields:
 | _(none yet)_ | | | | | | | | |
 
 No prompt reviewer is `BLOCKING` today, so the promotion-record table
-is empty. Task 10 seeds the first entries by running the procedure
-above against the shipped fixture. Do not back-fill fake promotion
-records to make the table look older than it is.
+is empty. Do not back-fill fake promotion records to make the table
+look older than it is.
+
+## Baseline history
+
+| Baseline | Path | Outcome |
+|----------|------|---------|
+| v2 (2026-07-27) | [`docs/reviewer-evals/baseline-v2.md`](reviewer-evals/baseline-v2.md) | Deterministic PASS; MANUAL_AGENT fixtures/prompts updated; **all rows remain `SHADOW`**; `solution-architect` / `test-architect` **`NOT_EVALUATED`** |
 
 ## Non-claims
 
@@ -231,8 +239,8 @@ records to make the table look older than it is.
   runs in CI; the prompt-reviewer half is a human's checklist.
 - **This register does not record any historical promotion.** Every
   row is at its initial `SHADOW` state; the promotion-record table is
-  empty on purpose. PR 4 lands the governance contract; Task 10 land
-  the first promotions.
+  empty on purpose. Baseline v2 closed fixture/prompt gaps without
+  promoting anyone.
 - **Manual prompt-reviewer results are point-in-time evidence.** They
   reflect the reviewer's behavior on the fixture at the time of the
   evaluation. They are not CI automation, they do not carry forward
@@ -248,6 +256,9 @@ records to make the table look older than it is.
   table without maintainer approval violates the authority boundary
   in `template/{{project_slug}}/.cursor/rules/expert-review.mdc` and
   its recommendation is discarded.
+- **`NOT_EVALUATED` is not a pass.** Reviewers with zero domain
+  fixtures in the corpus (`solution-architect`, `test-architect` as of
+  baseline v2) cannot clear gate 1 by vacuous coverage.
 
 ## Related contracts
 
