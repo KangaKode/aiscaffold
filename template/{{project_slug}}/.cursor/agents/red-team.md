@@ -58,6 +58,16 @@ not by this prompt.
 - **Path traversal**: Is user input used in file paths without sanitization?
   - Check `os.path.join()`, `open()`, `Path()` with user-supplied values
 
+- **API authentication**: Are new routes protected by the project's auth middleware?
+  - New routes added without the auth middleware (`api/middleware/auth.py`) applied
+  - Endpoints that bypass rate limiting without justification
+  - Admin or sensitive handlers missing `Depends(require_admin)` (or project equivalent)
+
+- **Tenant / data isolation**: Do queries and cache keys enforce tenant or user scoping?
+  - Database queries that skip the project's tenant/user scoping filters
+  - New models missing the scoping column used elsewhere in the schema
+  - Session or cache keys without a scoping prefix
+
 - **Prompt injection**: Can user input manipulate LLM system prompts?
   - Check if user text is inserted into system prompts without escaping
   - Verify system/user message boundaries are maintained

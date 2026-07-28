@@ -30,6 +30,13 @@ RULE_SEC_SQL_FORMAT = "SEC-SQL-FORMAT"
 RULE_SEC_EVAL = "SEC-EVAL"
 RULE_SEC_EXEC = "SEC-EXEC"
 RULE_SEC_PICKLE = "SEC-PICKLE"
+# Unsafe-execution vocabulary shared with the root scanner. The root
+# ``scripts/agent_review.py`` already emits ``SEC-SHELL-TRUE`` and
+# ``SEC-OS-SYSTEM`` for these patterns; the generated scanner mirrors
+# the same IDs so the seeded reviewer-eval corpus applies to both
+# scanner surfaces without a per-scanner mapping table.
+RULE_SEC_SHELL_TRUE = "SEC-SHELL-TRUE"
+RULE_SEC_OS_SYSTEM = "SEC-OS-SYSTEM"
 RULE_ARCH_LAYER_VIOLATION = "ARCH-LAYER-VIOLATION"
 RULE_SIZE_FILE_OVER_CAP = "SIZE-FILE-OVER-CAP"
 RULE_DATA_DROP_TABLE_UNGUARDED = "DATA-DROP-TABLE-UNGUARDED"
@@ -53,6 +60,8 @@ DANGEROUS_PATTERNS = [
     (r'\beval\s*\(', RULE_SEC_EVAL, "Use of eval()"),
     (r'\bexec\s*\(', RULE_SEC_EXEC, "Use of exec()"),
     (r'\bpickle\.loads?\s*\(', RULE_SEC_PICKLE, "Use of pickle"),
+    (r'subprocess.*shell\s*=\s*True', RULE_SEC_SHELL_TRUE, "subprocess with shell=True is unsafe"),
+    (r'\bos\.system\s*\(', RULE_SEC_OS_SYSTEM, "os.system() is unsafe (use subprocess.run with shell=False)"),
 ]
 
 class Finding:
@@ -132,6 +141,11 @@ def check_dangerous(fp, content):
                                     "exec() allows arbitrary code execution from untrusted input.",
                     r'\bpickle\.loads?\s*\(': "Replace pickle with json.loads()/json.dumps() for serialization. "
                                               "Pickle can execute arbitrary code during deserialization.",
+                    r'subprocess.*shell\s*=\s*True': "Pass argv as a list to subprocess.run(...) and keep "
+                                                       "shell=False (or omit it). shell=True lets user input reach "
+                                                       "the shell verbatim.",
+                    r'\bos\.system\s*\(': "Replace os.system(cmd) with subprocess.run([...], check=True). "
+                                            "os.system routes the string through the shell.",
                 }
                 fix = next((v for k, v in fixes.items() if re.search(k, line)), "Use safe alternatives.")
                 findings.append(Finding("BLOCKING", rule_id, fp, n, f"Security: {desc}", line.strip()[:100], fix))

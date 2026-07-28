@@ -1147,5 +1147,498 @@ class BugbotRoundTwoRegressionTests(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Task 9: shadow/promotion governance contract
+# ---------------------------------------------------------------------------
+
+ASSURANCE_ASSETS = {
+    "root_assurance": ROOT_REVIEWER_ASSURANCE,
+    "template_assurance": TEMPLATE_REVIEWER_ASSURANCE,
+}
+
+# Every prompt reviewer that ships in the register must currently be SHADOW.
+# Task 9 expands the promotion contract; Task 10 records human-approved
+# baselines and only then may a row move to BLOCKING. If this list falls
+# out of sync with the register table the register test itself catches it
+# (see ``test_no_reviewer_row_is_blocking``).
+_EXPECTED_SHADOW_REVIEWERS = (
+    "red-team",
+    "sast-reviewer",
+    "security-hardener",
+    "agent-security-specialist",
+    "code-reviewer",
+    "solution-architect",
+    "test-architect",
+    "data-flow-guardian",
+)
+
+# The five-gate promotion contract: every gate must appear (loose phrasing
+# allowed so Task 9 can present them as bullets or prose).
+_PROMOTION_GATES = {
+    "all vulnerable cases detected": re.compile(
+        r"(?is)all[^.\n]{0,60}vulnerable[^.\n]{0,120}(?:detected|caught|flagged)"
+        r"|every[^.\n]{0,60}vulnerable[^.\n]{0,120}(?:detected|caught|flagged)",
+    ),
+    "zero false blocking on safe cases": re.compile(
+        r"(?is)(?:zero|no)[^.\n]{0,80}false[- ]block"
+        r"|no\s+false[- ]blocking"
+        r"|zero\s+false\s+blocks?",
+    ),
+    "complete evidence": re.compile(
+        r"(?is)complete\s+evidence"
+        r"|proof[- ]of[- ]finding\s+(?:contract|evidence|complete)"
+        r"|full\s+proof[- ]of[- ]finding",
+    ),
+    "injection resistance": re.compile(
+        r"(?is)injection\s+resistance"
+        r"|resist[^.\n]{0,60}injection"
+        r"|prompt[- ]injection[^.\n]{0,60}resist",
+    ),
+    "recorded human approval": re.compile(
+        r"(?is)(?:recorded|documented)[^.\n]{0,80}human\s+approv"
+        r"|human\s+approv[^.\n]{0,60}(?:recorded|documented|dated)",
+    ),
+}
+
+# Suspension triggers: four events that demote a reviewer to SUSPENDED.
+_SUSPENSION_TRIGGERS = {
+    "missed seeded cases": re.compile(
+        r"(?is)miss(?:ed|es|ing)?[^.\n]{0,80}(?:seeded|reviewer-eval|fixture)"
+        r"|(?:seeded|fixture|reviewer-eval)[^.\n]{0,80}(?:missed|slipped past)",
+    ),
+    "false blocking": re.compile(
+        r"(?is)false[- ]block"
+        r"|false[- ]positive[^.\n]{0,60}block",
+    ),
+    "instruction-following from untrusted fixtures": re.compile(
+        r"(?is)instruction[- ]follow[^.\n]{0,120}(?:untrusted|fixture|payload|input|content)"
+        r"|(?:untrusted|fixture|payload)[^.\n]{0,120}instruction[- ]follow"
+        r"|prompt[- ]injection[^.\n]{0,80}(?:follow|comply|obey)",
+    ),
+    "scope overreach": re.compile(
+        r"(?is)scope\s+overreach"
+        r"|out[- ]of[- ]scope[^.\n]{0,80}(?:finding|verdict|recommendation)"
+        r"|reviewer[^.\n]{0,80}outside[^.\n]{0,60}scope",
+    ),
+}
+
+# Material-change categories that reset a promoted reviewer to SHADOW.
+_MATERIAL_CHANGE_CATEGORIES = {
+    "prompt": re.compile(r"(?i)\bprompt\b"),
+    "scope": re.compile(r"(?i)\bscope\b"),
+    "tools": re.compile(r"(?i)\btool[s]?\b"),
+    "model behavior": re.compile(r"(?i)model\s+behavior|model[- ]behavior"),
+}
+
+# The nine promotion-record schema fields.
+_PROMOTION_RECORD_FIELDS = (
+    "reviewer",
+    "version",
+    "fixture",
+    "detection",
+    "safe",
+    "injection",
+    "evidence",
+    "human approver",
+    "date",
+)
+
+
+def _promotion_window(text: str) -> str:
+    """Return everything after the first ``## Promotion`` (or similar)
+    heading. Task 9 must add a promotion contract section; scoping the
+    field checks under it prevents an unrelated word ("date" in a
+    paragraph elsewhere, "scope" in the state vocabulary) from
+    satisfying a check vacuously.
+    """
+    match = re.search(
+        r"(?im)^##\s+.*(?:promotion|shadow[- ]to[- ]blocking|promotion\s+criteria|"
+        r"promotion\s+protocol|promotion\s+contract)\b",
+        text,
+    )
+    if match is None:
+        return ""
+    return text[match.start():]
+
+
+class Task9AssuranceContractTests(unittest.TestCase):
+    """Task 9 expands both assurance docs into the full shadow/promotion contract.
+
+    Every check runs against BOTH the root
+    (``docs/REVIEWER_ASSURANCE.md``) and the template
+    (``template/{{project_slug}}/docs/REVIEWER_ASSURANCE.md``) doc so
+    generated projects inherit the same governance surface.
+    """
+
+    def test_assurance_docs_carry_state_vocabulary(self):
+        # PR 3 already ships the four-state vocabulary; Task 9 must not
+        # regress it. Pin the four labels explicitly.
+        for name, path in ASSURANCE_ASSETS.items():
+            with self.subTest(asset=name):
+                text = _text(path)
+                for label in ("DRAFT", "SHADOW", "BLOCKING", "SUSPENDED"):
+                    with self.subTest(asset=name, label=label):
+                        self.assertIn(
+                            label,
+                            text,
+                            f"{name}: closed-vocabulary state {label!r} "
+                            "missing from the assurance doc; Task 9 must "
+                            "preserve the four-state vocabulary.",
+                        )
+
+    def test_assurance_docs_document_promotion_criteria(self):
+        # Promotion from SHADOW to BLOCKING requires five gates, all in
+        # the same section body. A file-wide substring match would let
+        # unrelated prose (Non-Claims, Related contracts) satisfy the
+        # check; scope the field checks under the promotion window.
+        for name, path in ASSURANCE_ASSETS.items():
+            with self.subTest(asset=name):
+                text = _text(path)
+                window = _promotion_window(text)
+                self.assertTrue(
+                    window,
+                    f"{name}: no ``## Promotion``-style heading found. "
+                    "Task 9 must add a promotion-contract section so "
+                    "the five gates and the human-approval requirement "
+                    "sit under one anchor.",
+                )
+                for gate, pattern in _PROMOTION_GATES.items():
+                    with self.subTest(asset=name, gate=gate):
+                        self.assertRegex(
+                            window,
+                            pattern,
+                            f"{name}: promotion contract missing gate "
+                            f"{gate!r}. Task 9 must state that "
+                            "promotion to BLOCKING requires all "
+                            "vulnerable cases detected, zero false "
+                            "blocking on safe cases, complete "
+                            "evidence, injection resistance, and "
+                            "recorded human approval.",
+                        )
+
+    def test_assurance_docs_document_material_change_reset(self):
+        # Material changes (prompt, scope, tools, model behavior)
+        # return a reviewer to SHADOW; behavior-neutral editorial
+        # changes are exempt.
+        material_re = re.compile(
+            r"(?is)material\s+change"
+            r"|material[^.\n]{0,60}(?:prompt|scope|tools|model)",
+        )
+        exempt_re = re.compile(
+            r"(?is)(?:behavior[- ]neutral|editorial)[^.\n]{0,80}(?:exempt|excluded|not\s+material)"
+            r"|(?:exempt|excluded|not\s+material)[^.\n]{0,80}(?:behavior[- ]neutral|editorial)",
+        )
+        for name, path in ASSURANCE_ASSETS.items():
+            with self.subTest(asset=name):
+                text = _text(path)
+                self.assertRegex(
+                    text,
+                    material_re,
+                    f"{name}: no 'material change' clause. Task 9 must "
+                    "state that any material change to a reviewer "
+                    "returns it to SHADOW.",
+                )
+                for category, pattern in _MATERIAL_CHANGE_CATEGORIES.items():
+                    with self.subTest(asset=name, category=category):
+                        self.assertRegex(
+                            text,
+                            pattern,
+                            f"{name}: material-change category "
+                            f"{category!r} missing. Task 9 must name "
+                            "prompt, scope, tools, and model behavior "
+                            "as material changes.",
+                        )
+                self.assertRegex(
+                    text,
+                    exempt_re,
+                    f"{name}: does not exempt behavior-neutral "
+                    "editorial changes. Task 9 must state that such "
+                    "edits do not reset the assurance state, otherwise "
+                    "a typo fix would demote a promoted reviewer.",
+                )
+
+    def test_assurance_docs_document_suspension_triggers(self):
+        for name, path in ASSURANCE_ASSETS.items():
+            with self.subTest(asset=name):
+                text = _text(path)
+                # The suspension section must name each of the four
+                # triggers. Loose phrasing is fine so Task 9 can present
+                # them as bullets or prose.
+                for trigger, pattern in _SUSPENSION_TRIGGERS.items():
+                    with self.subTest(asset=name, trigger=trigger):
+                        self.assertRegex(
+                            text,
+                            pattern,
+                            f"{name}: suspension trigger {trigger!r} "
+                            "missing. Task 9 must state that a "
+                            "reviewer is suspended on missed seeded "
+                            "cases, false blocking, instruction-"
+                            "following from untrusted fixtures, or "
+                            "scope overreach.",
+                        )
+
+    def test_assurance_docs_are_honest_about_manual_vs_ci(self):
+        # The promotion protocol runs deterministic cases in CI and
+        # prompt-reviewer runs MANUALLY, because no authenticated agent
+        # runner exists in GitHub Actions. State it plainly.
+        manual_re = re.compile(
+            r"(?is)prompt[- ]reviewer[^.\n]{0,240}(?:manual|manually|human)"
+            r"|manual[^.\n]{0,80}prompt[- ]reviewer"
+            r"|prompt[- ]reviewer\s+runs?\s+are\s+manual",
+        )
+        no_runner_re = re.compile(
+            r"(?is)no\s+authenticated\s+agent\s+runner"
+            r"|CI\s+does\s+not\s+run\s+prompt\s+reviewers"
+            r"|GitHub\s+Actions[^.\n]{0,120}(?:cannot|does\s+not|no)[^.\n]{0,60}(?:agent|prompt)"
+            r"|no\s+CI\s+(?:runner|surface)[^.\n]{0,80}(?:prompt|agent)",
+        )
+        for name, path in ASSURANCE_ASSETS.items():
+            with self.subTest(asset=name):
+                text = _text(path)
+                self.assertRegex(
+                    text,
+                    manual_re,
+                    f"{name}: does not state plainly that prompt-"
+                    "reviewer runs are manual. Task 9 must be honest "
+                    "about this so an operator does not assume CI "
+                    "already validates prompt reviewers.",
+                )
+                self.assertRegex(
+                    text,
+                    no_runner_re,
+                    f"{name}: does not explain WHY prompt-reviewer "
+                    "runs are manual. Task 9 must state that no "
+                    "authenticated agent runner exists in CI / "
+                    "GitHub Actions, so prompt-reviewer runs cannot "
+                    "be automated today.",
+                )
+
+    def test_assurance_docs_document_promotion_procedure(self):
+        # The downstream promotion procedure must (a) run the shipped
+        # deterministic command, (b) feed only the reviewer's declared
+        # MANUAL_AGENT cases in fresh contexts, (c) record case IDs and
+        # evidence, and (d) obtain human approval.
+        deterministic_cmd_re = re.compile(
+            r"(?is)(?:python\s+)?scripts/reviewer_eval\.py"
+            r"|reviewer_eval\.py"
+            r"|deterministic\s+(?:command|runner|corpus)",
+        )
+        manual_agent_re = re.compile(
+            r"(?is)MANUAL_AGENT[^.\n]{0,240}(?:case|fixture|corpus)"
+            r"|manual_reviewers[^.\n]{0,240}fresh",
+        )
+        fresh_context_re = re.compile(
+            r"(?is)fresh\s+context"
+            r"|new\s+chat"
+            r"|fresh\s+session"
+            r"|isolated\s+context",
+        )
+        record_re = re.compile(
+            r"(?is)record[^.\n]{0,120}(?:case\s+id|evidence|verdict)"
+            r"|case\s+id[^.\n]{0,80}recorded",
+        )
+        human_approval_re = re.compile(
+            r"(?is)human\s+approv"
+            r"|maintainer\s+approv",
+        )
+        for name, path in ASSURANCE_ASSETS.items():
+            with self.subTest(asset=name):
+                text = _text(path)
+                for signal, pattern in (
+                    ("shipped deterministic command", deterministic_cmd_re),
+                    ("MANUAL_AGENT case scope", manual_agent_re),
+                    ("fresh contexts", fresh_context_re),
+                    ("record case IDs / evidence", record_re),
+                    ("human approval", human_approval_re),
+                ):
+                    with self.subTest(asset=name, signal=signal):
+                        self.assertRegex(
+                            text,
+                            pattern,
+                            f"{name}: downstream promotion procedure "
+                            f"missing {signal!r}. Task 9 must "
+                            "document the full recipe: run the "
+                            "shipped deterministic command, feed only "
+                            "the reviewer's declared MANUAL_AGENT "
+                            "cases in fresh contexts, record case "
+                            "IDs / evidence, and obtain human "
+                            "approval.",
+                        )
+
+    def test_assurance_docs_document_promotion_record_schema(self):
+        for name, path in ASSURANCE_ASSETS.items():
+            with self.subTest(asset=name):
+                text = _text(path).lower()
+                for field in _PROMOTION_RECORD_FIELDS:
+                    with self.subTest(asset=name, field=field):
+                        self.assertIn(
+                            field,
+                            text,
+                            f"{name}: promotion record schema field "
+                            f"{field!r} not mentioned anywhere in the "
+                            "doc. Task 9 must document the schema: "
+                            "reviewer, version/change reference, "
+                            "fixture-set version, detection result, "
+                            "safe-case result, injection-resistance "
+                            "result, evidence review, human approver, "
+                            "date.",
+                        )
+
+    def test_no_reviewer_row_is_blocking(self):
+        # Task 9 explicitly forbids setting any reviewer to BLOCKING;
+        # Task 10 records the baseline. A row like ``| red-team | ... |
+        # BLOCKING |`` is a governance regression.
+        row_blocking_re = re.compile(
+            r"(?im)^\|[^\n]*`?BLOCKING`?\s*\|\s*$",
+        )
+        for name, path in ASSURANCE_ASSETS.items():
+            with self.subTest(asset=name):
+                text = _text(path)
+                match = row_blocking_re.search(text)
+                self.assertIsNone(
+                    match,
+                    f"{name}: at least one register-table row ends "
+                    "with BLOCKING. Task 9 must keep every prompt "
+                    "reviewer at SHADOW; Task 10 records the "
+                    "human-approved baseline that permits promotion.",
+                )
+                # Every expected reviewer row must still be present
+                # AND labelled SHADOW.
+                for reviewer in _EXPECTED_SHADOW_REVIEWERS:
+                    with self.subTest(asset=name, reviewer=reviewer):
+                        row_pattern = re.compile(
+                            rf"(?im)^\|\s*{re.escape(reviewer)}[^\n]*"
+                            rf"`?SHADOW`?\s*\|",
+                        )
+                        self.assertRegex(
+                            text,
+                            row_pattern,
+                            f"{name}: reviewer row {reviewer!r} is "
+                            "missing or not marked SHADOW. Task 9 "
+                            "must preserve every existing row at "
+                            "SHADOW; do not delete rows or invent "
+                            "promotions.",
+                        )
+
+    def test_governance_asset_names_promotion_reset_on_change(self):
+        # DEVELOPMENT_PROCESS docs (root + template) point at the
+        # assurance register and describe the SHADOW-reset invariant so
+        # a maintainer reading only the process doc sees the contract.
+        for name, path in PROCESS_ASSETS.items():
+            with self.subTest(asset=name):
+                text = _text(path)
+                self.assertIn(
+                    "REVIEWER_ASSURANCE.md",
+                    text,
+                    f"{name}: does not reference "
+                    "docs/REVIEWER_ASSURANCE.md. Task 9 must add a "
+                    "reference so the process doc points at the "
+                    "promotion contract.",
+                )
+                self.assertRegex(
+                    text,
+                    r"(?is)material\s+change[^.\n]{0,120}shadow"
+                    r"|shadow[^.\n]{0,120}material\s+change"
+                    r"|reset\s+to\s+shadow"
+                    r"|returns?\s+to\s+shadow",
+                    f"{name}: does not describe the SHADOW-reset "
+                    "invariant. Task 9 must mention that a material "
+                    "change to a promoted reviewer returns it to "
+                    "SHADOW.",
+                )
+
+
+class BaselineV2HonestyRegressionTests(unittest.TestCase):
+    """Bugbot regressions from the PR4 fixture/prompt gap-fix.
+
+    These pin honesty invariants that failed once on the gap-fix
+    branch: root promotion docs must not invent a root-level runner,
+    and material prompt edits in baseline v2 must bump register
+    versions off ``v0``.
+    """
+
+    # Reviewers whose prompts were materially edited in baseline v2.
+    _V1_REVIEWERS = (
+        "red-team (always-applied rule)",
+        "red-team (agent)",
+        "code-reviewer",
+        "data-flow-guardian",
+    )
+
+    def test_root_promotion_procedure_names_template_runner_path(self):
+        text = _text(ROOT_REVIEWER_ASSURANCE)
+        self.assertIn(
+            "template/{{project_slug}}/scripts/reviewer_eval.py",
+            text,
+            "docs/REVIEWER_ASSURANCE.md must tell roundtable maintainers "
+            "to run the template-tree reviewer_eval.py; there is no "
+            "root-level scripts/reviewer_eval.py.",
+        )
+        # Ban the bare root command as the only instruction.
+        self.assertNotRegex(
+            text,
+            r"(?im)^1\.\s+\*\*Run the shipped deterministic command\.\*\*"
+            r"[^\n]*\n[^\n]*`python scripts/reviewer_eval\.py`",
+            "Root assurance doc must not lead with `python "
+            "scripts/reviewer_eval.py` as if that path existed at the "
+            "repository root.",
+        )
+
+    def test_materially_edited_reviewers_are_version_v1(self):
+        for name, path in ASSURANCE_ASSETS.items():
+            text = _text(path)
+            for reviewer in self._V1_REVIEWERS:
+                with self.subTest(asset=name, reviewer=reviewer):
+                    row_pattern = re.compile(
+                        rf"(?im)^\|\s*{re.escape(reviewer)}[^\n]*\|"
+                        rf"[^\n]*\|\s*v1\s*\|\s*`?SHADOW`?\s*\|",
+                    )
+                    self.assertRegex(
+                        text,
+                        row_pattern,
+                        f"{name}: reviewer {reviewer!r} must be version "
+                        "v1 after the baseline-v2 material prompt edits "
+                        "(Path Traversal / API Auth / Tenant Scope "
+                        "checklist additions). Leaving v0 after a "
+                        "material change violates the material-change "
+                        "version-bump rule in the same document.",
+                    )
+
+
+class Task9GovernanceNonClaimTests(unittest.TestCase):
+    """Task 9 adds explicit GOVERNANCE Non-Claims for manual prompt-reviewer results.
+
+    The template's GOVERNANCE.md must own the honest bound: manual
+    prompt-reviewer results are point-in-time evidence, not CI
+    automation, not proof against unknown attacks.
+    """
+
+    TEMPLATE_GOVERNANCE = TEMPLATE_ROOT / "docs" / "GOVERNANCE.md"
+
+    def test_governance_non_claim_names_manual_prompt_reviewer_evidence(self):
+        text = _text(self.TEMPLATE_GOVERNANCE)
+        # Point-in-time evidence, not CI automation.
+        self.assertRegex(
+            text,
+            r"(?is)point[- ]in[- ]time[^.\n]{0,180}(?:prompt[- ]reviewer|manual\s+review)"
+            r"|manual\s+prompt[- ]reviewer[^.\n]{0,240}point[- ]in[- ]time"
+            r"|manual\s+prompt[- ]reviewer[^.\n]{0,240}not\s+CI",
+            "GOVERNANCE.md: no Non-Claim naming manual prompt-reviewer "
+            "results as point-in-time evidence. Task 9 must add a "
+            "Non-Claim so no reader mistakes SHADOW-era manual results "
+            "for CI-enforced ones.",
+        )
+        # Not proof against unknown attacks.
+        self.assertRegex(
+            text,
+            r"(?is)not\s+proof[^.\n]{0,180}(?:unknown|novel|unseen)"
+            r"|(?:unknown|novel|unseen)\s+attack[^.\n]{0,180}(?:not\s+proof|not\s+guaranteed|no\s+claim)",
+            "GOVERNANCE.md: no Non-Claim stating manual prompt-"
+            "reviewer results are not proof against unknown attacks. "
+            "Task 9 must add this bound so shipping evidence does not "
+            "read as blanket coverage.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

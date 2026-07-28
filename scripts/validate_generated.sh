@@ -530,6 +530,29 @@ else
 fi
 
 # =========================================================================
+# Step 7b: Reviewer-eval deterministic runner
+# =========================================================================
+# The shipped reviewer-eval runner (scripts/reviewer_eval.py) validates
+# the seeded reviewer-evals/cases.json fixture and exercises every
+# DETERMINISTIC case through red_team_check. Exits nonzero on schema
+# errors, missed vulnerabilities, or false-blocks on safe near-misses.
+# MANUAL_AGENT cases are NOT executed here (CI does not run prompt
+# reviewers); see reviewer-evals/README.md for the manual-review recipe.
+section "Step 7b: Reviewer-eval deterministic runner"
+REVIEWER_EVAL_RUNNER="$GEN_ROOT/scripts/reviewer_eval.py"
+REVIEWER_EVAL_CASES="$GEN_ROOT/reviewer-evals/cases.json"
+if [ -f "$REVIEWER_EVAL_RUNNER" ] && [ -f "$REVIEWER_EVAL_CASES" ]; then
+    if (cd "$GEN_ROOT" && python3 scripts/reviewer_eval.py --quiet >/dev/null 2>&1); then
+        pass "Reviewer-eval runner: DETERMINISTIC cases pass"
+    else
+        fail "Reviewer-eval runner: failures reported (rerun locally without --quiet for detail)"
+        (cd "$GEN_ROOT" && python3 scripts/reviewer_eval.py 2>&1 | sed 's/^/    /' | head -40)
+    fi
+else
+    fail "Reviewer-eval runner or cases.json missing in generated project"
+fi
+
+# =========================================================================
 # Step 8: Unit Tests (run pytest on generated project) + import sweep
 # =========================================================================
 section "Step 8: Unit Tests"
@@ -825,6 +848,199 @@ has "security: GOVERNANCE flags branch-protection external-only" \
     'Branch protection cannot be configured' docs/GOVERNANCE.md
 has "security: GOVERNANCE flags exceptions file as human review" \
     'exceptions file is a HUMAN review record' docs/GOVERNANCE.md
+
+# Task 8 -- reviewer-eval fixture, README, shipped runner, and CI wiring must
+# render in EVERY profile. The runner is not gated by include_evals: it
+# exercises red_team_check against the seeded corpus and ships alongside
+# other security scripts (pip_audit_gate, red_team_check). Per-profile
+# render assertions belt-and-brace the unit-level contract already covered
+# by tests/test_reviewer_evals.py.
+exists "reviewer-evals: fixture ships in all profiles" reviewer-evals/cases.json
+exists "reviewer-evals: README ships in all profiles" reviewer-evals/README.md
+exists "reviewer-evals: shipped runner ships in all profiles" scripts/reviewer_eval.py
+has "reviewer-evals: README documents DETERMINISTIC mode" \
+    'DETERMINISTIC' reviewer-evals/README.md
+has "reviewer-evals: README documents MANUAL_AGENT mode" \
+    'MANUAL_AGENT' reviewer-evals/README.md
+has "reviewer-evals: README publishes coverage matrix" \
+    'Coverage matrix|coverage matrix' reviewer-evals/README.md
+has "reviewer-evals: README lists hardcoded_secret domain" \
+    'hardcoded_secret' reviewer-evals/README.md
+has "reviewer-evals: README lists sql_injection domain" \
+    'sql_injection' reviewer-evals/README.md
+has "reviewer-evals: README lists unsafe_shell domain" \
+    'unsafe_shell' reviewer-evals/README.md
+has "reviewer-evals: README lists path_traversal domain" \
+    'path_traversal' reviewer-evals/README.md
+has "reviewer-evals: README lists missing_auth domain" \
+    'missing_auth' reviewer-evals/README.md
+has "reviewer-evals: README lists missing_tenant_scope domain" \
+    'missing_tenant_scope' reviewer-evals/README.md
+has "reviewer-evals: README lists prompt_injection_boundary domain" \
+    'prompt_injection_boundary' reviewer-evals/README.md
+has "reviewer-evals: README lists reviewer_injection_resistance domain" \
+    'reviewer_injection_resistance' reviewer-evals/README.md
+lacks "reviewer-evals: README does not overclaim manual as deterministic" \
+    'path traversal is deterministically|missing auth is deterministically|prompt injection is deterministically|ci runs prompt reviewers' \
+    reviewer-evals/README.md
+has "reviewer-evals: runner has --quiet flag documented" \
+    '"--quiet"' scripts/reviewer_eval.py
+# The security CI job invokes the runner unconditionally (reviewer-evals
+# ship in every profile). Assert the invocation renders in the workflow.
+has "reviewer-evals: CI security job runs reviewer_eval.py" \
+    'scripts/reviewer_eval\.py' .github/workflows/ci.yml
+# The runner ships as a plain .py; a stray .jinja suffix would send the
+# raw template into a generated project.
+absent "reviewer-evals: runner has no leftover .jinja copy" \
+    scripts/reviewer_eval.py.jinja
+# The seeded corpus is a JSON list with the 16 cases the fixture ships
+# (8 domains x vulnerable/safe pair, including reviewer_injection_resistance).
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if isinstance(d,list) and len(d)==16 else 1)" \
+        "$GEN_ROOT/reviewer-evals/cases.json" 2>/dev/null; then
+    pass "reviewer-evals: cases.json is a 16-entry JSON list"
+else
+    fail "reviewer-evals: cases.json is not a 16-entry JSON list (8 domains x vulnerable/safe pair)"
+fi
+# Belt-and-braces: no committed line contains the assembled fake credential
+# marker. tests/test_reviewer_evals.py asserts this at the unit level; the
+# shell check catches regressions where the fixture is edited without
+# re-running the tests.
+if grep -RFq 'password = "seed-abc123def4560"' "$GEN_ROOT/reviewer-evals" 2>/dev/null; then
+    fail "reviewer-evals: assembled fake-credential marker leaked into fixture text"
+else
+    pass "reviewer-evals: no assembled fake-credential marker in fixture text"
+fi
+
+# Task 9 -- reviewer-assurance shadow/promotion contract must render in
+# EVERY profile. The template counterpart lives at
+# template/{{project_slug}}/docs/REVIEWER_ASSURANCE.md; these assertions
+# target the RENDERED generated-project copy so a regression in copier
+# rendering (e.g. a doc dropped by an errant _exclude glob) is caught
+# alongside the source-text unit tests in tests/test_review_governance.py.
+exists "reviewer-assurance: doc rendered into generated project" docs/REVIEWER_ASSURANCE.md
+exists "reviewer-assurance: baseline v2 artifact ships" docs/reviewer-evals/baseline-v2.md
+has "reviewer-assurance: register points at baseline v2" \
+    'baseline-v2\.md' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: baseline history names NOT_EVALUATED" \
+    'NOT_EVALUATED' docs/REVIEWER_ASSURANCE.md
+# State vocabulary (closed to DRAFT / SHADOW / BLOCKING / SUSPENDED).
+has "reviewer-assurance: state DRAFT documented" '`DRAFT`' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: state SHADOW documented" '`SHADOW`' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: state BLOCKING documented" '`BLOCKING`' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: state SUSPENDED documented" '`SUSPENDED`' docs/REVIEWER_ASSURANCE.md
+# Promotion contract: five gates and the human-approval requirement.
+has "reviewer-assurance: promotion criteria heading" \
+    '[Pp]romotion [Cc]riteria' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion gate 1 all vulnerable detected" \
+    'll [Vv]ulnerable [Cc]ases [Dd]etected' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion gate 2 zero false blocking on safe" \
+    'ero [Ff]alse [Bb]locking' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion gate 3 complete evidence" \
+    'omplete [Ee]vidence' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion gate 4 injection resistance" \
+    'njection [Rr]esistance' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion gate 5 recorded human approval" \
+    'ecorded [Hh]uman [Aa]pproval' docs/REVIEWER_ASSURANCE.md
+# Material-change reset (prompt / scope / tools / model behavior) plus
+# the behavior-neutral editorial exemption.
+has "reviewer-assurance: material change returns row to SHADOW" \
+    '[Mm]aterial [Cc]hange' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: material change names prompt" \
+    'prompt' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: material change names scope" \
+    'scope' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: material change names tools" \
+    'tools' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: material change names model behavior" \
+    'model behavior' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: behavior-neutral editorial exemption" \
+    '[Bb]ehavior-neutral editorial' docs/REVIEWER_ASSURANCE.md
+# Suspension triggers: four events that demote to SUSPENDED.
+has "reviewer-assurance: suspension trigger missed seeded cases" \
+    '[Mm]issed [Ss]eeded [Cc]ases' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: suspension trigger false blocking" \
+    '[Ff]alse [Bb]locking' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: suspension trigger instruction-following untrusted" \
+    '[Ii]nstruction-[Ff]ollowing [Ff]rom [Uu]ntrusted' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: suspension trigger scope overreach" \
+    '[Ss]cope [Oo]verreach' docs/REVIEWER_ASSURANCE.md
+# Manual vs deterministic honesty: prompt-reviewer runs are manual because
+# no authenticated agent runner exists in CI.
+has "reviewer-assurance: prompt-reviewer runs are manual" \
+    '[Pp]rompt-[Rr]eviewer [Rr]uns[^\.]*[Mm]anual' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: no authenticated agent runner in CI" \
+    'no authenticated agent runner' docs/REVIEWER_ASSURANCE.md
+# Downstream promotion procedure: run shipped command, feed MANUAL_AGENT
+# cases in fresh contexts, record case IDs, obtain human approval.
+has "reviewer-assurance: names shipped runner scripts/reviewer_eval.py" \
+    'scripts/reviewer_eval\.py' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: names MANUAL_AGENT case scope" \
+    'MANUAL_AGENT' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: fresh contexts requirement" \
+    '[Ff]resh [Cc]ontext' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: record case IDs and evidence" \
+    'case ID' docs/REVIEWER_ASSURANCE.md
+# Promotion record schema fields.
+has "reviewer-assurance: promotion record schema heading" \
+    '[Pp]romotion [Rr]ecord [Ss]chema' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Reviewer" \
+    'Reviewer' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Version" \
+    'Version' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Fixture-set version" \
+    '[Ff]ixture-set version' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Detection result" \
+    '[Dd]etection result' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Safe-case result" \
+    '[Ss]afe-case result' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Injection-resistance result" \
+    '[Ii]njection-resistance result' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Evidence review" \
+    '[Ee]vidence review' docs/REVIEWER_ASSURANCE.md
+has "reviewer-assurance: promotion record field Human approver" \
+    '[Hh]uman approver' docs/REVIEWER_ASSURANCE.md
+# No reviewer row currently BLOCKING (Task 10 records baselines).
+# Use POSIX character classes because BSD grep does not honour \s/[^\n].
+if grep -qE '^\|.+`BLOCKING`[[:space:]]*\|[[:space:]]*$' "$GEN_ROOT/docs/REVIEWER_ASSURANCE.md" 2>/dev/null; then
+    fail "reviewer-assurance: at least one register row is BLOCKING (Task 9 must keep every prompt reviewer at SHADOW; Task 10 records the baseline)"
+else
+    pass "reviewer-assurance: no register row currently BLOCKING"
+fi
+# Every prompt-reviewer row is present AND marked SHADOW.
+for reviewer in red-team sast-reviewer security-hardener \
+        agent-security-specialist code-reviewer solution-architect \
+        test-architect data-flow-guardian; do
+    if grep -qE "^\|[[:space:]]*${reviewer}.*\`SHADOW\`[[:space:]]*\|" "$GEN_ROOT/docs/REVIEWER_ASSURANCE.md" 2>/dev/null; then
+        pass "reviewer-assurance: ${reviewer} row present and SHADOW"
+    else
+        fail "reviewer-assurance: ${reviewer} row missing or not SHADOW"
+    fi
+done
+# INDEX links to the assurance register.
+has "reviewer-assurance: INDEX links the assurance register" \
+    'REVIEWER_ASSURANCE\.md' docs/INDEX.md
+# DEVELOPMENT_PROCESS references the assurance contract and the
+# SHADOW-reset invariant so a maintainer sees the gate from the
+# process doc alone.
+has "reviewer-assurance: process doc references the assurance register" \
+    'REVIEWER_ASSURANCE\.md' docs/DEVELOPMENT_PROCESS.md
+has "reviewer-assurance: process doc names SHADOW-reset invariant" \
+    'returns the row to `SHADOW`' docs/DEVELOPMENT_PROCESS.md
+# GOVERNANCE Non-Claim: manual prompt-reviewer results are point-in-time
+# evidence, not CI automation, not proof against unknown attacks.
+has "reviewer-assurance: GOVERNANCE Non-Claim names manual prompt-reviewer point-in-time" \
+    '[Mm]anual [Pp]rompt-[Rr]eviewer' docs/GOVERNANCE.md
+has "reviewer-assurance: GOVERNANCE Non-Claim states point-in-time" \
+    'point-in-time' docs/GOVERNANCE.md
+has "reviewer-assurance: GOVERNANCE Non-Claim disclaims unknown-attack proof" \
+    'not proof against unknown attacks' docs/GOVERNANCE.md
+# The always-applied red-team rule and expert-review protocol both point
+# at the assurance register. These are the always-applied gates that
+# actually consult REVIEWER_ASSURANCE.md at review time.
+has "reviewer-assurance: red-team rule references assurance register" \
+    'REVIEWER_ASSURANCE\.md' .cursor/rules/red-team.mdc
+has "reviewer-assurance: expert-review rule references assurance register" \
+    'REVIEWER_ASSURANCE\.md' .cursor/rules/expert-review.mdc
 
 # Open adversarial corpus + provenance ship in EVERY profile (tests/ is not
 # gated by include_evals). The fixture is plain .py copier never renders, so a

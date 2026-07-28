@@ -94,6 +94,13 @@ Review Process step 4) unless this reviewer version is recorded as
 
 **Remediation:** Use parameterized queries or ORM bound parameters.
 
+### Path Traversal
+- User input concatenated into file paths (`open()`, `os.path.join()`, `Path()`) without a root-bound resolve check
+- Path resolution that does not verify the final path stays under an allowed directory (e.g. missing `resolve()` + parent/root containment)
+- Serving or reading files from a user-controlled relative path without sanitization
+
+**Remediation:** Resolve against a fixed root and reject any path outside that root (see the project's path helpers). Never open user-supplied path strings directly.
+
 ## Warning Checks (flag but don't block)
 
 - Files over 500 lines (suggest splitting)
