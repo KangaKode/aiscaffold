@@ -70,25 +70,22 @@ Expert panel (PM / security / SRE+DX) recommended against promoting
 all seven candidates in one PR on subagent-only evidence. Maintainer
 accepted:
 
-1. **This PR — evidence only.** Commit the G1–G4 scorecard. Flip
-   zero register rows.
-2. **Next PR — first enforcement.** Promote **`sast-reviewer` only**
-   after named gate-5 sign-off (`KangaKode`), with either a short live
-   Cursor gate-4 replay or an explicit promotion-record note that the
-   MANUAL_AGENT evaluator was a Cursor subagent. Prefer starting in
-   the root register; keep the template register at `SHADOW` until a
-   separate honesty pass if blast radius to generated projects is a
-   concern.
+1. **Evidence PR (#107).** Commit the G1-G4 scorecard. Flip zero
+   register rows.
+2. **First enforcement (root only).** Promote **`sast-reviewer`** in
+   the root register after named gate-5 sign-off (`KangaKode`), with
+   an explicit promotion-record note that the MANUAL_AGENT evaluator
+   was a Cursor subagent. Template register stays `SHADOW`.
 3. **After that.** Watch real PRs for misses / false blocks /
    injection-following. Promote further candidates on the same bar,
    or `SUSPEND` if they misbehave. Leave `solution-architect` /
    `test-architect` `NOT_EVALUATED` until domain fixtures exist.
 
-## Candidates (not promoted in this PR)
+## Candidates
 
-Seven reviewers cleared G1–G4 on this fixture (see scorecard above).
-None move to `BLOCKING` here. First scheduled candidate for a
-follow-up promotion PR: **`sast-reviewer` (v0)**.
+Seven reviewers cleared G1-G4 on this fixture (see scorecard above).
+First promoted (root register only, 2026-07-29): **`sast-reviewer`
+(v0)**. Remaining candidates stay `SHADOW` until later staged PRs.
 
 ## Non-claims
 

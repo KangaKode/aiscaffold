@@ -1160,7 +1160,7 @@ ASSURANCE_ASSETS = {
 # Task 9 expands the promotion contract; Task 10 records human-approved
 # baselines and only then may a row move to BLOCKING. If this list falls
 # out of sync with the register table the register test itself catches it
-# (see ``test_no_reviewer_row_is_blocking``).
+# (see ``test_register_blocking_policy_root_vs_template``).
 _EXPECTED_SHADOW_REVIEWERS = (
     "red-team",
     "sast-reviewer",
@@ -1484,41 +1484,76 @@ class Task9AssuranceContractTests(unittest.TestCase):
                             "date.",
                         )
 
-    def test_no_reviewer_row_is_blocking(self):
-        # Task 9 explicitly forbids setting any reviewer to BLOCKING;
-        # Task 10 records the baseline. A row like ``| red-team | ... |
-        # BLOCKING |`` is a governance regression.
+    def test_register_blocking_policy_root_vs_template(self):
+        # Root may promote staged reviewers (first: sast-reviewer).
+        # Generated/template register stays all SHADOW until a separate
+        # promotion so Copier projects do not inherit root enforcement.
+        root_text = _text(ROOT_REVIEWER_ASSURANCE)
+        template_text = _text(TEMPLATE_REVIEWER_ASSURANCE)
+
         row_blocking_re = re.compile(
             r"(?im)^\|[^\n]*`?BLOCKING`?\s*\|\s*$",
         )
-        for name, path in ASSURANCE_ASSETS.items():
-            with self.subTest(asset=name):
-                text = _text(path)
-                match = row_blocking_re.search(text)
-                self.assertIsNone(
-                    match,
-                    f"{name}: at least one register-table row ends "
-                    "with BLOCKING. Task 9 must keep every prompt "
-                    "reviewer at SHADOW; Task 10 records the "
-                    "human-approved baseline that permits promotion.",
+        self.assertIsNotNone(
+            row_blocking_re.search(root_text),
+            "root_assurance: expected at least one BLOCKING register row "
+            "(sast-reviewer root-only promotion).",
+        )
+        self.assertIsNone(
+            row_blocking_re.search(template_text),
+            "template_assurance: generated projects must keep every "
+            "register row at SHADOW until a dedicated template promotion.",
+        )
+
+        self.assertRegex(
+            root_text,
+            re.compile(
+                r"(?im)^\|\s*sast-reviewer[^\n]*\|[^\n]*\|\s*v0\s*\|\s*"
+                r"`?BLOCKING`?\s*\|",
+            ),
+            "root_assurance: sast-reviewer must be v0 BLOCKING.",
+        )
+        self.assertRegex(
+            root_text,
+            re.compile(
+                r"(?is)KangaKode.*2026-07-29|2026-07-29.*KangaKode",
+            ),
+            "root_assurance: promotion record must name KangaKode and "
+            "date 2026-07-29.",
+        )
+        self.assertRegex(
+            root_text,
+            re.compile(r"(?is)subagent"),
+            "root_assurance: promotion record must note subagent "
+            "evaluator for gate-4 honesty.",
+        )
+
+        for reviewer in _EXPECTED_SHADOW_REVIEWERS:
+            if reviewer == "sast-reviewer":
+                continue
+            with self.subTest(asset="root_assurance", reviewer=reviewer):
+                row_pattern = re.compile(
+                    rf"(?im)^\|\s*{re.escape(reviewer)}[^\n]*"
+                    rf"`?SHADOW`?\s*\|",
                 )
-                # Every expected reviewer row must still be present
-                # AND labelled SHADOW.
-                for reviewer in _EXPECTED_SHADOW_REVIEWERS:
-                    with self.subTest(asset=name, reviewer=reviewer):
-                        row_pattern = re.compile(
-                            rf"(?im)^\|\s*{re.escape(reviewer)}[^\n]*"
-                            rf"`?SHADOW`?\s*\|",
-                        )
-                        self.assertRegex(
-                            text,
-                            row_pattern,
-                            f"{name}: reviewer row {reviewer!r} is "
-                            "missing or not marked SHADOW. Task 9 "
-                            "must preserve every existing row at "
-                            "SHADOW; do not delete rows or invent "
-                            "promotions.",
-                        )
+                self.assertRegex(
+                    root_text,
+                    row_pattern,
+                    f"root_assurance: {reviewer!r} must remain SHADOW "
+                    "(only sast-reviewer is promoted in this stage).",
+                )
+
+        for reviewer in _EXPECTED_SHADOW_REVIEWERS:
+            with self.subTest(asset="template_assurance", reviewer=reviewer):
+                row_pattern = re.compile(
+                    rf"(?im)^\|\s*{re.escape(reviewer)}[^\n]*"
+                    rf"`?SHADOW`?\s*\|",
+                )
+                self.assertRegex(
+                    template_text,
+                    row_pattern,
+                    f"template_assurance: {reviewer!r} must remain SHADOW.",
+                )
 
     def test_governance_asset_names_promotion_reset_on_change(self):
         # DEVELOPMENT_PROCESS docs (root + template) point at the
