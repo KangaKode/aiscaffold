@@ -231,7 +231,11 @@ promotion records to make the table look older than it is.
 | Baseline | Path | Outcome |
 |----------|------|---------|
 | v2 (2026-07-27) | [`docs/reviewer-evals/baseline-v2.md`](reviewer-evals/baseline-v2.md) | Deterministic PASS; MANUAL_AGENT fixtures/prompts updated upstream; **all rows remain `SHADOW`**; `solution-architect` / `test-architect` **`NOT_EVALUATED`** |
-| promotion proposal v1 (2026-07-27) | [`docs/reviewer-evals/promotion-proposal-v1.md`](reviewer-evals/promotion-proposal-v1.md) | MANUAL_AGENT G1–G4 scorecard; **hold on flips**; next candidate **`sast-reviewer`** after named gate-5 sign-off |
+| promotion proposal v1 (2026-07-27) | [`docs/reviewer-evals/promotion-proposal-v1.md`](reviewer-evals/promotion-proposal-v1.md) | MANUAL_AGENT G1-G4 scorecard; **hold on flips**; next candidate **`sast-reviewer`** after named gate-5 sign-off |
+
+This generated-project register stays all `SHADOW`. Root roundtable may
+promote reviewers separately; generated projects do not inherit those
+rows until a dedicated template promotion.
 
 ## Non-claims
 
