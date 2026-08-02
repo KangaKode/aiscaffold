@@ -284,7 +284,10 @@ class TestChatSurface:
         assert resp.refusal_source == REFUSAL_SOURCE
         assert resp.refusal_reason == REFUSAL_REASON
         assert resp.content == ""
-        assert orch.history_length == 0
+        # User turn kept; leaked assistant text must not enter history.
+        assert orch.history_length == 1
+        assert orch.conversation_history[0]["role"] == "user"
+        assert orch.conversation_history[0]["content"] == "hello"
         assert _flags(store, "t-chat")
 
     @pytest.mark.asyncio

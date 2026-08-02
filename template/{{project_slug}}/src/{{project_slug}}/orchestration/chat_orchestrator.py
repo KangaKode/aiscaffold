@@ -246,6 +246,10 @@ class ChatOrchestrator:
             )
 
         if canary_refused:
+            self._conversation_history.append({
+                "role": "user",
+                "content": message,
+            })
             return ChatResponse(
                 content="",
                 consultations=consultations,
@@ -272,6 +276,10 @@ class ChatOrchestrator:
                         cross_check, context, tenant_id,
                     )
                 except _CanaryRefuseError:
+                    self._conversation_history.append({
+                        "role": "user",
+                        "content": message,
+                    })
                     return ChatResponse(
                         content="",
                         consultations=consultations,
