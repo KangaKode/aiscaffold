@@ -62,6 +62,8 @@ class MCPServerConfig:
     default_arguments: dict[str, Any] = field(default_factory=dict)
     # Per-tool sha256 of size-capped description+schema (tool_screen); not secrets.
     tool_desc_hashes: dict[str, str] = field(default_factory=dict)
+    # Injection-blocked tool names → reason enum (tool_screen); not secrets.
+    blocked_tools: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.credential_env_var and not _CREDENTIAL_ENV_RE.match(
@@ -100,6 +102,7 @@ class MCPServerConfig:
             "default_tool": self.default_tool,
             "default_arguments": self.default_arguments,
             "tool_desc_hashes": dict(self.tool_desc_hashes or {}),
+            "blocked_tools": dict(self.blocked_tools or {}),
         }
 
 
@@ -190,6 +193,22 @@ class MCPServerRegistry:
                     hashes = cfg.get("tool_desc_hashes") or {}
                     if not isinstance(hashes, dict):
                         hashes = {}
+                    raw_blocks = cfg.get("blocked_tools")
+                    if raw_blocks is None:
+                        raw_blocks = {}
+                    elif not isinstance(raw_blocks, dict):
+                        logger.warning(
+                            "[MCPRegistry] blocked_tools non-dict for '%s'; "
+                            "using empty map",
+                            name,
+                        )
+                        raw_blocks = {}
+                    # Only known reason enum (drop unknown / legacy junk).
+                    blocked = {
+                        str(k): str(v)
+                        for k, v in raw_blocks.items()
+                        if str(v) == "metadata_injection"
+                    }
                     config = MCPServerConfig(
                         name=cfg["name"],
                         server_url=cfg["server_url"],
@@ -204,6 +223,7 @@ class MCPServerRegistry:
                         tool_desc_hashes={
                             str(k): str(v) for k, v in hashes.items()
                         },
+                        blocked_tools=blocked,
                     )
                     self._validate_config(config)
                 except (ValidationError, KeyError) as exc:

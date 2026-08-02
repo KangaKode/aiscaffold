@@ -1,10 +1,15 @@
 """
-MCP tool-metadata screen -- detect-only Layer 1+2 on supplier tool strings.
+MCP tool-metadata screen -- Layer 1+2 on supplier tool strings.
 
 On every list_tools() fetch, scan each tool's description plus a canonical
 JSON dump of input_schema for injection patterns, and compare a sha256 of
-the (size-capped) text to remembered hashes for rug-pull drift. Never
-mutates or filters the tool list.
+the (size-capped) text to remembered hashes for rug-pull drift.
+
+Default: detect-only (never filters the caller's list). When
+``MCP_TOOL_METADATA_ENFORCEMENT_ENABLED`` is on and an outer screen
+completes without raising, rebuild ``config.blocked_tools`` from
+injection findings only (drift stays advisory). Filtering / refuse is
+owned by ``mcp_client`` (READ gated by the same flag).
 
 Flag persistence is injected via optional ``flag_hook`` (connectors must
 not import learning/). Callers in api/ wire record_flag_hit.
@@ -12,7 +17,7 @@ not import learning/). Callers in api/ wire record_flag_hit.
 Fail-open per tool: a raise while screening one tool is logged and that
 tool is skipped; the caller's list is returned unmodified.
 
-Keep this file under 200 lines.
+Keep this file under 220 lines.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -30,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 FLAG_INJECTION = "mcp_tool_metadata_injection"
 FLAG_DRIFT = "mcp_tool_description_drift"
+ENFORCEMENT_ENV = "MCP_TOOL_METADATA_ENFORCEMENT_ENABLED"
+BLOCK_REASON_INJECTION = "metadata_injection"
+REFUSE_CODE = "tool_refused_metadata_injection"
 MAX_SCAN_TEXT_CHARS = 8192
 _TRUNCATE_SUFFIX = "\n[truncated]"
 _MAX_PATTERNS = 10
@@ -44,6 +53,15 @@ class ToolScreenReport:
     tools_scanned: int = 0
     tools_flagged: int = 0
     tools_drifted: int = 0
+
+
+def enforcement_enabled() -> bool:
+    """True when MCP_TOOL_METADATA_ENFORCEMENT_ENABLED is truthy."""
+    return os.environ.get(ENFORCEMENT_ENV, "").strip().lower() in (
+        "true",
+        "1",
+        "yes",
+    )
 
 
 def tool_metadata_text(description: str, input_schema: Any) -> str:
@@ -89,16 +107,20 @@ def screen_listed_tools(
     flag_hook: FlagHook | None = None,
     report_out: dict[str, int] | None = None,
 ) -> ToolScreenReport:
-    """Screen tools detect-only; optionally update hashes and invoke flag_hook.
+    """Screen tools; optionally update hashes/blocks and invoke flag_hook.
 
-    ``config`` must expose ``name`` and ``tool_desc_hashes`` when hash memory
-    is desired. ``flag_hook(flag_type, subject_id, detail)`` is called for
-    findings when config.name is set (subject_id = ``server:tool``).
+    ``config`` must expose ``name`` and ``tool_desc_hashes`` when hash
+    memory is desired; ``blocked_tools`` is rewritten only when
+    enforcement is on and this call returns normally.
+    ``flag_hook(flag_type, subject_id, detail)`` is called for findings
+    when config.name is set (subject_id = ``server:tool``).
     """
     flagged = 0
     drifted = 0
     scanned = 0
     new_hashes: dict[str, str] = {}
+    new_blocks: dict[str, str] = {}
+    enforce = enforcement_enabled()
     prior = dict(getattr(config, "tool_desc_hashes", None) or {}) if config else {}
     server_name = getattr(config, "name", "") if config else ""
 
@@ -134,6 +156,8 @@ def screen_listed_tools(
                     name,
                     {"patterns": list(findings)[:_MAX_PATTERNS]},
                 )
+                if enforce:
+                    new_blocks[name] = BLOCK_REASON_INJECTION
 
             if config is not None and name in prior and prior[name] != digest:
                 drifted += 1
@@ -159,6 +183,10 @@ def screen_listed_tools(
 
     if config is not None:
         config.tool_desc_hashes = new_hashes
+        # WRITE blocked_tools only when enforce ON + outer screen OK.
+        # Enforce OFF never clears (stale map inert because READ is gated).
+        if enforce:
+            config.blocked_tools = new_blocks
 
     report = ToolScreenReport(
         tools_scanned=scanned, tools_flagged=flagged, tools_drifted=drifted
@@ -167,6 +195,8 @@ def screen_listed_tools(
         report_out["tools_scanned"] = report.tools_scanned
         report_out["tools_flagged"] = report.tools_flagged
         report_out["tools_drifted"] = report.tools_drifted
+        if enforce:
+            report_out["tools_refused"] = len(new_blocks)
     return report
 
 

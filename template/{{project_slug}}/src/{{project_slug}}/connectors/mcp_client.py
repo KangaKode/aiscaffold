@@ -11,7 +11,7 @@ via the optional extra: pip install '<project>[mcp]'. A custom transport
 can be injected for tests or bespoke protocols -- anything with
 ``call_tool`` / ``list_tools`` coroutines matching MCPTransport.
 
-Keep this file under 250 lines.
+Keep this file under 290 lines.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ..security.validators import validate_url
+from .tool_screen import REFUSE_CODE, enforcement_enabled, screen_listed_tools
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class MCPToolResult:
     tool_name: str
     is_error: bool = False
     error_message: str = ""
+    error_code: str = ""
     duration_ms: float = 0.0
 
 
@@ -149,47 +151,56 @@ class MCPClient:
         tenant_id: str,
         auth_token: str | None = None,
         timeout: float | None = None,
+        config: Any | None = None,
     ) -> MCPToolResult:
         """Call an MCP tool; audit-log the outcome (metadata only)."""
         # validate_url resolves DNS (blocking getaddrinfo) -- off the loop.
         await asyncio.to_thread(validate_url, server_url, field_name="server_url")
         effective_timeout = timeout or self.default_timeout
         start = time.monotonic()
-        status = "success"
+        blocked = getattr(config, "blocked_tools", None) or {}
+        if config is not None and enforcement_enabled() and tool_name in blocked:
+            result = MCPToolResult(
+                content="", tool_name=tool_name, is_error=True,
+                error_message=REFUSE_CODE, error_code=REFUSE_CODE,
+                duration_ms=(time.monotonic() - start) * 1000,
+            )
+            logger.info(
+                "[MCPAudit] tool_call tool=%s tenant_id=%s status=%s "
+                "duration_ms=%.1f",
+                tool_name, tenant_id, "refused_metadata", result.duration_ms,
+            )
+            return result
 
+        status = "success"
         try:
             content = await self._transport.call_tool(
-                server_url,
-                tool_name,
-                arguments,
-                self._headers(auth_token),
-                effective_timeout,
+                server_url, tool_name, arguments,
+                self._headers(auth_token), effective_timeout,
             )
             result = MCPToolResult(
-                content=content,
-                tool_name=tool_name,
+                content=content, tool_name=tool_name,
                 duration_ms=(time.monotonic() - start) * 1000,
             )
         except TimeoutError:
             status = "timeout"
             result = MCPToolResult(
-                content="",
-                tool_name=tool_name,
-                is_error=True,
+                content="", tool_name=tool_name, is_error=True,
                 error_message=f"Timeout after {effective_timeout}s",
                 duration_ms=(time.monotonic() - start) * 1000,
             )
         except Exception as exc:
             status = "error"
+            msg = _truncate_error(exc)
+            if msg == REFUSE_CODE:  # reserved enum; never on transport path
+                msg = f"TransportError: {type(exc).__name__}"
             result = MCPToolResult(
-                content="",
-                tool_name=tool_name,
-                is_error=True,
-                error_message=_truncate_error(exc),
+                content="", tool_name=tool_name, is_error=True,
+                error_message=msg,
                 duration_ms=(time.monotonic() - start) * 1000,
             )
 
-        # Metadata-only audit line: never log arguments or response content.
+        # Metadata-only audit: never log arguments or response content.
         logger.info(
             "[MCPAudit] tool_call tool=%s tenant_id=%s status=%s duration_ms=%.1f",
             tool_name, tenant_id, status, result.duration_ms,
@@ -205,12 +216,10 @@ class MCPClient:
         flag_hook: Any | None = None,
         report_out: dict[str, int] | None = None,
     ) -> list[MCPToolInfo]:
-        """List available tools on an MCP server ([] on any failure).
+        """List tools ([] on fetch failure). Screens metadata after fetch.
 
-        After a successful fetch, tool descriptions/schemas are screened
-        detect-only (connectors/tool_screen.py). Optional ``config`` enables
-        hash memory; ``flag_hook`` receives findings (api/ wires store flags);
-        ``report_out`` receives advisory counts. List is never filtered.
+        With enforcement on + successful screen + config, omits blocked
+        tools. Outer screen failure returns the full list (fail-open).
         """
         # validate_url resolves DNS (blocking getaddrinfo) -- off the loop.
         await asyncio.to_thread(validate_url, server_url, field_name="server_url")
@@ -225,8 +234,6 @@ class MCPClient:
             )
             return []
 
-        from .tool_screen import screen_listed_tools
-
         try:
             await asyncio.to_thread(
                 screen_listed_tools, tools, config, flag_hook, report_out
@@ -238,6 +245,11 @@ class MCPClient:
             )
             if report_out is not None:
                 report_out["metadata_screen_failed"] = 1
+            return tools
+
+        if config is not None and enforcement_enabled():
+            blocked = getattr(config, "blocked_tools", None) or {}
+            tools = [t for t in tools if t.name not in blocked]
         return tools
 
     async def health_check(

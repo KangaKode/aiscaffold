@@ -72,6 +72,7 @@ incident, not during it.
 | Model routing (`MODEL_ROUTING_ENABLED`) | Toggle unset or router errors | **Falls back to the configured model** | Off by default (single-model path unchanged). Any `route()` error uses the client's configured model; a failed cascade attempt is logged and the original error response is returned (`llm/model_router.py`, `llm/client.py`) |
 | Startup canary self-check (`STARTUP_CANARY_ENABLED`) | Toggle unset, or the self-check fails/crashes | **Never blocks startup** | Off by default. Failure logs an error and records a `startup_canary_failed` integrity flag (when a store exists); even a crashed check is swallowed (`api/detection_hooks.py`) |
 | Runtime canary (`RUNTIME_CANARY_ENABLED`, `RUNTIME_CANARY_ENFORCEMENT_ENABLED`) | Detection unset | **Byte-identical prompts** | Both off by default. Detection embeds a per-call canary on chat synthesis, resolve `TASK_CONTENT`, and round-table synthesis analyses context, then `check_canary`s the response (flag `canary_leak`, fail-open store writes). Enforcement refuses with `refusal_source=canary` / `refusal_reason=canary_leak` and is a no-op unless detection is also on. Never silently strips canary text from a 200 response (`orchestration/runtime_canary.py`) |
+| MCP metadata enforcement (`MCP_TOOL_METADATA_ENFORCEMENT_ENABLED`) | Flag unset | **Detect-only listing** | Off by default. When on, after a successful `list_tools` screen (health today) injection-flagged tools are omitted from the list and `call_tool` returns `error_code=tool_refused_metadata_injection` before transport. Drift never refuses. Outer screen failure: full list + `metadata_screen_failed`; prior blocks still refuse invoke. Kill switch: unset the flag (stale `blocked_tools` inert). Call each server's health after enabling (`connectors/tool_screen.py`, `connectors/mcp_client.py`) |
 | Delegation records (`DELEGATION_RECORDS_ENABLED`) | Toggle unset, no learning store, or store write fails | **Degrades to no-op with a logged warning** | Off by default. Enabled without a store: the factory logs and returns None. Writes are fire-and-forget off the event loop; a failing insert is logged and swallowed -- dispatch never fails or slows (`learning/delegation.py`, `orchestration/dispatch_helpers.py`) |
 | Trust decay / min-interaction gate (`TRUST_DECAY_ENABLED`, `TRUST_MIN_INTERACTIONS`) | Flags unset, or an unparseable `last_updated` timestamp | **Passthrough** | Off by default: with both unset, routing reads raw stored scores (exact passthrough). When on, adjustments are derived at read time and stored scores are never mutated -- unset the flag and behavior reverts instantly. Decay shifts a routing score by at most ~0.09 (the 0.19 trust cap x full decay): tiebreak-level, expected, never page. An unparseable timestamp skips decay for that agent (no adjustment) (`learning/trust_guard.py`, `api/routes/chat.py`) |
 | Trust burst detection (`TRUST_BURST_DETECTION_ENABLED`) | Toggle unset, no learning store, or a failure on either storage stack | **Degrades to no-op with a logged warning** | Off by default. Detect-only scan on each feedback write: flags positive-signal bursts and single-source domination as integrity flags plus a best-effort check-in -- routing is never altered, and a failing store or tracker never fails the feedback request (`learning/trust_guard.py`, `api/routes/feedback.py`) |
@@ -325,6 +326,23 @@ means raise `CONTEXT_PRESSURE_WINDOW_TOKENS` to match your model's real
 window, or trim inputs. Raising the window moves only the window
 condition; field-truncation detection keys off the LLM client's own
 per-field cap and never moves with it.
+
+MCP metadata enforcement triage (`MCP_TOOL_METADATA_ENFORCEMENT_ENABLED`):
+
+- Enable only after accepting that false-positive injection patterns in
+  tool descriptions will make those tools disappear from `list_tools`
+  and refuse on invoke (`error_code=tool_refused_metadata_injection`).
+- After enabling (or after supplier metadata changes), call each
+  server's `POST .../health` so `blocked_tools` is rebuilt; invoke and
+  enrichment never trigger the screen themselves.
+- Recovery: fix the supplier description/schema, re-run health; the
+  end-of-screen rebuild drops the block when the tool is clean.
+- All-refused server: `healthy=false`, `tools_available=0`,
+  `tools_refused=N`. Inspect registry `blocked_tools` and integrity
+  flag `mcp_tool_metadata_injection`.
+- Kill switch: unset the flag and restart/reload env — blocks become
+  inert immediately (no clear required). Outer screen failures set
+  `metadata_screen_failed` (list fail-open; prior blocks still refuse).
 
 ---
 
