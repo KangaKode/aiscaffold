@@ -424,21 +424,46 @@ class BugbotHonestyTemplateTests(unittest.TestCase):
                         f"{label}: post-diff review must name shipped agent {agent}",
                     )
 
+    # Catches both the historical "Bugbot plus the matching domain expert"
+    # path and the root Low-tier bullet ("Bugbot … plus, when applicable,
+    # the matching domain reviewer") so a partial sync cannot re-center
+    # generated projects on Bugbot while still mentioning shipped agents.
+    _BUGBOT_REQUIRED_PATH_RE = re.compile(
+        r"Bugbot.{0,120}plus.{0,80}matching domain (?:expert|reviewer)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
     def test_template_does_not_require_bugbot_as_fulfillment_path(self):
-        forbidden = re.compile(
-            r"Bugbot plus the matching domain expert",
-            re.IGNORECASE,
-        )
         for text, label in (
             (self.template_process, "template_process"),
             (self.template_rule, "template_rule"),
         ):
             with self.subTest(asset=label):
                 self.assertIsNone(
-                    forbidden.search(text),
+                    self._BUGBOT_REQUIRED_PATH_RE.search(text),
                     f"{label}: must not require Bugbot as the review fulfillment "
                     "path (do not sync root Bugbot-required wording into template)",
                 )
+
+    def test_bugbot_required_path_pin_catches_root_low_tier_wording(self):
+        """Regression: narrow exact-phrase pin missed the root Low bullet."""
+        root_low_bullet = (
+            "post-change review — Bugbot (Cursor-hosted, optional maintainer "
+            "tooling) plus, when applicable, the matching domain reviewer."
+        )
+        self.assertIsNotNone(
+            self._BUGBOT_REQUIRED_PATH_RE.search(root_low_bullet),
+            "sync-guard regex must match root Low-tier Bugbot-plus-domain-reviewer "
+            "wording so a template import of that bullet fails the pin",
+        )
+        narrow = re.compile(
+            r"Bugbot plus the matching domain expert",
+            re.IGNORECASE,
+        )
+        self.assertIsNone(
+            narrow.search(root_low_bullet),
+            "pre-fix narrow pin must miss root wording (documents the Bugbot finding)",
+        )
 
     def test_template_pins_mdc_does_not_configure_bugbot(self):
         for text, label in (

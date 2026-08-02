@@ -791,7 +791,8 @@ has "bugbot-honesty: process names sast-reviewer for post-diff review" 'sast-rev
 has "bugbot-honesty: process pins .mdc does not configure Bugbot" 'do \*\*not\*\* configure Bugbot' docs/DEVELOPMENT_PROCESS.md
 has "bugbot-honesty: process pins Autofix stays off" 'Autofix stays off' docs/DEVELOPMENT_PROCESS.md
 has "bugbot-honesty: rule names code-reviewer for post-diff review" 'code-reviewer' .cursor/rules/development-process.mdc
-lacks "bugbot-honesty: rule does not require Bugbot-plus-domain-expert path" 'Bugbot plus the matching domain expert' .cursor/rules/development-process.mdc
+lacks "bugbot-honesty: rule does not require Bugbot-plus-domain path" 'Bugbot.{0,120}plus.{0,80}matching domain (expert|reviewer)' .cursor/rules/development-process.mdc
+lacks "bugbot-honesty: process does not require Bugbot-plus-domain path" 'Bugbot.{0,120}plus.{0,80}matching domain (expert|reviewer)' docs/DEVELOPMENT_PROCESS.md
 has "bugbot-honesty: GOVERNANCE Non-Claim Auto-review not security boundary" 'not a security boundary' docs/GOVERNANCE.md
 has "bugbot-honesty: GOVERNANCE Non-Claim no hard dep on Bugbot" 'No hard dependency on Approval Agents or Bugbot' docs/GOVERNANCE.md
 has "bug-class: INDEX links the bug-class register" 'BUG_CLASS_REGISTER.md' docs/INDEX.md
