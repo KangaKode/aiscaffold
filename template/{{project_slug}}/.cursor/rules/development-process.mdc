@@ -56,12 +56,12 @@ invariant. Record the chosen tier and rationale in the PR description.
 3. **Validation before review.** Whatever validation the project
    ships (`bash scripts/validate.sh`, `make test`, `pre-commit`,
    generated-project checks, etc.) must pass fully before requesting
-   any review. Treat warnings as review items, not noise. After
-   implementation and before claiming complete, invoke
-   `.cursor/agents/done-claim-verifier.md` (readonly report-only;
-   additive hygiene, not a substitute for review gates; not product
-   Sentinel; not a REVIEWER_ASSURANCE BLOCKING gate).
-4. **Post-implementation review of the actual diff.** Fulfill via the
+   any review. Treat warnings as review items, not noise.
+4. **Done-claim verification before claiming complete.** After
+   implementation, invoke `.cursor/agents/done-claim-verifier.md`
+   (readonly report-only; additive hygiene, not a substitute for review
+   gates; not product Sentinel; not a REVIEWER_ASSURANCE BLOCKING gate).
+5. **Post-implementation review of the actual diff.** Fulfill via the
    shipped scoped agents under `.cursor/agents/` (at least
    `code-reviewer.md`, and when security-adjacent `red-team.md` and
    `sast-reviewer.md`, plus domain experts as applicable) and the
@@ -81,7 +81,7 @@ invariant. Record the chosen tier and rationale in the PR description.
    test. Agents may propose entries but cannot auto-classify, self-edit
    their own rules, or approve their own rule changes. See
    `docs/DEVELOPMENT_PROCESS.md` for the full contract.
-5. **Strongest model only.** Implementation and review subagents run
+6. **Strongest model only.** Implementation and review subagents run
    on the strongest available model. If a subagent silently falls back
    to a weaker model, discard its output and redo it — or retro-audit
    anything already merged.

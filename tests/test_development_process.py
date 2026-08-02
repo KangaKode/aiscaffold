@@ -538,18 +538,44 @@ class DoneClaimVerifierTests(unittest.TestCase):
         self.assertIn("do not merge", lower)
         self.assertRegex(
             lower,
-            r"do not\*{0,2}\s+edit[^\n]{0,40}\.cursor|\.cursor/\*\*",
+            r"do not\*{0,2}\s+edit[^\n]{0,40}\.cursor/\*\*",
+            "self-edit forbid must couple negation with .cursor/** (not bare path)",
         )
-        self.assertRegex(lower, r"fix commits|do not[^\n]{0,40}fix")
+        self.assertIn("fix commits", lower)
+
+    def test_weak_self_edit_pin_would_pass_on_bare_cursor_path(self):
+        """Regression: bare `.cursor/**` must not satisfy the self-edit pin."""
+        weak = re.compile(r"do not\*{0,2}\s+edit[^\n]{0,40}\.cursor|\.cursor/\*\*")
+        bare = "authority mentions `.cursor/**` without a forbid."
+        self.assertIsNotNone(weak.search(bare.lower()))
+        strong = re.compile(r"do not\*{0,2}\s+edit[^\n]{0,40}\.cursor/\*\*")
+        self.assertIsNone(strong.search(bare.lower()))
 
     def test_not_sentinel_and_not_assurance_blocking(self):
         lower = self.agent.lower()
-        self.assertIn("not", lower)
-        self.assertIn("sentinel", lower)
         self.assertRegex(
             lower,
-            r"reviewer_assurance|not a[` ]*blocking",
+            r"\*\*not\*\*\s+product sentinel|not\s+product sentinel",
         )
+        self.assertRegex(
+            lower,
+            r"not\*{0,2}\s+a\s+`?reviewer_assurance`?\s+`?blocking`?",
+            "must pin not a REVIEWER_ASSURANCE BLOCKING gate (coupled negation)",
+        )
+
+    def test_weak_assurance_pin_accepts_unrelated_not(self):
+        """Regression: separate 'not' + 'reviewer_assurance' is too weak."""
+        weak_ok = (
+            "do not invent a pass. see reviewer_assurance elsewhere. "
+            "this may be a blocking recommendation."
+        )
+        self.assertIn("not", weak_ok)
+        self.assertIn("reviewer_assurance", weak_ok)
+        strong = re.compile(
+            r"not\*{0,2}\s+a\s+`?reviewer_assurance`?\s+`?blocking`?",
+            re.IGNORECASE,
+        )
+        self.assertIsNone(strong.search(weak_ok))
 
     def test_process_docs_mention_agent(self):
         for text, label in (
@@ -564,6 +590,18 @@ class DoneClaimVerifierTests(unittest.TestCase):
                     text,
                     f"{label}: must mention done-claim-verifier",
                 )
+
+    def test_root_process_states_maintainer_and_generated_paths(self):
+        lower = self.root_process.lower()
+        self.assertIn("regardless of risk-tier", lower)
+        self.assertIn(
+            "template/{{project_slug}}/.cursor/agents/done-claim-verifier.md",
+            self.root_process,
+        )
+        self.assertIn(
+            ".cursor/agents/done-claim-verifier.md",
+            self.root_process,
+        )
 
 
 if __name__ == "__main__":

@@ -813,6 +813,9 @@ exists "done-claim-verifier: agent rendered into generated project" .cursor/agen
 has "done-claim-verifier: frontmatter name" '^name: done-claim-verifier$' .cursor/agents/done-claim-verifier.md
 has "done-claim-verifier: readonly true" '^readonly: true$' .cursor/agents/done-claim-verifier.md
 has "done-claim-verifier: denies merge authority" 'Do not merge' .cursor/agents/done-claim-verifier.md
+has "done-claim-verifier: denies fix commits" 'fix commits' .cursor/agents/done-claim-verifier.md
+has "done-claim-verifier: denies editing .cursor" 'edit `\.cursor/\*\*`' .cursor/agents/done-claim-verifier.md
+has "done-claim-verifier: denies BLOCK assurance verdict" '[Dd]o not\*\* recommend `BLOCK`' .cursor/agents/done-claim-verifier.md
 has "done-claim-verifier: not product Sentinel" 'not.*product Sentinel|not product Sentinel' .cursor/agents/done-claim-verifier.md
 has "done-claim-verifier: process doc names the agent" 'done-claim-verifier' docs/DEVELOPMENT_PROCESS.md
 has "done-claim-verifier: process rule names the agent" 'done-claim-verifier' .cursor/rules/development-process.mdc

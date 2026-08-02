@@ -107,14 +107,21 @@ still applies. Low-tier changes preserve:
   tooling) plus, when applicable, the matching domain reviewer.
   Autofix stays off unless a maintainer explicitly enables it.
 
-Generated projects also invoke `.cursor/agents/done-claim-verifier.md`
-after implementation and before claiming complete (additive hygiene; not
-a substitute for review gates; not product Sentinel; not a
-`REVIEWER_ASSURANCE` `BLOCKING` gate). See
-`docs/designs/done-claim-verifier/DESIGN_NOTE.md`.
-
 The maintainer records the tier and rationale in the PR description whenever
 invoking the Low exemption.
+
+## Done-claim verification
+
+Regardless of risk-tier, after implementation and before claiming complete,
+invoke the readonly `done-claim-verifier` agent:
+
+- this repository:
+  `template/{{project_slug}}/.cursor/agents/done-claim-verifier.md`;
+- generated projects: `.cursor/agents/done-claim-verifier.md`.
+
+Additive hygiene, not a substitute for review gates. Not product Sentinel
+and not a `REVIEWER_ASSURANCE` `BLOCKING` gate. See
+`docs/designs/done-claim-verifier/DESIGN_NOTE.md`.
 
 ## Gates
 
