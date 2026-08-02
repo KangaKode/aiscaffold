@@ -21,7 +21,9 @@
 - **WRITE**: only when enforce ON **and** the outer `screen_listed_tools` call
   completes without raising. Single end-of-screen assignment:
   `config.blocked_tools = new_blocks` (rebuild from this screen’s injection
-  findings only). Mid-loop / outer raise → prior `blocked_tools` **untouched**.
+  findings). Per-tool scanner exceptions fail-open for listing but **retain**
+  a prior `metadata_injection` block for that named tool (never re-verified
+  clean). Outer raise → prior `blocked_tools` **untouched**.
 - Enforce OFF: **never write/clear** `blocked_tools` on screen (stale map is
   inert because READ is gated). No toggle-window destructive clear.
 
@@ -82,7 +84,7 @@ before refuse is effective. First-invoke / boot screen → out of scope.
 
 | File | New cap |
 |------|---------|
-| `tool_screen.py` | 220 |
+| `tool_screen.py` | 230 |
 | `mcp_client.py` | 290 |
 | `api/routes/mcp.py` | 340 |
 

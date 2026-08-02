@@ -17,7 +17,7 @@ not import learning/). Callers in api/ wire record_flag_hit.
 Fail-open per tool: a raise while screening one tool is logged and that
 tool is skipped; the caller's list is returned unmodified.
 
-Keep this file under 220 lines.
+Keep this file under 230 lines.
 """
 
 from __future__ import annotations
@@ -124,7 +124,12 @@ def screen_listed_tools(
     prior = dict(getattr(config, "tool_desc_hashes", None) or {}) if config else {}
     server_name = getattr(config, "name", "") if config else ""
 
+    prior_blocks = (
+        dict(getattr(config, "blocked_tools", None) or {}) if config else {}
+    )
+
     for tool in tools or []:
+        name = ""
         try:
             name = getattr(tool, "name", None) or ""
             if not name:
@@ -179,6 +184,14 @@ def screen_listed_tools(
                 "[ToolScreen] Per-tool screen failed (fail-open)",
                 exc_info=True,
             )
+            # Fail-open on list, but do not clear a prior injection block
+            # for a tool that was never re-verified clean this screen.
+            if (
+                enforce
+                and name
+                and prior_blocks.get(name) == BLOCK_REASON_INJECTION
+            ):
+                new_blocks[name] = BLOCK_REASON_INJECTION
             continue
 
     if config is not None:

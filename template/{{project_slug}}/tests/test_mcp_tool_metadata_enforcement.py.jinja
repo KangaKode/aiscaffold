@@ -165,6 +165,23 @@ def test_blocked_tools_rebuild_not_merge(monkeypatch):
     assert config.blocked_tools == {}
 
 
+def test_per_tool_scan_fail_preserves_prior_block(monkeypatch):
+    """Bugbot: per-tool scanner raise must not clear a prior injection block."""
+    from {{project_slug}}.connectors import tool_screen as ts
+
+    monkeypatch.setenv(ENFORCEMENT_ENV, "true")
+    config = make_config(blocked_tools={"evil": BLOCK_REASON_INJECTION})
+
+    def boom(*_a, **_k):
+        raise RuntimeError("scanner down")
+
+    monkeypatch.setattr(ts, "detect_injection_attempt", boom)
+    screen_listed_tools(
+        [MCPToolInfo(name="evil", description=DIRTY)], config=config
+    )
+    assert config.blocked_tools == {"evil": BLOCK_REASON_INJECTION}
+
+
 @pytest.mark.asyncio
 async def test_outer_screen_fail_full_list_prior_blocks_still_refuse(monkeypatch):
     from {{project_slug}}.connectors import mcp_client as mc
