@@ -746,6 +746,17 @@ lacks_re() {
         fail "$msg"
     fi
 }
+# Multiline-aware has (Python re.DOTALL), counterpart to lacks_re.
+has_re() {
+    local msg="$1" pattern="$2" rel="$3"
+    if python3 -c "import pathlib,re,sys; t=pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'); sys.exit(0 if re.search(sys.argv[2], t, re.I|re.S) else 1)" \
+        "$GEN_ROOT/$rel" "$pattern"
+    then
+        pass "$msg"
+    else
+        fail "$msg"
+    fi
+}
 exists() { [ -e "$GEN_ROOT/$2" ] && pass "$1" || fail "$1"; }
 absent() { [ ! -e "$GEN_ROOT/$2" ] && pass "$1" || fail "$1"; }
 
@@ -814,8 +825,9 @@ has "done-claim-verifier: frontmatter name" '^name: done-claim-verifier$' .curso
 has "done-claim-verifier: readonly true" '^readonly: true$' .cursor/agents/done-claim-verifier.md
 has "done-claim-verifier: denies merge authority" 'Do not merge' .cursor/agents/done-claim-verifier.md
 has "done-claim-verifier: denies fix commits" 'fix commits' .cursor/agents/done-claim-verifier.md
-has "done-claim-verifier: denies editing .cursor" 'edit `\.cursor/\*\*`' .cursor/agents/done-claim-verifier.md
+has_re "done-claim-verifier: denies editing .cursor (coupled negation)" 'do not\*{0,2}\s+edit.{0,40}\.cursor/\*\*' .cursor/agents/done-claim-verifier.md
 has "done-claim-verifier: denies BLOCK assurance verdict" '[Dd]o not\*\* recommend `BLOCK`' .cursor/agents/done-claim-verifier.md
+has_re "done-claim-verifier: not a REVIEWER_ASSURANCE BLOCKING gate" 'not\*{0,2}\s+a\s+`?REVIEWER_ASSURANCE`?\s+`?BLOCKING`?' .cursor/agents/done-claim-verifier.md
 has "done-claim-verifier: not product Sentinel" 'not.*product Sentinel|not product Sentinel' .cursor/agents/done-claim-verifier.md
 has "done-claim-verifier: process doc names the agent" 'done-claim-verifier' docs/DEVELOPMENT_PROCESS.md
 has "done-claim-verifier: process rule names the agent" 'done-claim-verifier' .cursor/rules/development-process.mdc
