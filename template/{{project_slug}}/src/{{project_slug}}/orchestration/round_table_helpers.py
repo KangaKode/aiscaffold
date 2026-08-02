@@ -1,6 +1,8 @@
 """Helper functions for the RoundTable orchestrator.
 
-Extracted from round_table.py to keep that file under 500 lines.
+Extracted from round_table.py to keep that file under 520 lines.
+
+Keep this file under 550 lines.
 """
 
 import asyncio
@@ -17,7 +19,6 @@ if TYPE_CHECKING:
         RoundTableResult,
         RoundTableTask,
         StrategyPlan,
-        SynthesisResult,
     )
 
 logger = logging.getLogger(__name__)
@@ -266,13 +267,31 @@ async def phase_synthesis(
     partial: "RoundTableResult",
     llm: object,
     system_prompt: str,
-) -> "SynthesisResult":
-    """Phase 3a: Synthesize analyses. CRITICAL: preserve ALL evidence fields."""
+    learning_store: object = None,
+    tenant_id: str = "default",
+) -> tuple:
+    """Phase 3a: Synthesize analyses. CRITICAL: preserve ALL evidence fields.
+
+    Returns (synthesis, canary_refusal). canary_refusal is set only when
+    runtime canary enforcement trips on a leaked token.
+    """
+    import asyncio
+
     from ..llm import CacheablePrompt
     from .round_table import SynthesisResult
+    from .runtime_canary import (
+        CanaryRefusal,
+        SURFACE_ROUND_TABLE,
+        canary_context_section,
+        observe_response,
+        should_refuse,
+    )
 
     if not llm:
-        return SynthesisResult(recommended_direction="No LLM available for synthesis")
+        return (
+            SynthesisResult(recommended_direction="No LLM available for synthesis"),
+            None,
+        )
 
     try:
         analyses_json = json.dumps(
@@ -288,10 +307,11 @@ async def phase_synthesis(
              for a in partial.analyses], indent=2,
         )
 
+    analyses_section, canary = canary_context_section(analyses_json)
     prompt = CacheablePrompt(
         system=system_prompt,
         context=(
-            f"Analyses from {len(partial.analyses)} agents:\n{analyses_json}"
+            f"Analyses from {len(partial.analyses)} agents:\n{analyses_section}"
         ),
         user_message=(
             "Synthesize these specialist analyses into a recommendation.\n\n"
@@ -308,34 +328,69 @@ async def phase_synthesis(
 
         if not response or not response.content:
             logger.warning("[RoundTable] Synthesis returned empty response")
-            return SynthesisResult(recommended_direction="Synthesis returned empty response")
+            return (
+                SynthesisResult(
+                    recommended_direction="Synthesis returned empty response"
+                ),
+                None,
+            )
 
         if llm_call_failed(response):
             # Never surface the client's error string as the recommended
             # direction -- it flows into check-ins and API responses.
             logger.warning("[RoundTable] Synthesis LLM call failed -- using fallback")
-            return SynthesisResult(
-                recommended_direction="Synthesis failed -- review individual analyses"
+            return (
+                SynthesisResult(
+                    recommended_direction=(
+                        "Synthesis failed -- review individual analyses"
+                    )
+                ),
+                None,
             )
+
+        leaked = await asyncio.to_thread(
+            observe_response,
+            response.content,
+            canary,
+            store=learning_store,
+            tenant_id=tenant_id,
+            surface=SURFACE_ROUND_TABLE,
+        )
+        if should_refuse(leaked):
+            return SynthesisResult(recommended_direction=""), CanaryRefusal()
 
         data = extract_json(response.content)
         if data is None:
             logger.warning("[RoundTable] Synthesis returned unparseable JSON")
-            return SynthesisResult(recommended_direction=response.content[:500])
+            return (
+                SynthesisResult(recommended_direction=response.content[:500]),
+                None,
+            )
 
         if not isinstance(data, dict):
             logger.warning("[RoundTable] Synthesis returned non-dict JSON")
-            return SynthesisResult(recommended_direction=str(data)[:500])
+            return (
+                SynthesisResult(recommended_direction=str(data)[:500]),
+                None,
+            )
 
-        return SynthesisResult(
-            recommended_direction=data.get("recommended_direction", ""),
-            key_findings=data.get("key_findings", []),
-            trade_offs=data.get("trade_offs", []),
-            minority_views=data.get("minority_views", []),
+        return (
+            SynthesisResult(
+                recommended_direction=data.get("recommended_direction", ""),
+                key_findings=data.get("key_findings", []),
+                trade_offs=data.get("trade_offs", []),
+                minority_views=data.get("minority_views", []),
+            ),
+            None,
         )
     except Exception as e:
         logger.warning(f"[RoundTable] Synthesis failed: {e}")
-        return SynthesisResult(recommended_direction="Synthesis failed -- review individual analyses")
+        return (
+            SynthesisResult(
+                recommended_direction="Synthesis failed -- review individual analyses"
+            ),
+            None,
+        )
 
 
 def apply_approval_gate(

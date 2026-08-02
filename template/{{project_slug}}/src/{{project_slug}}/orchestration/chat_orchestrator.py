@@ -13,7 +13,7 @@ Security: specialist responses sanitized before synthesis; input validated
 and size-limited; same injection defense as the round table; safety agents
 join every consultation; synthesis FactChecked before returning to the user.
 
-Keep this file under 500 lines (helpers live in chat_helpers.py).
+Keep this file under 550 lines (helpers live in chat_helpers.py).
 """
 
 import json
@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 
 ESCALATION_CONFLICT_THRESHOLD = 0.4
 MAX_CONSULTATION_AGENTS = 3
+
+
+class _CanaryRefuseError(Exception):
+    """Internal: FactChecker rewrite hit canary enforcement."""
 
 
 # =============================================================================
@@ -77,6 +81,9 @@ class ChatResponse:
     agents_consulted: list[str] = field(default_factory=list)
     enforcement_result: str = ""
     enforcement_violations: list[str] = field(default_factory=list)
+    refused: bool = False
+    refusal_source: str | None = None
+    refusal_reason: str | None = None
 
 
 # =============================================================================
@@ -234,22 +241,48 @@ class ChatOrchestrator:
                 cross_check = await self._cross_check(consultations)
 
         with phase_span("chat.phase.synthesize"):
-            response_content = await self._synthesize(
+            response_content, canary_refused = await self._synthesize(
                 message, consultations, cross_check, context, tenant_id
+            )
+
+        if canary_refused:
+            return ChatResponse(
+                content="",
+                consultations=consultations,
+                cross_check=cross_check,
+                routing_decision=routing,
+                duration_seconds=(datetime.now() - start).total_seconds(),
+                agents_consulted=[c.agent_name for c in consultations],
+                refused=True,
+                refusal_source="canary",
+                refusal_reason="canary_leak",
             )
 
         enforcement_result = "accepted"
         enforcement_violations: list[str] = []
         if consultations:
             with phase_span("chat.phase.enforce"):
-                (
-                    response_content,
-                    enforcement_result,
-                    enforcement_violations,
-                ) = await self._enforce_synthesis(
-                    response_content, message, consultations,
-                    cross_check, context, tenant_id,
-                )
+                try:
+                    (
+                        response_content,
+                        enforcement_result,
+                        enforcement_violations,
+                    ) = await self._enforce_synthesis(
+                        response_content, message, consultations,
+                        cross_check, context, tenant_id,
+                    )
+                except _CanaryRefuseError:
+                    return ChatResponse(
+                        content="",
+                        consultations=consultations,
+                        cross_check=cross_check,
+                        routing_decision=routing,
+                        duration_seconds=(datetime.now() - start).total_seconds(),
+                        agents_consulted=[c.agent_name for c in consultations],
+                        refused=True,
+                        refusal_source="canary",
+                        refusal_reason="canary_leak",
+                    )
 
         escalation_suggested = False
         escalation_reason = ""
@@ -405,10 +438,13 @@ class ChatOrchestrator:
         from .chat_helpers import enforce_chat_synthesis
 
         async def _re_synthesize(correction: str = "") -> str:
-            return await self._synthesize(
+            text, refused = await self._synthesize(
                 message, consultations, cross_check,
                 context, tenant_id, correction=correction,
             )
+            if refused:
+                raise _CanaryRefuseError()
+            return text
 
         return await enforce_chat_synthesis(content, _re_synthesize)
 
@@ -420,8 +456,17 @@ class ChatOrchestrator:
         context: str,
         tenant_id: str = "default",
         correction: str = "",
-    ) -> str:
-        """Synthesize specialist consultations into a user-facing response."""
+    ) -> tuple[str, bool]:
+        """Synthesize consultations. Returns (content, canary_refused)."""
+        import asyncio
+
+        from .runtime_canary import (
+            SURFACE_CHAT,
+            observe_response,
+            should_refuse,
+            wrap_chat_user,
+        )
+
         consultation_text = ""
         if consultations:
             parts = []
@@ -449,6 +494,7 @@ class ChatOrchestrator:
                 f"{h['role']}: {str(h['content'])[:500]}" for h in recent
             )
 
+        user_message, canary = wrap_chat_user(message)
         prompt = CacheablePrompt(
             system=self._system_prompt(tenant_id=tenant_id),
             context=(
@@ -458,13 +504,24 @@ class ChatOrchestrator:
                 f"{conflict_note}"
                 f"{correction_note}"
             ),
-            user_message=message,
+            user_message=user_message,
         )
 
         response = await self._llm.call(
             prompt=prompt, role="chat_synthesis", temperature=0.4
         )
-        return response.content
+        text = response.content
+        leaked = await asyncio.to_thread(
+            observe_response,
+            text,
+            canary,
+            store=self._learning_store,
+            tenant_id=tenant_id,
+            surface=SURFACE_CHAT,
+        )
+        if should_refuse(leaked):
+            return "", True
+        return text, False
 
     def clear_history(self) -> None:
         """Clear conversation history (start fresh)."""

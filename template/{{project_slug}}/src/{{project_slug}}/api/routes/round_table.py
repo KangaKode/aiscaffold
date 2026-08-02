@@ -298,12 +298,17 @@ async def submit_task(
 
         pcr = result.premise_challenge
         sentinel_refusal = getattr(result, "sentinel_refusal", None)
+        canary_refusal = getattr(result, "canary_refusal", None)
         if sentinel_refusal is not None:
             refusal_source = "sentinel"
             refusal_reason = sentinel_refusal.reason
             outcome = _SENTINEL_OUTCOMES.get(
                 sentinel_refusal.reason, "refused_sentinel"
             )
+        elif canary_refusal is not None:
+            refusal_source = "canary"
+            refusal_reason = canary_refusal.reason
+            outcome = "refused_canary"
         elif pcr is not None:
             refusal_source = "premise_gate"
             refusal_reason = "premise_challenged"

@@ -71,6 +71,9 @@ class ChatMessageResponse(BaseModel):
     duration_seconds: float = 0.0
     enforcement_result: str = ""
     enforcement_violations: list[str] = Field(default_factory=list)
+    refused: bool = False
+    refusal_source: str | None = None
+    refusal_reason: str | None = None
 
 
 class EscalateRequest(BaseModel):
@@ -232,6 +235,9 @@ async def send_message(
         duration_seconds=chat_response.duration_seconds,
         enforcement_result=chat_response.enforcement_result,
         enforcement_violations=chat_response.enforcement_violations,
+        refused=chat_response.refused,
+        refusal_source=chat_response.refusal_source,
+        refusal_reason=chat_response.refusal_reason,
     )
 
 
@@ -299,9 +305,16 @@ async def send_message_stream(
 
         yield _sse_event("status", {"phase": "complete"})
 
-        yield _sse_event("content", {"text": chat_response.content})
+        if chat_response.refused:
+            yield _sse_event("refused", {
+                "refusal_source": chat_response.refusal_source,
+                "refusal_reason": chat_response.refusal_reason,
+            })
+        else:
+            yield _sse_event("content", {"text": chat_response.content})
 
         yield _sse_event("metadata", {
+            "content": "" if chat_response.refused else chat_response.content,
             "escalation_suggested": chat_response.escalation_suggested,
             "escalation_reason": chat_response.escalation_reason,
             "agreement_level": (
@@ -312,6 +325,9 @@ async def send_message_stream(
             "duration_seconds": chat_response.duration_seconds,
             "enforcement_result": chat_response.enforcement_result,
             "enforcement_violations": chat_response.enforcement_violations,
+            "refused": chat_response.refused,
+            "refusal_source": chat_response.refusal_source,
+            "refusal_reason": chat_response.refusal_reason,
         })
 
         yield _sse_event("done", {})

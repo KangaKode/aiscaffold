@@ -15,6 +15,8 @@ Key design principles from 2026 research:
 - Separate context windows: each agent gets its own LLM call (80% of performance)
 
 Reference: docs/REFERENCES.md
+
+Keep this file under 520 lines (helpers live in round_table_helpers.py).
 """
 
 import logging
@@ -162,6 +164,7 @@ class RoundTableResult:
     task_id: str
     premise_challenge: Any = None  # PremiseChallengeResult when the gate tripped
     sentinel_refusal: Any = None  # SentinelRefusal when opt-in enforcement tripped
+    canary_refusal: Any = None  # CanaryRefusal when opt-in runtime canary enforce tripped
     strategy: StrategyPlan | None = None
     analyses: list[AgentAnalysis] = field(default_factory=list)
     challenges: list[AgentChallenge] = field(default_factory=list)
@@ -359,9 +362,18 @@ class RoundTable:
         logger.info("[RoundTable] Phase 3: Synthesis + voting")
         from .round_table_helpers import phase_synthesis
         with phase_span("deliberation.phase.synthesis"):
-            result.synthesis = await phase_synthesis(
-                result, self.llm, self._build_system_prompt()
+            result.synthesis, canary_refusal = await phase_synthesis(
+                result, self.llm, self._build_system_prompt(),
+                learning_store=self._learning_store,
+                tenant_id=getattr(task, "tenant_id", "default") or "default",
             )
+        if canary_refusal is not None:
+            result.canary_refusal = canary_refusal
+            self._write_artifact(
+                task.id, "phase3_canary_refusal", asdict(canary_refusal)
+            )
+            result.duration_seconds = (datetime.now() - start).total_seconds()
+            return result
         self._write_artifact(task.id, "phase3_synthesis", asdict(result.synthesis))
 
         # Scope the gated-out count to agents that actually analyzed:

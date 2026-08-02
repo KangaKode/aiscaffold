@@ -31,6 +31,14 @@ from ..enforcement.fact_checker import FactChecker
 from ..llm.client import CacheablePrompt
 from ..security.prompt_guard import wrap_user_content
 from .ingest_scan import scan_user_message
+from .runtime_canary import (
+    REFUSAL_REASON,
+    REFUSAL_SOURCE,
+    SURFACE_RESOLVE,
+    observe_response,
+    should_refuse,
+    wrap_resolve_query,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +76,9 @@ class SingleShotResult:
     citations_count: int = 0
     escalated: bool = False
     escalation_reason: str = ""
+    refused: bool = False
+    refusal_source: str | None = None
+    refusal_reason: str | None = None
     duration_seconds: float = 0.0
 
 
@@ -137,10 +148,11 @@ async def resolve_single_shot(
     if not context:
         return _escalate("No approved corrections to ground an answer", start)
 
+    user_message, canary = wrap_resolve_query(query)
     prompt = CacheablePrompt(
         system=SINGLE_SHOT_SYSTEM_PROMPT,
         context=wrap_user_content(context, label="INSTITUTIONAL_KNOWLEDGE"),
-        user_message=wrap_user_content(query, label="TASK_CONTENT"),
+        user_message=user_message,
     )
 
     try:
@@ -155,6 +167,23 @@ async def resolve_single_shot(
         return _escalate("Single-shot LLM call failed", start)
 
     text = response.content if response else ""
+
+    leaked = await asyncio.to_thread(
+        observe_response,
+        text,
+        canary,
+        store=learning_store,
+        tenant_id=tenant_id,
+        surface=SURFACE_RESOLVE,
+    )
+    if should_refuse(leaked):
+        return SingleShotResult(
+            content="",
+            refused=True,
+            refusal_source=REFUSAL_SOURCE,
+            refusal_reason=REFUSAL_REASON,
+            duration_seconds=time.monotonic() - start,
+        )
 
     # Enforcement is mandatory -- same gate as chat.
     checker = FactChecker()

@@ -70,11 +70,12 @@ class RoundTableResultResponse(BaseModel):
 
     status is "refused" when a gate short-circuited the deliberation:
     refusal_source says which one ("premise_gate" with premise_challenge
-    populated, or "sentinel" when opt-in Sentinel enforcement tripped)
-    and refusal_reason carries the machine-readable reason
-    ("premise_challenged", or a SentinelRefusal reason such as
+    populated, "sentinel" when opt-in Sentinel enforcement tripped, or
+    "canary" when opt-in runtime canary enforcement tripped) and
+    refusal_reason carries the machine-readable reason
+    ("premise_challenged", a SentinelRefusal reason such as
     "sentinel_high_risk" / "sentinel_unavailable" / "sentinel_premise" /
-    "sentinel_missing").
+    "sentinel_missing", or "canary_leak").
     """
 
     task_id: str
