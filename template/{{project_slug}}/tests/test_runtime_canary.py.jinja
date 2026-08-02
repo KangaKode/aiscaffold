@@ -370,3 +370,18 @@ class TestUniqueTokens:
         _, a = wrap_chat_user("one")
         _, b = wrap_chat_user("two")
         assert a != b
+
+
+class TestRefusedCanaryOutcomeDocs:
+    def test_metrics_docstring_lists_refused_canary(self):
+        """DX: deliberations_total outcome allowlist must name refused_canary."""
+        from {{project_slug}}.observability.metrics import record_deliberation
+
+        assert "refused_canary" in (record_deliberation.__doc__ or "")
+
+    def test_round_table_route_emits_refused_canary_literal(self):
+        from pathlib import Path
+        import {{project_slug}}.api.routes.round_table as rt_mod
+
+        src = Path(rt_mod.__file__).read_text(encoding="utf-8")
+        assert 'outcome = "refused_canary"' in src

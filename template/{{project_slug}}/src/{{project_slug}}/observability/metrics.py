@@ -28,7 +28,8 @@ prometheus_client's multiprocess mode (PROMETHEUS_MULTIPROC_DIR + a
 shared CollectorRegistry) -- that is a "you add" extension, see
 docs/OPERATIONS.md.
 
-Keep this file under 235 lines. (Raised from 220: the context-pressure
+Keep this file under 240 lines. (Raised from 235: refused_canary outcome
+docstring; previously raised from 220: the context-pressure
 counter + its PHASES/REASONS bounds outgrew A1's predicted headroom.)
 """
 
@@ -138,8 +139,9 @@ def record_deliberation(outcome: str, duration_seconds: float) -> None:
     "completed", "refused" (premise gate), "failed", plus the opt-in
     Sentinel-enforcement refusals "refused_sentinel" (HIGH-risk
     verdict), "refused_sentinel_premise", "refused_sentinel_unavailable"
-    (Sentinel could not screen; fail-closed), and
-    "refused_sentinel_missing" (enforcement on, no Sentinel analysis).
+    (Sentinel could not screen; fail-closed),
+    "refused_sentinel_missing" (enforcement on, no Sentinel analysis),
+    and "refused_canary" (opt-in runtime canary enforcement on synthesis).
     Never raises."""
     if not PROMETHEUS_AVAILABLE:
         return
