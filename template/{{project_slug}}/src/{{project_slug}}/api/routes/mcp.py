@@ -14,8 +14,7 @@ Security:
   - invoke responses are sanitized before they leave the platform
   - Requires app.state.mcp_registry / mcp_client (503 when not configured)
 
-Keep this file under 320 lines. (Raised for tool-metadata health wiring
-on top of prior store-correctness hardening.)
+Keep this file under 340 lines.
 """
 
 from __future__ import annotations
@@ -98,14 +97,16 @@ class MCPServerResponse(BaseModel):
 
 
 class MCPHealthResponse(BaseModel):
-    """Reachability check result for one registered server.
+    """Health check for one registered server after list_tools + screen.
 
-    ``tools_flagged`` / ``tools_drifted`` are advisory counts from the
-    detect-only tool-metadata screen on this health fetch (0 when clean).
-    They never flip ``healthy`` -- reachability alone decides that.
-    ``metadata_screen_failed`` is True when the screen itself raised
-    (fail-open in the client); the counts on this response are then
-    "unknown", not "clean".
+    ``healthy`` is True when the returned (possibly filtered) tool list
+    is non-empty. Under
+    ``MCP_TOOL_METADATA_ENFORCEMENT_ENABLED``, injection-blocked tools
+    are omitted, so an all-refused server reports ``healthy=false``.
+    ``tools_flagged`` / ``tools_drifted`` remain advisory. ``tools_refused``
+    is the size of ``blocked_tools`` rebuilt on this successful enforce-on
+    screen (0 when enforce off). ``metadata_screen_failed`` means the
+    screen raised (fail-open full list); counts are then "unknown".
     """
 
     name: str
@@ -113,6 +114,7 @@ class MCPHealthResponse(BaseModel):
     tools_available: int = 0
     tools_flagged: int = 0
     tools_drifted: int = 0
+    tools_refused: int = 0
     metadata_screen_failed: bool = False
 
 
@@ -130,6 +132,7 @@ class MCPInvokeResponse(BaseModel):
     content: str
     is_error: bool = False
     error_message: str = ""
+    error_code: str = ""
     duration_ms: float = 0.0
 
 
@@ -229,7 +232,7 @@ async def check_mcp_server_health(
     auth: AuthContext = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ) -> MCPHealthResponse:
-    """Reachability check: can we list the server's tools?"""
+    """List tools + metadata screen; persist hashes/blocks; report health."""
     try:
         validate_identifier(name, field_name="name")
     except ValidationError as e:
@@ -273,6 +276,7 @@ async def check_mcp_server_health(
         tools_available=len(tools),
         tools_flagged=int(report_out.get("tools_flagged", 0)),
         tools_drifted=int(report_out.get("tools_drifted", 0)),
+        tools_refused=int(report_out.get("tools_refused", 0)),
         metadata_screen_failed=bool(report_out.get("metadata_screen_failed", 0)),
     )
 
@@ -298,6 +302,9 @@ async def invoke_mcp_tool(
         raise HTTPException(status_code=400, detail=str(e))
 
     config = _find_config(_get_registry(request), name, auth.tenant_id)
+    if not config.enabled:
+        # Byte-identical to missing — no "disabled" oracle.
+        raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
     result = await _get_client(request).call_tool(
         server_url=config.server_url,
         tool_name=body.tool_name,
@@ -305,11 +312,13 @@ async def invoke_mcp_tool(
         tenant_id=auth.tenant_id,
         auth_token=config.resolve_credential(),
         timeout=config.timeout,
+        config=config,
     )
     return MCPInvokeResponse(
         tool_name=result.tool_name,
         content=sanitize_for_prompt(result.content, max_length=MAX_INVOKE_RESPONSE_CHARS),
         is_error=result.is_error,
         error_message=result.error_message,
+        error_code=result.error_code,
         duration_ms=result.duration_ms,
     )

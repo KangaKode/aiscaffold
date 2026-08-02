@@ -106,6 +106,7 @@ async def enrich_mcp_data(
                 tenant_id=tenant_id,
                 auth_token=auth_token,
                 timeout=config.timeout,
+                config=config,
             )
         except Exception as exc:
             logger.warning(
@@ -115,9 +116,10 @@ async def enrich_mcp_data(
             continue
 
         if result.is_error:
+            # Log-and-continue: refuse/error text never enters task_context.
             logger.warning(
-                "[MCPEnrichment] MCP call failed for %s: %s",
-                scope_key, result.error_message,
+                "[MCPEnrichment] MCP call failed for %s (code=%s)",
+                scope_key, result.error_code or "error",
             )
             continue
 
