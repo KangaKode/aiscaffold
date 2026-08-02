@@ -784,6 +784,16 @@ has "bug-class: process doc states agents cannot auto-classify" 'cannot auto-cla
 lacks "bug-class: process doc does not overclaim CI enforcement of the gate" 'CI enforces the (three-artifact|completion) (gate|bar)' docs/DEVELOPMENT_PROCESS.md
 has "bug-class: dev-process rule references the register path" 'BUG_CLASS_REGISTER.md' .cursor/rules/development-process.mdc
 has "bug-class: dev-process rule mentions recurring bug class" 'recurring bug class' .cursor/rules/development-process.mdc
+# Bugbot honesty: generated projects fulfill review via shipped agents;
+# .mdc rules do not configure Bugbot; Autofix stays off by default.
+has "bugbot-honesty: process names code-reviewer for post-diff review" 'code-reviewer' docs/DEVELOPMENT_PROCESS.md
+has "bugbot-honesty: process names sast-reviewer for post-diff review" 'sast-reviewer' docs/DEVELOPMENT_PROCESS.md
+has "bugbot-honesty: process pins .mdc does not configure Bugbot" 'do \*\*not\*\* configure Bugbot' docs/DEVELOPMENT_PROCESS.md
+has "bugbot-honesty: process pins Autofix stays off" 'Autofix stays off' docs/DEVELOPMENT_PROCESS.md
+has "bugbot-honesty: rule names code-reviewer for post-diff review" 'code-reviewer' .cursor/rules/development-process.mdc
+lacks "bugbot-honesty: rule does not require Bugbot-plus-domain-expert path" 'Bugbot plus the matching domain expert' .cursor/rules/development-process.mdc
+has "bugbot-honesty: GOVERNANCE Non-Claim Auto-review not security boundary" 'not a security boundary' docs/GOVERNANCE.md
+has "bugbot-honesty: GOVERNANCE Non-Claim no hard dep on Bugbot" 'No hard dependency on Approval Agents or Bugbot' docs/GOVERNANCE.md
 has "bug-class: INDEX links the bug-class register" 'BUG_CLASS_REGISTER.md' docs/INDEX.md
 has "bug-class: expert-review names authority boundary" '[Aa]uthority [Bb]oundary' .cursor/rules/expert-review.mdc
 has "bug-class: expert-review denies self-promotion" 'self-promot' .cursor/rules/expert-review.mdc
