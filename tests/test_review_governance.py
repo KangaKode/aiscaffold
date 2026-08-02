@@ -1674,6 +1674,27 @@ class Task9GovernanceNonClaimTests(unittest.TestCase):
             "read as blanket coverage.",
         )
 
+    def test_governance_non_claim_cursor_hosted_tooling_bounds(self):
+        text = _text(self.TEMPLATE_GOVERNANCE)
+        self.assertRegex(
+            text,
+            r"(?is)Auto-review[^\n]{0,120}not a security boundary",
+            "GOVERNANCE.md: missing Non-Claim that Cursor Auto-review "
+            "is not a security boundary",
+        )
+        self.assertRegex(
+            text,
+            r"(?is)Cloud Agents[^\n]{0,160}not equivalent",
+            "GOVERNANCE.md: missing Non-Claim that Cloud Agents are not "
+            "equivalent to local hook-enforced runs",
+        )
+        self.assertRegex(
+            text,
+            r"(?is)No hard dependency on Approval Agents or Bugbot",
+            "GOVERNANCE.md: missing Non-Claim of no hard dependency on "
+            "Approval Agents or Bugbot",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -103,8 +103,9 @@ still applies. Low-tier changes preserve:
 - applicable tests — new or updated tests for the touched behavior when there
   is any behavior to test;
 - human ownership — the maintainer approves the tier and the diff; and
-- post-change review — Bugbot plus, when applicable, the matching domain
-  reviewer.
+- post-change review — Bugbot (Cursor-hosted, optional maintainer
+  tooling) plus, when applicable, the matching domain reviewer.
+  Autofix stays off unless a maintainer explicitly enables it.
 
 The maintainer records the tier and rationale in the PR description whenever
 invoking the Low exemption.

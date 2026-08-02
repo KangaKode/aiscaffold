@@ -107,10 +107,24 @@ still applies. Low-tier changes preserve:
 - applicable tests — new or updated tests for the touched behavior when
   there is any behavior to test;
 - human ownership — the maintainer approves the tier and the diff; and
-- post-change review — the code-review and red-team gates below.
+- post-change review — scoped agents under `.cursor/agents/` (at least
+  `code-reviewer.md`, and when security-adjacent `red-team.md` and
+  `sast-reviewer.md`) plus always-applied `red-team.mdc` where
+  relevant; see Cursor review tooling below.
 
 The maintainer records the tier and rationale in the PR description
 whenever invoking the Low exemption.
+
+## Cursor review tooling
+
+Post-diff review is fulfilled by the shipped agents above, not by a
+required paid Cursor product. Explicit boundaries:
+
+- `.cursor/rules/*.mdc` do **not** configure Bugbot.
+- Bugbot, if used, is optional Cursor-hosted tooling; Autofix stays off
+  unless a maintainer explicitly enables it.
+- CI does not run prompt reviewers (see the REVIEWER_ASSURANCE
+  Non-Claim in `docs/GOVERNANCE.md`).
 
 ## Gates
 

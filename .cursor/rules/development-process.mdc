@@ -58,8 +58,10 @@ Record the chosen tier and rationale in the PR description.
    even with warnings — read its output and treat warnings as review
    items, not noise. Test/check counts quoted in docs are measured from
    actual runs, never estimated.
-4. **Post-implementation review of the actual diff.** Bugbot plus the
-   matching domain expert review the branch. Findings are fixed with
+4. **Post-implementation review of the actual diff.** Bugbot
+   (Cursor-hosted, optional maintainer tooling) plus the matching
+   domain expert review the branch. Autofix stays off unless a
+   maintainer explicitly enables it. Findings are fixed with
    regression tests (a test that fails on the pre-fix code), then
    re-reviewed. Nothing is pushed or merged without an explicit final
    APPROVED. Every confirmed finding is then classified by a human

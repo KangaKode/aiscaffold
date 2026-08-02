@@ -394,5 +394,109 @@ class MediumConciseWindowRegressionTests(unittest.TestCase):
         )
 
 
+class BugbotHonestyTemplateTests(unittest.TestCase):
+    """Template process assets must not require Bugbot as the review path.
+
+    Generated projects fulfill post-diff review via shipped agents. A naive
+    sync that copies root ``Bugbot plus the matching domain expert`` wording
+    into the template must fail these pins.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.template_process = POLICY_ASSETS["template_process"].read_text(
+            encoding="utf-8"
+        )
+        cls.template_rule = POLICY_ASSETS["template_rule"].read_text(encoding="utf-8")
+        cls.root_rule = POLICY_ASSETS["root_rule"].read_text(encoding="utf-8")
+
+    def test_template_names_shipped_agents_for_post_diff_review(self):
+        for text, label in (
+            (self.template_process, "template_process"),
+            (self.template_rule, "template_rule"),
+        ):
+            with self.subTest(asset=label):
+                lower = text.lower()
+                for agent in ("code-reviewer", "red-team", "sast-reviewer"):
+                    self.assertIn(
+                        agent,
+                        lower,
+                        f"{label}: post-diff review must name shipped agent {agent}",
+                    )
+
+    # Catches both the historical "Bugbot plus the matching domain expert"
+    # path and the root Low-tier bullet ("Bugbot … plus, when applicable,
+    # the matching domain reviewer") so a partial sync cannot re-center
+    # generated projects on Bugbot while still mentioning shipped agents.
+    _BUGBOT_REQUIRED_PATH_RE = re.compile(
+        r"Bugbot.{0,120}plus.{0,80}matching domain (?:expert|reviewer)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def test_template_does_not_require_bugbot_as_fulfillment_path(self):
+        for text, label in (
+            (self.template_process, "template_process"),
+            (self.template_rule, "template_rule"),
+        ):
+            with self.subTest(asset=label):
+                self.assertIsNone(
+                    self._BUGBOT_REQUIRED_PATH_RE.search(text),
+                    f"{label}: must not require Bugbot as the review fulfillment "
+                    "path (do not sync root Bugbot-required wording into template)",
+                )
+
+    def test_bugbot_required_path_pin_catches_root_low_tier_wording(self):
+        """Regression: narrow exact-phrase pin missed the root Low bullet."""
+        root_low_bullet = (
+            "post-change review — Bugbot (Cursor-hosted, optional maintainer "
+            "tooling) plus, when applicable, the matching domain reviewer."
+        )
+        self.assertIsNotNone(
+            self._BUGBOT_REQUIRED_PATH_RE.search(root_low_bullet),
+            "sync-guard regex must match root Low-tier Bugbot-plus-domain-reviewer "
+            "wording so a template import of that bullet fails the pin",
+        )
+        narrow = re.compile(
+            r"Bugbot plus the matching domain expert",
+            re.IGNORECASE,
+        )
+        self.assertIsNone(
+            narrow.search(root_low_bullet),
+            "pre-fix narrow pin must miss root wording (documents the Bugbot finding)",
+        )
+
+    def test_template_pins_mdc_does_not_configure_bugbot(self):
+        for text, label in (
+            (self.template_process, "template_process"),
+            (self.template_rule, "template_rule"),
+        ):
+            with self.subTest(asset=label):
+                self.assertRegex(
+                    text,
+                    r"(?is)\.cursor/rules/\*\.mdc[^\n]{0,80}do\s+\*\*not\*\*\s+configure\s+Bugbot"
+                    r"|do\s+\*\*not\*\*\s+configure\s+Bugbot",
+                    f"{label}: must pin that .mdc rules do not configure Bugbot",
+                )
+
+    def test_template_pins_autofix_off_unless_explicit(self):
+        for text, label in (
+            (self.template_process, "template_process"),
+            (self.template_rule, "template_rule"),
+        ):
+            with self.subTest(asset=label):
+                self.assertRegex(
+                    text.lower(),
+                    r"autofix[^\n]{0,80}(?:off|stays off)",
+                    f"{label}: must pin Autofix off unless explicitly enabled",
+                )
+
+    def test_root_may_name_bugbot_as_optional_maintainer_tooling(self):
+        self.assertRegex(
+            self.root_rule,
+            r"(?is)Bugbot.{0,80}optional maintainer tooling",
+            "root rule may keep Bugbot with optional-maintainer-tooling parenthetical",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
