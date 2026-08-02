@@ -1,0 +1,387 @@
+"""
+Runtime canary enforcement (RUNTIME_CANARY_ENABLED /
+RUNTIME_CANARY_ENFORCEMENT_ENABLED).
+
+Default off is byte-identical per surface. Detect-only flags leaks.
+Enforce refuses with bounded fields and never returns leaked model text.
+Sticky chat refuse short-circuits FactChecker. Store failures fail open.
+
+Keep this file under 450 lines.
+"""
+
+import json
+from unittest.mock import MagicMock
+
+import pytest
+
+from {{project_slug}}.learning.store import SqliteLearningStore
+from {{project_slug}}.llm.client import LLMResponse
+from {{project_slug}}.orchestration.runtime_canary import (
+    DETECTION_ENV,
+    ENFORCEMENT_ENV,
+    FLAG_TYPE,
+    REFUSAL_REASON,
+    REFUSAL_SOURCE,
+    SURFACE_CHAT,
+    SURFACE_RESOLVE,
+    SURFACE_ROUND_TABLE,
+    canary_context_section,
+    detection_enabled,
+    enforcement_enabled,
+    observe_response,
+    should_refuse,
+    wrap_chat_user,
+    wrap_resolve_query,
+)
+from {{project_slug}}.security.prompt_guard import wrap_user_content
+
+ALL_TOGGLES = (
+    DETECTION_ENV,
+    ENFORCEMENT_ENV,
+    "STARTUP_CANARY_ENABLED",
+    "SENTINEL_ENFORCEMENT_ENABLED",
+    "LOOP_INTEGRITY_DETECTION_ENABLED",
+)
+
+
+@pytest.fixture
+def store(tmp_path):
+    return SqliteLearningStore(db_path=tmp_path / "learning.db")
+
+
+@pytest.fixture(autouse=True)
+def _toggles_unset(monkeypatch):
+    for var in ALL_TOGGLES:
+        monkeypatch.delenv(var, raising=False)
+
+
+def _flags(store, tenant="default"):
+    return store.query(
+        "integrity_flags", {"flag_type": FLAG_TYPE, "tenant_id": tenant}
+    )
+
+
+class TestEnvFlags:
+    def test_both_default_off(self):
+        assert detection_enabled() is False
+        assert enforcement_enabled() is False
+
+    @pytest.mark.parametrize("value", ["true", "1", "yes", " TRUE "])
+    def test_detection_truthy(self, monkeypatch, value):
+        monkeypatch.setenv(DETECTION_ENV, value)
+        assert detection_enabled() is True
+
+    def test_enforce_without_detect_is_noop(self, monkeypatch):
+        monkeypatch.setenv(ENFORCEMENT_ENV, "true")
+        assert enforcement_enabled() is False
+        assert should_refuse(True) is False
+
+    def test_enforce_requires_detection(self, monkeypatch):
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        monkeypatch.setenv(ENFORCEMENT_ENV, "true")
+        assert enforcement_enabled() is True
+        assert should_refuse(True) is True
+        assert should_refuse(False) is False
+
+
+class TestWrapAdaptersByteIdentical:
+    def test_chat_off_passthrough(self):
+        raw = "hello user"
+        out, token = wrap_chat_user(raw)
+        assert out == raw
+        assert token is None
+
+    def test_chat_on_wraps_with_canary(self, monkeypatch):
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        out, token = wrap_chat_user("hello user")
+        assert token and token.startswith("[SEC_CANARY_")
+        assert token in out
+        assert "<USER_CONTENT>" in out
+
+    def test_resolve_off_still_xml_wrapped(self):
+        q = "what is the limit?"
+        expected = wrap_user_content(q, label="TASK_CONTENT")
+        out, token = wrap_resolve_query(q)
+        assert token is None
+        assert out == expected
+        assert "<TASK_CONTENT>" in out
+
+    def test_resolve_on_keeps_wrap_adds_canary(self, monkeypatch):
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        out, token = wrap_resolve_query("what is the limit?")
+        assert token and token in out
+        assert "<TASK_CONTENT>" in out
+
+    def test_rt_context_off_passthrough(self):
+        blob = '[{"agent": "a"}]'
+        out, token = canary_context_section(blob)
+        assert out == blob
+        assert token is None
+
+    def test_rt_context_on_injects_into_blob(self, monkeypatch):
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        blob = '[{"agent": "a"}]'
+        out, token = canary_context_section(blob)
+        assert token and token in out
+        assert blob in out or out.startswith("[")
+
+
+class TestObserveAndFlag:
+    def test_clean_response_no_flag(self, store, monkeypatch):
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        _, token = wrap_chat_user("q")
+        assert observe_response(
+            "clean answer", token, store=store, tenant_id="t1",
+            surface=SURFACE_CHAT,
+        ) is False
+        assert _flags(store, "t1") == []
+
+    def test_leak_flags_allowlisted_detail(self, store, monkeypatch):
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        _, token = wrap_chat_user("q")
+        assert observe_response(
+            f"leaked {token} here", token, store=store, tenant_id="acme",
+            surface=SURFACE_CHAT,
+        ) is True
+        rows = _flags(store, "acme")
+        assert len(rows) == 1
+        assert rows[0]["subject_id"] == SURFACE_CHAT
+        detail = json.loads(rows[0]["detail_json"])
+        assert detail == {"surface": SURFACE_CHAT}
+        assert token not in rows[0]["detail_json"]
+
+    def test_store_failure_fail_open(self, monkeypatch):
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        _, token = wrap_chat_user("q")
+        bad = MagicMock()
+        bad.query.side_effect = RuntimeError("db down")
+        bad.insert.side_effect = RuntimeError("db down")
+        assert observe_response(
+            f"x {token}", token, store=bad, tenant_id="default",
+            surface=SURFACE_RESOLVE,
+        ) is True
+
+    def test_no_token_skips(self, store):
+        assert observe_response(
+            "anything", None, store=store, tenant_id="default",
+            surface=SURFACE_CHAT,
+        ) is False
+
+
+class _LeakLLM:
+    """LLM that echoes the canary token found in the prompt user_message."""
+
+    def __init__(self, mode="leak"):
+        self.mode = mode
+        self.calls = []
+
+    async def call(self, prompt=None, role="", **kwargs):
+        self.calls.append((role, prompt))
+        text = ""
+        if prompt is not None:
+            text = (
+                getattr(prompt, "user_message", "") or ""
+            ) + (getattr(prompt, "context", "") or "")
+        import re
+        m = re.search(r"\[SEC_CANARY_[0-9a-f]+\]", text)
+        token = m.group(0) if m else ""
+        if self.mode == "leak" and token:
+            content = f"[VERIFIED: t] leaked {token}"
+        elif self.mode == "clean":
+            content = (
+                "[VERIFIED: corrections] This reflects the approved correction."
+            )
+        elif self.mode == "leak_then_clean":
+            if len(self.calls) == 1 and token:
+                content = f"I think maybe {token}"  # fails FactChecker too
+            else:
+                content = (
+                    "[VERIFIED: corrections] This reflects the approved correction."
+                )
+        else:
+            content = "[VERIFIED: t] ok"
+        return LLMResponse(content=content, provider="test", model="test")
+
+
+class _StubManager:
+    def get_approved_for_context(self, tenant_id="default", agent_id=""):
+        return "rate limit is 100/min"
+
+
+class TestResolveSurface:
+    @pytest.mark.asyncio
+    async def test_detect_leak_delivers_content(self, store, monkeypatch):
+        from {{project_slug}}.orchestration.single_shot import resolve_single_shot
+
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        result = await resolve_single_shot(
+            "What is the rate limit?",
+            llm=_LeakLLM("leak"),
+            corrections_manager=_StubManager(),
+            learning_store=store,
+            tenant_id="t-res",
+        )
+        assert result.refused is False
+        assert result.escalated is False
+        assert result.content
+        assert _flags(store, "t-res")
+        assert _flags(store, "t-res")[0]["subject_id"] == SURFACE_RESOLVE
+
+    @pytest.mark.asyncio
+    async def test_enforce_leak_refuses_not_escalate(self, store, monkeypatch):
+        from {{project_slug}}.orchestration.single_shot import resolve_single_shot
+
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        monkeypatch.setenv(ENFORCEMENT_ENV, "true")
+        result = await resolve_single_shot(
+            "What is the rate limit?",
+            llm=_LeakLLM("leak"),
+            corrections_manager=_StubManager(),
+            learning_store=store,
+            tenant_id="t-enf",
+        )
+        assert result.refused is True
+        assert result.refusal_source == REFUSAL_SOURCE
+        assert result.refusal_reason == REFUSAL_REASON
+        assert result.escalated is False
+        assert result.content == ""
+        dumped = json.dumps(result.__dict__, default=str)
+        assert "SEC_CANARY_" not in dumped
+
+
+class _NoEscalateRouter:
+    """Router that never escalates and selects no specialists."""
+
+    def route(self, query, trust_scores=None, tenant_id="default"):
+        from {{project_slug}}.orchestration.agent_router import RoutingDecision
+
+        return RoutingDecision(should_escalate=False, selected_agents=[])
+
+
+class TestChatSurface:
+    @pytest.mark.asyncio
+    async def test_enforce_short_circuits_no_history(self, store, monkeypatch):
+        from {{project_slug}}.orchestration.chat_orchestrator import (
+            ChatConfig,
+            ChatOrchestrator,
+        )
+
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        monkeypatch.setenv(ENFORCEMENT_ENV, "true")
+        orch = ChatOrchestrator(
+            llm=_LeakLLM("leak"),
+            router=_NoEscalateRouter(),
+            config=ChatConfig(
+                include_safety_agents=False,
+                enable_cross_check=False,
+                max_agents=0,
+            ),
+            learning_store=store,
+            session_key="sess-1",
+        )
+        resp = await orch.chat("hello", tenant_id="t-chat")
+        assert resp.refused is True
+        assert resp.refusal_source == REFUSAL_SOURCE
+        assert resp.refusal_reason == REFUSAL_REASON
+        assert resp.content == ""
+        # User turn kept; leaked assistant text must not enter history.
+        assert orch.history_length == 1
+        assert orch.conversation_history[0]["role"] == "user"
+        assert orch.conversation_history[0]["content"] == "hello"
+        assert _flags(store, "t-chat")
+
+    @pytest.mark.asyncio
+    async def test_detect_only_keeps_content(self, store, monkeypatch):
+        from {{project_slug}}.orchestration.chat_orchestrator import (
+            ChatConfig,
+            ChatOrchestrator,
+        )
+
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        orch = ChatOrchestrator(
+            llm=_LeakLLM("leak"),
+            router=_NoEscalateRouter(),
+            config=ChatConfig(
+                include_safety_agents=False,
+                enable_cross_check=False,
+                max_agents=0,
+            ),
+            learning_store=store,
+        )
+        resp = await orch.chat("hello", tenant_id="t-det")
+        assert resp.refused is False
+        assert "SEC_CANARY_" in resp.content
+        assert orch.history_length == 2
+
+
+class TestRoundTableSurface:
+    @pytest.mark.asyncio
+    async def test_enforce_skips_voting(self, monkeypatch, store):
+        from {{project_slug}}.orchestration.round_table import (
+            AgentAnalysis,
+            RoundTableResult,
+        )
+        from {{project_slug}}.orchestration.round_table_helpers import phase_synthesis
+        from {{project_slug}}.orchestration.runtime_canary import CanaryRefusal
+
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        monkeypatch.setenv(ENFORCEMENT_ENV, "true")
+
+        partial = RoundTableResult(task_id="t1")
+        partial.analyses = [
+            AgentAnalysis(
+                agent_name="a", domain="d",
+                observations=[{"finding": "x"}],
+                recommendations=[{"action": "y"}],
+                confidence=0.9,
+            )
+        ]
+
+        class CtxLeakLLM:
+            async def call(self, prompt=None, role="", **kwargs):
+                ctx = getattr(prompt, "context", "") or ""
+                import re
+                m = re.search(r"\[SEC_CANARY_[0-9a-f]+\]", ctx)
+                token = m.group(0) if m else ""
+                return LLMResponse(
+                    content=json.dumps({
+                        "recommended_direction": f"go {token}",
+                        "key_findings": [],
+                        "trade_offs": [],
+                        "minority_views": [],
+                    }),
+                    provider="test", model="test",
+                )
+
+        synthesis, refusal = await phase_synthesis(
+            partial, CtxLeakLLM(), "system",
+            learning_store=store, tenant_id="t-rt",
+        )
+        assert isinstance(refusal, CanaryRefusal)
+        assert refusal.reason == REFUSAL_REASON
+        assert synthesis.recommended_direction == ""
+        assert _flags(store, "t-rt")
+        assert _flags(store, "t-rt")[0]["subject_id"] == SURFACE_ROUND_TABLE
+
+
+class TestUniqueTokens:
+    def test_two_wraps_differ(self, monkeypatch):
+        monkeypatch.setenv(DETECTION_ENV, "true")
+        _, a = wrap_chat_user("one")
+        _, b = wrap_chat_user("two")
+        assert a != b
+
+
+class TestRefusedCanaryOutcomeDocs:
+    def test_metrics_docstring_lists_refused_canary(self):
+        """DX: deliberations_total outcome allowlist must name refused_canary."""
+        from {{project_slug}}.observability.metrics import record_deliberation
+
+        assert "refused_canary" in (record_deliberation.__doc__ or "")
+
+    def test_round_table_route_emits_refused_canary_literal(self):
+        from pathlib import Path
+        import {{project_slug}}.api.routes.round_table as rt_mod
+
+        src = Path(rt_mod.__file__).read_text(encoding="utf-8")
+        assert 'outcome = "refused_canary"' in src

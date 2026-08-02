@@ -365,14 +365,14 @@ class TestSynthesisFailClosed:
             AgentAnalysis(agent_name="a", domain="testing",
                           observations=[{"finding": "x", "evidence": "y"}]),
         ])
-        synthesis = await phase_synthesis(
+        synthesis, canary_refusal = await phase_synthesis(
             partial, _budget_exhausted_client(), "system prompt"
         )
+        assert canary_refusal is None
         assert "Budget exhausted" not in synthesis.recommended_direction
         assert synthesis.recommended_direction == (
             "Synthesis failed -- review individual analyses"
         )
-
 
 # =============================================================================
 # 3. Challenge/vote dispatch gates

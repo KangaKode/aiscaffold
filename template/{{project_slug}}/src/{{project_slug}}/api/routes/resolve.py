@@ -41,12 +41,19 @@ class ResolveRequest(BaseModel):
 
 
 class ResolveResponse(BaseModel):
-    """Single-shot outcome. When escalated, content is empty."""
+    """Single-shot outcome. When escalated or refused, content is empty.
+
+    refused (canary enforce) is distinct from escalated (confidence gate):
+    do not auto-retry a canary refusal as a chat escalate without review.
+    """
 
     content: str
     tier: str = "single_shot"
     escalated: bool = False
     escalation_reason: str = ""
+    refused: bool = False
+    refusal_source: str | None = None
+    refusal_reason: str | None = None
     enforcement_result: str = ""
     enforcement_violations: list[str] = Field(default_factory=list)
     evidence_level: str = ""
@@ -88,6 +95,9 @@ async def resolve(
         tier=result.tier,
         escalated=result.escalated,
         escalation_reason=result.escalation_reason,
+        refused=result.refused,
+        refusal_source=result.refusal_source,
+        refusal_reason=result.refusal_reason,
         enforcement_result=result.enforcement_result,
         enforcement_violations=result.enforcement_violations,
         evidence_level=result.evidence_level,

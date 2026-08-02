@@ -203,7 +203,7 @@ FastAPI application with route modules:
 
 ### Security (`security/`)
 - `prompt_guard.py` -- XML delimiter wrapping, injection pattern detection, content sanitization
-- `injection_defense.py` -- Homoglyph normalization, invisible-character stripping, encoding-attack detection, canary tokens, output drift and multi-turn poisoning detection (`check_canary` and `detect_output_drift` are caller-invoked utilities, not wired into the default pipeline; `detect_multi_turn_poisoning` gains an opt-in per-chat-turn call site via `LOOP_INTEGRITY_DETECTION_ENABLED` -- see `learning/loop_integrity.py`)
+- `injection_defense.py` -- Homoglyph normalization, invisible-character stripping, encoding-attack detection, canary tokens, output drift and multi-turn poisoning detection (`detect_output_drift` remains caller-invoked; `check_canary` is wired on three final surfaces when `RUNTIME_CANARY_ENABLED` is set -- see `orchestration/runtime_canary.py`; `detect_multi_turn_poisoning` gains an opt-in per-chat-turn call site via `LOOP_INTEGRITY_DETECTION_ENABLED` -- see `learning/loop_integrity.py`)
 - `validators.py` -- Input length, URL (anti-SSRF), identifier, list/dict size validation
 - `pii.py` -- Pattern-based PII redaction (emails, SSNs, Luhn-verified cards, IPs, phones, names-in-context) with Unicode normalization; idempotent `[REDACTED:CATEGORY]` tokens
 
