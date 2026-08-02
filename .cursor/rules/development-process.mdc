@@ -58,7 +58,12 @@ Record the chosen tier and rationale in the PR description.
    even with warnings — read its output and treat warnings as review
    items, not noise. Test/check counts quoted in docs are measured from
    actual runs, never estimated.
-4. **Post-implementation review of the actual diff.** Bugbot
+4. **Done-claim verification before claiming complete.** After
+   implementation, invoke
+   `template/{{project_slug}}/.cursor/agents/done-claim-verifier.md`
+   (readonly report-only; additive hygiene, not a substitute for review
+   gates; not product Sentinel; not a REVIEWER_ASSURANCE BLOCKING gate).
+5. **Post-implementation review of the actual diff.** Bugbot
    (Cursor-hosted, optional maintainer tooling) plus the matching
    domain expert review the branch. Autofix stays off unless a
    maintainer explicitly enables it. Findings are fixed with
@@ -74,7 +79,7 @@ Record the chosen tier and rationale in the PR description.
    cannot auto-classify, self-edit their own rules, or approve their
    own rule changes. See `docs/DEVELOPMENT_PROCESS.md` for the full
    contract.
-5. **Strongest model only.** Implementation and review subagents run on
+6. **Strongest model only.** Implementation and review subagents run on
    the strongest available model. If a subagent silently falls back to
    a weaker model (e.g., on API limits), discard its output and redo
    it — or retro-audit anything already merged.

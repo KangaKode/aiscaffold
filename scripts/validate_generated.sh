@@ -734,6 +734,29 @@ fi
 # to the generated project root).
 has()    { grep -qE "$2" "$GEN_ROOT/$3" && pass "$1" || fail "$1"; }
 lacks()  { ! grep -qE "$2" "$GEN_ROOT/$3" 2>/dev/null && pass "$1" || fail "$1"; }
+# Multiline-aware lacks: Python re.DOTALL so patterns can span line breaks
+# (grep -E is line-oriented and misses cross-line Bugbot-plus-domain wording).
+lacks_re() {
+    local msg="$1" pattern="$2" rel="$3"
+    if python3 -c "import pathlib,re,sys; t=pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'); sys.exit(1 if re.search(sys.argv[2], t, re.I|re.S) else 0)" \
+        "$GEN_ROOT/$rel" "$pattern"
+    then
+        pass "$msg"
+    else
+        fail "$msg"
+    fi
+}
+# Multiline-aware has (Python re.DOTALL), counterpart to lacks_re.
+has_re() {
+    local msg="$1" pattern="$2" rel="$3"
+    if python3 -c "import pathlib,re,sys; t=pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'); sys.exit(0 if re.search(sys.argv[2], t, re.I|re.S) else 1)" \
+        "$GEN_ROOT/$rel" "$pattern"
+    then
+        pass "$msg"
+    else
+        fail "$msg"
+    fi
+}
 exists() { [ -e "$GEN_ROOT/$2" ] && pass "$1" || fail "$1"; }
 absent() { [ ! -e "$GEN_ROOT/$2" ] && pass "$1" || fail "$1"; }
 
@@ -791,10 +814,23 @@ has "bugbot-honesty: process names sast-reviewer for post-diff review" 'sast-rev
 has "bugbot-honesty: process pins .mdc does not configure Bugbot" 'do \*\*not\*\* configure Bugbot' docs/DEVELOPMENT_PROCESS.md
 has "bugbot-honesty: process pins Autofix stays off" 'Autofix stays off' docs/DEVELOPMENT_PROCESS.md
 has "bugbot-honesty: rule names code-reviewer for post-diff review" 'code-reviewer' .cursor/rules/development-process.mdc
-lacks "bugbot-honesty: rule does not require Bugbot-plus-domain path" 'Bugbot.{0,120}plus.{0,80}matching domain (expert|reviewer)' .cursor/rules/development-process.mdc
-lacks "bugbot-honesty: process does not require Bugbot-plus-domain path" 'Bugbot.{0,120}plus.{0,80}matching domain (expert|reviewer)' docs/DEVELOPMENT_PROCESS.md
+lacks_re "bugbot-honesty: rule does not require Bugbot-plus-domain path" 'Bugbot.{0,120}plus.{0,80}matching domain (expert|reviewer)' .cursor/rules/development-process.mdc
+lacks_re "bugbot-honesty: process does not require Bugbot-plus-domain path" 'Bugbot.{0,120}plus.{0,80}matching domain (expert|reviewer)' docs/DEVELOPMENT_PROCESS.md
 has "bugbot-honesty: GOVERNANCE Non-Claim Auto-review not security boundary" 'not a security boundary' docs/GOVERNANCE.md
 has "bugbot-honesty: GOVERNANCE Non-Claim no hard dep on Bugbot" 'No hard dependency on Approval Agents or Bugbot' docs/GOVERNANCE.md
+# done-claim-verifier: readonly implementer done-check (not Sentinel, not
+# a REVIEWER_ASSURANCE BLOCKING gate). Ships in every profile.
+exists "done-claim-verifier: agent rendered into generated project" .cursor/agents/done-claim-verifier.md
+has "done-claim-verifier: frontmatter name" '^name: done-claim-verifier$' .cursor/agents/done-claim-verifier.md
+has "done-claim-verifier: readonly true" '^readonly: true$' .cursor/agents/done-claim-verifier.md
+has "done-claim-verifier: denies merge authority" 'Do not merge' .cursor/agents/done-claim-verifier.md
+has "done-claim-verifier: denies fix commits" 'fix commits' .cursor/agents/done-claim-verifier.md
+has_re "done-claim-verifier: denies editing .cursor (coupled negation)" 'do not\*{0,2}\s+edit.{0,40}\.cursor/\*\*' .cursor/agents/done-claim-verifier.md
+has "done-claim-verifier: denies BLOCK assurance verdict" '[Dd]o not\*\* recommend `BLOCK`' .cursor/agents/done-claim-verifier.md
+has_re "done-claim-verifier: not a REVIEWER_ASSURANCE BLOCKING gate" 'not\*{0,2}\s+a\s+`?REVIEWER_ASSURANCE`?\s+`?BLOCKING`?' .cursor/agents/done-claim-verifier.md
+has "done-claim-verifier: not product Sentinel" 'not.*product Sentinel|not product Sentinel' .cursor/agents/done-claim-verifier.md
+has "done-claim-verifier: process doc names the agent" 'done-claim-verifier' docs/DEVELOPMENT_PROCESS.md
+has "done-claim-verifier: process rule names the agent" 'done-claim-verifier' .cursor/rules/development-process.mdc
 has "bug-class: INDEX links the bug-class register" 'BUG_CLASS_REGISTER.md' docs/INDEX.md
 has "bug-class: expert-review names authority boundary" '[Aa]uthority [Bb]oundary' .cursor/rules/expert-review.mdc
 has "bug-class: expert-review denies self-promotion" 'self-promot' .cursor/rules/expert-review.mdc
