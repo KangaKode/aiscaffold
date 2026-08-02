@@ -126,6 +126,16 @@ required paid Cursor product. Explicit boundaries:
 - CI does not run prompt reviewers (see the REVIEWER_ASSURANCE
   Non-Claim in `docs/GOVERNANCE.md`).
 
+### Done-claim verification
+
+After implementation and before claiming work complete, invoke
+`.cursor/agents/done-claim-verifier.md`. It skeptically checks that the
+claimed implementation exists and that relevant tests or project checks
+were run, then reports pass or incomplete. This is additive hygiene, not
+a substitute for code review, red-team, CI, or human merge approval. It
+is not product Sentinel and is not a `REVIEWER_ASSURANCE` `BLOCKING`
+gate.
+
 ## Gates
 
 | Gate | What It Prevents |

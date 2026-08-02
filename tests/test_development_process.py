@@ -498,5 +498,73 @@ class BugbotHonestyTemplateTests(unittest.TestCase):
         )
 
 
+class DoneClaimVerifierTests(unittest.TestCase):
+    """Pins for the readonly done-claim-verifier agent and process mentions."""
+
+    AGENT = (
+        REPO_ROOT
+        / "template"
+        / "{{project_slug}}"
+        / ".cursor"
+        / "agents"
+        / "done-claim-verifier.md"
+    )
+    DESIGN_NOTE = (
+        REPO_ROOT / "docs" / "designs" / "done-claim-verifier" / "DESIGN_NOTE.md"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.agent = cls.AGENT.read_text(encoding="utf-8")
+        cls.template_process = POLICY_ASSETS["template_process"].read_text(
+            encoding="utf-8"
+        )
+        cls.template_rule = POLICY_ASSETS["template_rule"].read_text(encoding="utf-8")
+        cls.root_process = POLICY_ASSETS["root_process"].read_text(encoding="utf-8")
+        cls.root_rule = POLICY_ASSETS["root_rule"].read_text(encoding="utf-8")
+
+    def test_agent_and_design_note_exist(self):
+        self.assertTrue(self.AGENT.is_file(), f"missing agent at {self.AGENT}")
+        self.assertTrue(
+            self.DESIGN_NOTE.is_file(), f"missing design note at {self.DESIGN_NOTE}"
+        )
+
+    def test_frontmatter_name_and_readonly(self):
+        self.assertRegex(self.agent, r"(?m)^name: done-claim-verifier$")
+        self.assertRegex(self.agent, r"(?m)^readonly: true$")
+
+    def test_authority_forbids_merge_fix_and_self_edit(self):
+        lower = self.agent.lower()
+        self.assertIn("do not merge", lower)
+        self.assertRegex(
+            lower,
+            r"do not\*{0,2}\s+edit[^\n]{0,40}\.cursor|\.cursor/\*\*",
+        )
+        self.assertRegex(lower, r"fix commits|do not[^\n]{0,40}fix")
+
+    def test_not_sentinel_and_not_assurance_blocking(self):
+        lower = self.agent.lower()
+        self.assertIn("not", lower)
+        self.assertIn("sentinel", lower)
+        self.assertRegex(
+            lower,
+            r"reviewer_assurance|not a[` ]*blocking",
+        )
+
+    def test_process_docs_mention_agent(self):
+        for text, label in (
+            (self.template_process, "template_process"),
+            (self.template_rule, "template_rule"),
+            (self.root_process, "root_process"),
+            (self.root_rule, "root_rule"),
+        ):
+            with self.subTest(asset=label):
+                self.assertIn(
+                    "done-claim-verifier",
+                    text,
+                    f"{label}: must mention done-claim-verifier",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

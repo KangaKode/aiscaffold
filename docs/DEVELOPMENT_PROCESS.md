@@ -107,6 +107,12 @@ still applies. Low-tier changes preserve:
   tooling) plus, when applicable, the matching domain reviewer.
   Autofix stays off unless a maintainer explicitly enables it.
 
+Generated projects also invoke `.cursor/agents/done-claim-verifier.md`
+after implementation and before claiming complete (additive hygiene; not
+a substitute for review gates; not product Sentinel; not a
+`REVIEWER_ASSURANCE` `BLOCKING` gate). See
+`docs/designs/done-claim-verifier/DESIGN_NOTE.md`.
+
 The maintainer records the tier and rationale in the PR description whenever
 invoking the Low exemption.
 
