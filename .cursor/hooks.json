@@ -1,0 +1,12 @@
+{
+  "_comment": "Roundtable scaffold hooks. Review gate is defense-in-depth for Cursor git commit (script filters; no brittle matcher).",
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "python3 .cursor/hooks/require-pre-commit-reviews.py",
+        "failClosed": true
+      }
+    ]
+  }
+}

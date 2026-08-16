@@ -103,12 +103,17 @@ still applies. Low-tier changes preserve:
 - applicable tests — new or updated tests for the touched behavior when there
   is any behavior to test;
 - human ownership — the maintainer approves the tier and the diff; and
-- post-change review — Bugbot (Cursor-hosted, optional maintainer
-  tooling) plus, when applicable, the matching domain reviewer.
-  Autofix stays off unless a maintainer explicitly enables it.
-  Formal pre-commit receipt gating (Cursor hook +
-  `scripts/record_review_receipt.py`) is a High-tier follow-up; see
-  `docs/designs/pre-commit-review-gate/`.
+- post-change review — Bugbot **and** Security Review must both run on
+  the actual diff **before** `git commit` (receipt at
+  `.cursor/review-receipts/pre-commit.json`). Autofix stays off unless a
+  maintainer explicitly enables it.
+
+  **Non-claim:** The Cursor `beforeShellExecution` receipt gate is
+  **defense-in-depth** for lone `git commit` in Cursor. It is not
+  cryptographic proof reviews ran, not complete against wrappers /
+  merge / cherry-pick / non-Cursor terminals, and must not be described
+  as fail-closed commit integrity until a native git hook follow-up
+  lands (see `docs/designs/pre-commit-review-gate/THREAT_MODEL.md`).
 
 The maintainer records the tier and rationale in the PR description whenever
 invoking the Low exemption.
