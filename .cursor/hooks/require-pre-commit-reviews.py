@@ -113,92 +113,18 @@ def _resolve_target(git_tokens: list[str], cwd: str) -> Path | None | str:
         return None
 
 
-def _mask_quoted_and_heredocs(command: str) -> str:
-    """Replace quoted spans and heredoc bodies with spaces (keep structure).
-
-    Used so substitution checks ignore commit-message / PR-body text while
-    still catching `git $(echo commit)` outside quotes.
-    """
-    out: list[str] = []
-    i = 0
-    n = len(command)
-    while i < n:
-        ch = command[i]
-        if ch in "'\"":
-            quote = ch
-            out.append(" ")
-            i += 1
-            while i < n and command[i] != quote:
-                if command[i] == "\\" and quote == '"' and i + 1 < n:
-                    i += 2
-                    continue
-                i += 1
-            if i < n:
-                i += 1
-            out.append(" ")
-            continue
-        if command.startswith("<<", i):
-            out.append("  ")
-            i += 2
-            while i < n and command[i] in "-":
-                out.append(" ")
-                i += 1
-            quote = ""
-            if i < n and command[i] in "'\"":
-                quote = command[i]
-                out.append(" ")
-                i += 1
-            tag_chars: list[str] = []
-            while i < n and command[i] not in " \t\n":
-                if quote and command[i] == quote:
-                    i += 1
-                    break
-                tag_chars.append(command[i])
-                out.append(" ")
-                i += 1
-            tag = "".join(tag_chars)
-            # Consume through newline after <<TAG, then body until tag line.
-            while i < n and command[i] != "\n":
-                out.append(" ")
-                i += 1
-            if i < n:
-                out.append("\n")
-                i += 1
-            while i < n:
-                line_start = i
-                while i < n and command[i] != "\n":
-                    i += 1
-                line = command[line_start:i]
-                if line.strip() == tag:
-                    out.append(" " * (i - line_start))
-                    if i < n:
-                        out.append("\n")
-                        i += 1
-                    break
-                out.append(" " * (i - line_start))
-                if i < n:
-                    out.append("\n")
-                    i += 1
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
 def analyze_command(command: str, cwd: str) -> tuple[str, Path | None]:
     """Classify a shell command for the review gate.
 
     Returns (action, target) where action is:
       allow | check | ambiguous | unsupported | unknown
     """
-    masked = _mask_quoted_and_heredocs(command)
-
-    # Unquoted substitution or newlines with `git` → fail closed
-    # (e.g. git $(echo commit)). Quoted -m / PR bodies are masked away.
-    if re.search(r"\bgit\b", masked) and (
-        "`" in masked or "$(" in masked or "\n" in masked
-    ):
-        return "ambiguous", None
+    # Command substitution / newlines: fail closed whenever `git` appears —
+    # subcommand may be produced by $(…) / backticks (e.g. git $(echo commit)).
+    if "\n" in command or "`" in command or "$(" in command:
+        if re.search(r"\bgit\b", command):
+            return "ambiguous", None
+        return "allow", None
 
     tokens = _tokenize(command)
     if tokens is None:
