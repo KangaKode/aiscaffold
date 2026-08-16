@@ -83,6 +83,29 @@ class AnalyzeCommandGate(unittest.TestCase):
         )
         self.assertEqual(action, "ambiguous")
 
+    def test_quoted_commit_message_substitution_is_check(self) -> None:
+        action, _ = self.hook.analyze_command(
+            'git commit -m "$(cat /tmp/msg.txt)"',
+            cwd=str(REPO_ROOT),
+        )
+        self.assertEqual(action, "check")
+
+    def test_multiline_unquoted_git_is_ambiguous(self) -> None:
+        action, _ = self.hook.analyze_command(
+            "git\ncommit -m msg",
+            cwd=str(REPO_ROOT),
+        )
+        self.assertEqual(action, "ambiguous")
+
+    def test_heredoc_mentioning_git_without_substitution_on_git_allows(self) -> None:
+        # Agent tooling often embeds the word "git" in PR bodies via files;
+        # substitution alone must not deny every shell that mentions git.
+        action, _ = self.hook.analyze_command(
+            "gh pr create --body-file /tmp/body.md",
+            cwd=str(REPO_ROOT),
+        )
+        self.assertEqual(action, "allow")
+
     def test_git_dir_env_is_unsupported(self) -> None:
         action, _ = self.hook.analyze_command(
             "GIT_DIR=/tmp/other/.git git commit -m msg",
