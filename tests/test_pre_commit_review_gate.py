@@ -130,5 +130,43 @@ class AnalyzeCommandGate(unittest.TestCase):
             self.assertNotIn("matcher", entry)
 
 
+class NativePreCommitHook(unittest.TestCase):
+    HOOK = REPO_ROOT / ".githooks" / "pre-commit"
+
+    def test_hook_is_executable_and_calls_check(self) -> None:
+        self.assertTrue(self.HOOK.is_file())
+        text = self.HOOK.read_text(encoding="utf-8")
+        self.assertIn("record_review_receipt.py", text)
+        self.assertIn("--check", text)
+        self.assertIn("ROUNDTABLE_SKIP_REVIEW_RECEIPT", text)
+        self.assertIn("hook-impl", text)
+        self.assertIn(".venv/bin/pre-commit", text)
+
+    def test_skip_env_exits_zero_without_framework_config(self) -> None:
+        import os
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.check_call(["git", "init"], cwd=root)
+            hooks = root / ".githooks"
+            hooks.mkdir()
+            dest = hooks / "pre-commit"
+            shutil.copy(self.HOOK, dest)
+            dest.chmod(0o755)
+            env = os.environ.copy()
+            env["ROUNDTABLE_SKIP_REVIEW_RECEIPT"] = "1"
+            proc = subprocess.run(
+                ["bash", str(dest)],
+                cwd=str(root),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("skipping", proc.stdout.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

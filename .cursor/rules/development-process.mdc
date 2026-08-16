@@ -82,8 +82,9 @@ Record the chosen tier and rationale in the PR description.
 
    Receipt: after both reviews finish, write
    `.cursor/review-receipts/pre-commit.json` (gitignored) via the
-   review-bugbot / review-security skills so the pre-commit shell hook
-   can allow `git commit`. Do not bypass with `--no-verify`.
+   review-bugbot / review-security skills. Enable native enforcement
+   once per clone with `make hooks-install` (`core.hooksPath=.githooks`).
+   Do not bypass with `--no-verify`.
 
 6. **Strongest model only.** Implementation and review subagents run on
    the strongest available model. If a subagent silently falls back to

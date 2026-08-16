@@ -108,12 +108,13 @@ still applies. Low-tier changes preserve:
   `.cursor/review-receipts/pre-commit.json`). Autofix stays off unless a
   maintainer explicitly enables it.
 
-  **Non-claim:** The Cursor `beforeShellExecution` receipt gate is
-  **defense-in-depth** for lone `git commit` in Cursor. It is not
-  cryptographic proof reviews ran, not complete against wrappers /
-  merge / cherry-pick / non-Cursor terminals, and must not be described
-  as fail-closed commit integrity until a native git hook follow-up
-  lands (see `docs/designs/pre-commit-review-gate/THREAT_MODEL.md`).
+  **Receipt gate:** Cursor `beforeShellExecution` is **defense-in-depth**.
+  Enable the native hook once per clone with `make hooks-install`
+  (`core.hooksPath=.githooks`) so `pre-commit` re-checks the receipt for
+  any `git commit` (including terminal, merge/cherry-pick, and many
+  wrappers). Still not cryptographic proof; `--no-verify` and
+  `ROUNDTABLE_SKIP_REVIEW_RECEIPT` remain local bypasses — see
+  `docs/designs/pre-commit-review-gate/THREAT_MODEL.md`.
 
 The maintainer records the tier and rationale in the PR description whenever
 invoking the Low exemption.
