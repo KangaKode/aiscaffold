@@ -62,8 +62,12 @@ red-team-staged: ## Run red team on staged files only
 eval: ## Run evaluation suite
 	python -m pytest evals/ -v --tb=short
 
-eval-regression: ## Run regression evals only
-	python -m pytest evals/regression/ -v --tb=short
+eval-regression: ## Run graduated regression evals (opt-in; no-op if none)
+	@if [ -z "$$(find evals/regression -name 'test_*.py' 2>/dev/null)" ]; then \
+		echo "No regression evals under evals/regression/; skipping (exit 0)"; \
+	else \
+		python -m pytest evals/regression/ -v --tb=short; \
+	fi
 {% endif %}
 
 # =============================================================================
