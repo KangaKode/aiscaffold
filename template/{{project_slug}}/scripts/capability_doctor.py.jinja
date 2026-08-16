@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Capability Doctor for a generated Roundtable project.
+
+Read-only matrix: live | broken | declined | stale | unconfigured.
+Does not replace validate_generated.sh / CI. Never prints secrets.
+
+Usage:
+  python scripts/capability_doctor.py
+  python scripts/capability_doctor.py --json
+  python scripts/capability_doctor.py --strict-capabilities
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib
+import json
+import os
+import sys
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+ROOT = Path(__file__).resolve().parents[1]
+CapabilityState = Literal["live", "broken", "declined", "stale", "unconfigured"]
+SLUG = "{{ project_slug }}"
+
+
+@dataclass(frozen=True)
+class CapabilityRow:
+    id: str
+    label: str
+    state: CapabilityState
+    detail: str
+    fix_command: str | None = None
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _try_import(module: str) -> tuple[bool, str]:
+    try:
+        importlib.import_module(module)
+        return True, "import ok"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:160]
+
+
+def probe() -> list[CapabilityRow]:
+    rows: list[CapabilityRow] = []
+
+    required = [
+        "CLAUDE.md",
+        "docs/ARCHITECTURE.md",
+        "tests/test_architecture.py",
+        "pyproject.toml",
+    ]
+    missing = [f for f in required if not (ROOT / f).exists()]
+    rows.append(
+        CapabilityRow(
+            id="project_structure",
+            label="Project structure",
+            state="broken" if missing else "live",
+            detail=("Missing: " + ", ".join(missing)) if missing else "Required files present",
+            fix_command="make doctor" if missing else None,
+        )
+    )
+
+    keys = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "LLM_API_KEY")
+    if any(os.environ.get(k) for k in keys):
+        rows.append(
+            CapabilityRow(
+                id="llm_provider",
+                label="LLM provider",
+                state="live",
+                detail="Provider key env set (value redacted)",
+            )
+        )
+    else:
+        rows.append(
+            CapabilityRow(
+                id="llm_provider",
+                label="LLM provider",
+                state="unconfigured",
+                detail="No provider API key in process env",
+                fix_command="export ANTHROPIC_API_KEY=...",
+            )
+        )
+
+    ok, detail = _try_import(f"{SLUG}.learning.store")
+    rows.append(
+        CapabilityRow(
+            id="learning_store",
+            label="Learning store",
+            state="live" if ok else "broken",
+            detail=detail,
+            fix_command=None if ok else f"pip install -e '.[dev]' && python -c 'import {SLUG}.learning.store'",
+        )
+    )
+
+    ok, detail = _try_import(f"{SLUG}.enforcement")
+    if ok and not any(
+        _env_truthy(f)
+        for f in (
+            "SENTINEL_ENFORCEMENT_ENABLED",
+            "EXTRACTION_GUARD_ENFORCE",
+            "RUNTIME_CANARY_ENFORCEMENT_ENABLED",
+        )
+    ):
+        rows.append(
+            CapabilityRow(
+                id="enforcement_pipeline",
+                label="Enforcement pipeline",
+                state="declined",
+                detail="Module importable; enforce flags default off",
+                fix_command="export SENTINEL_ENFORCEMENT_ENABLED=true  # opt-in",
+            )
+        )
+    else:
+        rows.append(
+            CapabilityRow(
+                id="enforcement_pipeline",
+                label="Enforcement pipeline",
+                state="live" if ok else "broken",
+                detail=detail if not ok else "Enforce flag enabled and module importable",
+                fix_command=None if ok else "pip install -e .",
+            )
+        )
+
+    ok, detail = _try_import(f"{SLUG}.connectors")
+    rows.append(
+        CapabilityRow(
+            id="mcp_client",
+            label="MCP client",
+            state="live" if ok else "broken",
+            detail=detail,
+            fix_command=None if ok else "pip install -e .",
+        )
+    )
+
+{% if include_api_gateway %}
+    ok, detail = _try_import(f"{SLUG}.api.app")
+    rows.append(
+        CapabilityRow(
+            id="api_gateway",
+            label="API gateway",
+            state="live" if ok else "broken",
+            detail=detail,
+            fix_command=None if ok else "pip install -e '.[api]'",
+        )
+    )
+{% else %}
+    rows.append(
+        CapabilityRow(
+            id="api_gateway",
+            label="API gateway",
+            state="declined",
+            detail="include_api_gateway=false at generation time",
+        )
+    )
+{% endif %}
+
+    ok, detail = _try_import(f"{SLUG}.llm.budget_manager")
+    rows.append(
+        CapabilityRow(
+            id="budget_manager",
+            label="Budget manager",
+            state="live" if ok else "broken",
+            detail=detail,
+            fix_command=None if ok else "pip install -e .",
+        )
+    )
+
+    ok, detail = _try_import(f"{SLUG}.agents.remote")
+    rows.append(
+        CapabilityRow(
+            id="remote_agents",
+            label="Remote agents",
+            state="live" if ok else "broken",
+            detail=detail,
+            fix_command=None if ok else "pip install -e .",
+        )
+    )
+
+    return rows
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Capability Doctor")
+    parser.add_argument("--json", action="store_true", help="Emit JSON report")
+    parser.add_argument(
+        "--strict-capabilities",
+        action="store_true",
+        help="Exit 1 when any capability row is broken",
+    )
+    args = parser.parse_args(argv)
+    rows = probe()
+    if args.json:
+        print(json.dumps({"capabilities": [asdict(r) for r in rows]}, indent=2))
+    else:
+        print("Capability Doctor")
+        print("-" * 72)
+        for r in rows:
+            fix = f" | fix: {r.fix_command}" if r.fix_command else ""
+            print(f"{r.id:22} {r.state:14} {r.detail}{fix}")
+    if args.strict_capabilities and any(r.state == "broken" for r in rows):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
