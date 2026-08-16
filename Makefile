@@ -8,7 +8,7 @@
 #
 # Run 'make help' to see all targets.
 
-.PHONY: help quick validate validate-matrix fix clean
+.PHONY: help quick validate validate-matrix fix clean hooks-install
 
 TEMPLATE_DIR := template/{{project_slug}}
 TEMPLATE_SRC := $(TEMPLATE_DIR)/src/{{project_slug}}
@@ -19,6 +19,12 @@ help: ## Show all available targets
 	@echo "aiscaffold Development Commands"
 	@echo "================================"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+hooks-install: ## Point this clone at .githooks (review-receipt pre-commit)
+	@chmod +x .githooks/pre-commit
+	@git config core.hooksPath .githooks
+	@echo "core.hooksPath=.githooks (native review-receipt pre-commit enabled)"
+	@echo "Note: chains to Python pre-commit framework when that CLI is installed."
 
 # =============================================================================
 # FAST CHECKS (~5 seconds, run on templates directly)

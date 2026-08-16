@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Native pre-commit: require Bugbot + Security Review receipt for this tree,
+# then run the Python pre-commit framework hooks (if available) so setting
+# core.hooksPath=.githooks does not disable .pre-commit-config.yaml.
+# Enable with: make hooks-install
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+skip="${ROUNDTABLE_SKIP_REVIEW_RECEIPT:-}"
+case "$(printf '%s' "$skip" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes)
+    echo "ROUNDTABLE_SKIP_REVIEW_RECEIPT set; skipping review receipt check."
+    ;;
+  *)
+    SCRIPT="$ROOT/scripts/record_review_receipt.py"
+    if [[ ! -f "$SCRIPT" ]]; then
+      echo "record_review_receipt.py missing; cannot verify review receipt." >&2
+      exit 1
+    fi
+    python3 "$SCRIPT" --check
+    ;;
+esac
+
+# Preserve framework hooks that normally live under .git/hooks when
+# core.hooksPath points at this directory instead.
+if [[ ! -f "$ROOT/.pre-commit-config.yaml" ]]; then
+  exit 0
+fi
+
+run_hook_impl() {
+  local bin="$1"
+  shift
+  exec "$bin" hook-impl \
+    --config="$ROOT/.pre-commit-config.yaml" \
+    --hook-type=pre-commit \
+    --hook-dir="$ROOT/.githooks" \
+    -- "$@"
+}
+
+if command -v pre-commit >/dev/null 2>&1; then
+  run_hook_impl pre-commit "$@"
+fi
+if [[ -x "$ROOT/.venv/bin/pre-commit" ]]; then
+  run_hook_impl "$ROOT/.venv/bin/pre-commit" "$@"
+fi
+if python3 -c "import pre_commit" >/dev/null 2>&1; then
+  exec python3 -m pre_commit hook-impl \
+    --config="$ROOT/.pre-commit-config.yaml" \
+    --hook-type=pre-commit \
+    --hook-dir="$ROOT/.githooks" \
+    -- "$@"
+fi
+
+echo "WARNING: .pre-commit-config.yaml is present but the pre-commit CLI was" >&2
+echo "not found on PATH, in .venv/bin, or via python3 -m pre_commit." >&2
+echo "Framework hooks (quick checks / secret scan) were NOT run." >&2
+echo "Activate your venv or: pip install pre-commit && pre-commit install-hooks" >&2
+exit 1

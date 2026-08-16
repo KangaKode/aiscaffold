@@ -8,7 +8,7 @@
 
 Require Bugbot **and** Security Review on the current worktree before any `git commit` to this Roundtable checkout, via a Cursor `beforeShellExecution` hook and a gitignored receipt file.
 
-**Honest posture:** defense-in-depth for Cursor `git commit`, not fail-closed integrity. See `THREAT_MODEL.md`. Native `core.hooksPath` / `pre-commit` is the follow-up that closes residual bypasses.
+**Honest posture:** Cursor gate is defense-in-depth; native `.githooks/pre-commit` via `make hooks-install` is the commit-time receipt check. See `THREAT_MODEL.md` and `NATIVE_HOOKS.md`.
 
 ## Split from Task ISA
 
