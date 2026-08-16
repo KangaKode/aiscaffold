@@ -78,7 +78,9 @@ Record the chosen tier and rationale in the PR description.
    rule change, and regression test. Agents may propose entries but
    cannot auto-classify, self-edit their own rules, or approve their
    own rule changes. See `docs/DEVELOPMENT_PROCESS.md` for the full
-   contract.
+   contract. *(Formal Cursor/Git receipt gating for Bugbot + Security
+   Review before `git commit` is a separate High-tier follow-up:
+   `docs/designs/pre-commit-review-gate/`.)*
 6. **Strongest model only.** Implementation and review subagents run on
    the strongest available model. If a subagent silently falls back to
    a weaker model (e.g., on API limits), discard its output and redo

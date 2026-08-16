@@ -16,7 +16,8 @@ Key design principles from 2026 research:
 
 Reference: docs/REFERENCES.md
 
-Keep this file under 520 lines (helpers live in round_table_helpers.py).
+Keep this file under 560 lines (helpers live in round_table_helpers.py;
+Task ISA types/evaluator live in task_isa.py).
 """
 
 import logging
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from ..observability.tracing import phase_span
+from .task_isa import IsaClosureReport, TaskISA
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,7 @@ class RoundTableTask:
     context: dict[str, Any] = field(default_factory=dict)
     constraints: list[str] = field(default_factory=list)
     tenant_id: str = "default"
+    isa: TaskISA | None = None  # Optional Ideal State Artifact (detect-only closure)
 
 
 @dataclass
@@ -176,6 +179,7 @@ class RoundTableResult:
     failed_agent_count: int = 0
     vote_gated_count: int = 0
     requires_approval: bool = False  # Human must approve before acting on this
+    isa_closure: IsaClosureReport | None = None  # Detect-only; never mutates consensus
 
     @property
     def approval_rate(self) -> float:
@@ -334,6 +338,16 @@ class RoundTable:
         if self._sentinel_enforcement:
             from .round_table_helpers import finalize_sentinel_refusal
             if finalize_sentinel_refusal(result, sentinel_analysis, self._write_artifact):
+                from .task_isa import record_isa_closure
+
+                result.isa_closure = record_isa_closure(
+                    isa=task.isa,
+                    analyses=result.analyses,
+                    task_id=task.id,
+                    context=task.context,
+                    artifacts_dir=self.config.artifacts_dir,
+                    write_artifact=self._write_artifact,
+                )
                 result.duration_seconds = (datetime.now() - start).total_seconds()
                 return result
 
@@ -372,9 +386,32 @@ class RoundTable:
             self._write_artifact(
                 task.id, "phase3_canary_refusal", asdict(canary_refusal)
             )
+            # Detect-only ISA still reports against analyses already collected.
+            from .task_isa import record_isa_closure
+
+            result.isa_closure = record_isa_closure(
+                isa=task.isa,
+                analyses=result.analyses,
+                task_id=task.id,
+                context=task.context,
+                artifacts_dir=self.config.artifacts_dir,
+                write_artifact=self._write_artifact,
+            )
             result.duration_seconds = (datetime.now() - start).total_seconds()
             return result
         self._write_artifact(task.id, "phase3_synthesis", asdict(result.synthesis))
+
+        # Task ISA closure (detect-only): after synthesis; no consensus mutation.
+        from .task_isa import merge_isa_into_final_payload, record_isa_closure
+
+        result.isa_closure = record_isa_closure(
+            isa=task.isa,
+            analyses=result.analyses,
+            task_id=task.id,
+            context=task.context,
+            artifacts_dir=self.config.artifacts_dir,
+            write_artifact=self._write_artifact,
+        )
 
         # Scope the gated-out count to agents that actually analyzed:
         # a roster member excluded before Phase 1 fails the same gates
@@ -406,14 +443,16 @@ class RoundTable:
         from .round_table_helpers import apply_approval_gate
         apply_approval_gate(result, self.config, self._checkin_manager)
 
-        self._write_artifact(task.id, "result_final", {
+        final_payload: dict[str, Any] = {
             "consensus": result.consensus_reached,
             "approval_rate": result.approval_rate,
             "duration": result.duration_seconds,
             "requires_approval": result.requires_approval,
             "degraded": result.degraded,
             "vote_gated_count": result.vote_gated_count,
-        })
+        }
+        merge_isa_into_final_payload(final_payload, result.isa_closure)
+        self._write_artifact(task.id, "result_final", final_payload)
 
         logger.info(
             f"[RoundTable] Complete: consensus={'YES' if result.consensus_reached else 'NO'} "

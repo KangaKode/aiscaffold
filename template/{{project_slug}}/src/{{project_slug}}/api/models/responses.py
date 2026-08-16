@@ -65,6 +65,22 @@ class PremiseChallengeResponse(BaseModel):
     agents_who_would_proceed: list[str] = Field(default_factory=list)
 
 
+class ClaimClosureResponse(BaseModel):
+    """One claim's detect-only closure status."""
+
+    claim_id: str
+    status: str  # closed | open | unverifiable
+    detail: str = ""
+
+
+class IsaClosureReportResponse(BaseModel):
+    """Detect-only ISA closure; does not refuse consensus in Phase 1."""
+
+    claim_closures: list[ClaimClosureResponse] = Field(default_factory=list)
+    all_required_closed: bool = False
+    error: str | None = None
+
+
 class RoundTableResultResponse(BaseModel):
     """Complete round table output returned to the client.
 
@@ -93,6 +109,7 @@ class RoundTableResultResponse(BaseModel):
     degraded: bool = False  # Analysis quorum not met, or voters gated out at Phase 3
     failed_agent_count: int = 0  # Agents skipped by dispatch gates or failed
     vote_gated_count: int = 0  # Voters excluded by Phase 3 dispatch gates
+    isa_closure: IsaClosureReportResponse | None = None
 
 
 # =============================================================================

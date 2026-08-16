@@ -1,0 +1,537 @@
+"""Unit tests for Task ISA validation and detect-only claim closure."""
+
+import json
+
+import pytest
+
+from {{project_slug}}.orchestration.task_isa import (
+    MAX_CLAIMS,
+    IsaClosureReport,
+    TaskClaim,
+    TaskISA,
+    TaskISAValidationError,
+    evaluate_isa_closure,
+    parse_task_isa,
+    validate_task_isa,
+)
+from {{project_slug}}.orchestration.round_table import (
+    AgentAnalysis,
+    RoundTable,
+    RoundTableConfig,
+    RoundTableTask,
+)
+
+
+def _analysis_with_obs(finding: str, evidence: str) -> AgentAnalysis:
+    return AgentAnalysis(
+        agent_name="analyst",
+        domain="test",
+        observations=[{"finding": finding, "evidence": evidence, "severity": "info"}],
+    )
+
+
+class _IsaAgent:
+    name = "isa_agent"
+    domain = "testing"
+
+    def __init__(self, finding: str, evidence: str):
+        self._finding = finding
+        self._evidence = evidence
+
+    async def analyze(self, task):
+        return AgentAnalysis(
+            agent_name=self.name,
+            domain=self.domain,
+            confidence=0.9,
+            observations=[
+                {
+                    "finding": self._finding,
+                    "evidence": self._evidence,
+                    "severity": "info",
+                }
+            ],
+        )
+
+    async def challenge(self, task, other_analyses):
+        from {{project_slug}}.orchestration.round_table import AgentChallenge
+
+        return AgentChallenge(agent_name=self.name, challenges=[], concessions=[])
+
+    async def vote(self, task, synthesis):
+        from {{project_slug}}.orchestration.round_table import AgentVote
+
+        return AgentVote(agent_name=self.name, approve=True)
+
+
+class TestParseAndValidate:
+    def test_none_stays_none(self):
+        assert parse_task_isa(None) is None
+
+    def test_well_formed(self):
+        isa = parse_task_isa(
+            {
+                "version": "1",
+                "ideal_summary": "Ship safe auth",
+                "claims": [
+                    {
+                        "id": "c1",
+                        "statement": "Login rate limited",
+                        "evidence_kind": "citation",
+                        "required": True,
+                    }
+                ],
+            }
+        )
+        assert isa is not None
+        assert len(isa.claims) == 1
+        assert isa.claims[0].id == "c1"
+
+    def test_too_many_claims(self):
+        raw = {
+            "version": "1",
+            "claims": [
+                {"id": f"c{i}", "statement": f"claim {i} enough text"}
+                for i in range(MAX_CLAIMS + 1)
+            ],
+        }
+        with pytest.raises(TaskISAValidationError, match="max"):
+            parse_task_isa(raw)
+
+    def test_statement_too_long(self):
+        with pytest.raises(TaskISAValidationError, match="statement"):
+            validate_task_isa(
+                TaskISA(
+                    claims=[
+                        TaskClaim(id="c1", statement="x" * 501, evidence_kind="citation")
+                    ]
+                )
+            )
+
+    def test_duplicate_claim_id(self):
+        with pytest.raises(TaskISAValidationError, match="duplicate"):
+            validate_task_isa(
+                TaskISA(
+                    claims=[
+                        TaskClaim(id="c1", statement="one claim here"),
+                        TaskClaim(id="c1", statement="two claim here"),
+                    ]
+                )
+            )
+
+    def test_bad_evidence_kind(self):
+        with pytest.raises(TaskISAValidationError, match="evidence_kind"):
+            parse_task_isa(
+                {
+                    "version": "1",
+                    "claims": [
+                        {
+                            "id": "c1",
+                            "statement": "something solid",
+                            "evidence_kind": "vibes",
+                        }
+                    ],
+                }
+            )
+
+
+class TestEvaluateIsaClosure:
+    def test_omit_isa_returns_none(self):
+        assert evaluate_isa_closure(None, []) is None
+
+    def test_closed_on_evidence_tagged_finding(self):
+        isa = TaskISA(
+            ideal_summary="Auth hardened",
+            claims=[
+                TaskClaim(
+                    id="c1",
+                    statement="Login rate limited",
+                    evidence_kind="citation",
+                    required=True,
+                )
+            ],
+        )
+        analyses = [
+            _analysis_with_obs(
+                "Login rate limited at gateway",
+                "[VERIFIED: nginx:rate_limit] 100 req/min",
+            )
+        ]
+        report = evaluate_isa_closure(isa, analyses)
+        assert isinstance(report, IsaClosureReport)
+        assert report.all_required_closed is True
+        assert report.claim_closures[0].status == "closed"
+
+    def test_open_without_matching_evidence(self):
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="c1",
+                    statement="Login rate limited",
+                    evidence_kind="citation",
+                    required=True,
+                )
+            ]
+        )
+        analyses = [
+            _analysis_with_obs(
+                "Unrelated finding about CSS",
+                "[VERIFIED: ui:css] colors ok",
+            )
+        ]
+        report = evaluate_isa_closure(isa, analyses)
+        assert report is not None
+        assert report.all_required_closed is False
+        assert report.claim_closures[0].status == "open"
+
+    def test_free_text_assent_does_not_close(self):
+        """Model prose without evidence tags must not invent closed."""
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="c1",
+                    statement="Login rate limited",
+                    evidence_kind="citation",
+                    required=True,
+                )
+            ]
+        )
+        analyses = [
+            _analysis_with_obs(
+                "Login rate limited — trust me, it is done",
+                "Looks good to me",
+            )
+        ]
+        report = evaluate_isa_closure(isa, analyses)
+        assert report is not None
+        assert report.claim_closures[0].status == "open"
+        assert report.all_required_closed is False
+
+    def test_tool_result_prose_substring_does_not_close(self):
+        """Bare 'tool_result' in model prose must not invent closed."""
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="c1",
+                    statement="Login rate limited",
+                    evidence_kind="tool_result",
+                    required=True,
+                )
+            ]
+        )
+        analyses = [
+            _analysis_with_obs(
+                "Login rate limited via tool_result — trust me",
+                "the tool_result looked fine",
+            )
+        ]
+        report = evaluate_isa_closure(isa, analyses)
+        assert report is not None
+        assert report.claim_closures[0].status == "open"
+
+    def test_tool_result_closes_on_structured_field(self):
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="c1",
+                    statement="Login rate limited",
+                    evidence_kind="tool_result",
+                    required=True,
+                )
+            ]
+        )
+        analyses = [
+            AgentAnalysis(
+                agent_name="analyst",
+                domain="test",
+                observations=[
+                    {
+                        "finding": "Login rate limited at gateway",
+                        "evidence": "nginx rate limit probe",
+                        "severity": "info",
+                        "tool_result": {"status": "ok", "limit": 100},
+                    }
+                ],
+            )
+        ]
+        report = evaluate_isa_closure(isa, analyses)
+        assert report is not None
+        assert report.claim_closures[0].status == "closed"
+
+    def test_short_claim_id_does_not_match_phase_artifact(self):
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="1",
+                    statement="x",
+                    evidence_kind="artifact",
+                    required=True,
+                )
+            ]
+        )
+        report = evaluate_isa_closure(
+            isa, [], artifact_names=["phase1_analyses.json", "result_final.json"]
+        )
+        assert report is not None
+        assert report.claim_closures[0].status == "open"
+
+    def test_phase1_claim_id_does_not_close_on_stock_artifact(self):
+        """Reserved phase filenames must never invent closed for claim id phase1."""
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="phase1",
+                    statement="unrelated done criteria here",
+                    evidence_kind="artifact",
+                    required=True,
+                )
+            ]
+        )
+        report = evaluate_isa_closure(
+            isa, [], artifact_names=["phase1_analyses.json", "isa.json"]
+        )
+        assert report is not None
+        assert report.claim_closures[0].status == "open"
+        assert report.all_required_closed is False
+
+    def test_human_ack_closes(self):
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="c1",
+                    statement="Ops signed off",
+                    evidence_kind="human_ack",
+                    required=True,
+                )
+            ]
+        )
+        report = evaluate_isa_closure(isa, [], human_ack_ids={"c1"})
+        assert report is not None
+        assert report.claim_closures[0].status == "closed"
+        assert report.all_required_closed is True
+
+    def test_artifact_closes(self):
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="c1",
+                    statement="deploy_checklist",
+                    evidence_kind="artifact",
+                    required=True,
+                )
+            ]
+        )
+        report = evaluate_isa_closure(
+            isa, [], artifact_names=["c1_deploy_checklist.json"]
+        )
+        assert report is not None
+        assert report.claim_closures[0].status == "closed"
+
+
+class TestRoundTableIsaWireIn:
+    @pytest.mark.asyncio
+    async def test_omit_isa_leaves_closure_none(self, tmp_path):
+        agent = _IsaAgent("hello", "[VERIFIED: t:1] ok")
+        rt = RoundTable(
+            agents=[agent],
+            config=RoundTableConfig(
+                enable_strategy_phase=False,
+                enable_challenge_phase=False,
+                include_core_agents=False,
+                enforce_evidence=False,
+                artifacts_dir=tmp_path / "arts",
+            ),
+        )
+        result = await rt.run(RoundTableTask(id="noisa", content="task"))
+        assert result.isa_closure is None
+        assert not (tmp_path / "arts" / "noisa" / "isa.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_closed_writes_artifacts(self, tmp_path):
+        agent = _IsaAgent(
+            "Login rate limited at gateway",
+            "[VERIFIED: nginx:rate_limit] 100 req/min",
+        )
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="c1",
+                    statement="Login rate limited",
+                    evidence_kind="citation",
+                    required=True,
+                )
+            ]
+        )
+        arts = tmp_path / "arts"
+        rt = RoundTable(
+            agents=[agent],
+            config=RoundTableConfig(
+                enable_strategy_phase=False,
+                enable_challenge_phase=False,
+                include_core_agents=False,
+                enforce_evidence=False,
+                artifacts_dir=arts,
+            ),
+        )
+        result = await rt.run(
+            RoundTableTask(id="withisa", content="harden auth", isa=isa)
+        )
+        assert result.isa_closure is not None
+        assert result.isa_closure.all_required_closed is True
+        assert (arts / "withisa" / "isa.json").is_file()
+        closure = json.loads((arts / "withisa" / "isa_closure.json").read_text())
+        assert closure["all_required_closed"] is True
+        final = json.loads((arts / "withisa" / "result_final.json").read_text())
+        assert final["all_required_closed"] is True
+
+    @pytest.mark.asyncio
+    async def test_open_does_not_change_consensus_math(self, tmp_path):
+        agent = _IsaAgent("unrelated CSS", "[VERIFIED: ui:css] ok")
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="c1",
+                    statement="Login rate limited",
+                    evidence_kind="citation",
+                    required=True,
+                )
+            ]
+        )
+        cfg = RoundTableConfig(
+            enable_strategy_phase=False,
+            enable_challenge_phase=False,
+            include_core_agents=False,
+            enforce_evidence=False,
+            artifacts_dir=tmp_path / "arts",
+            consensus_threshold=0.5,
+        )
+        control = await RoundTable(agents=[agent], config=cfg).run(
+            RoundTableTask(id="ctrl", content="task")
+        )
+        with_isa = await RoundTable(agents=[agent], config=cfg).run(
+            RoundTableTask(id="open", content="task", isa=isa)
+        )
+        assert with_isa.isa_closure is not None
+        assert with_isa.isa_closure.all_required_closed is False
+        assert with_isa.consensus_reached == control.consensus_reached
+        assert with_isa.approval_rate == control.approval_rate
+
+
+{% if include_api_gateway %}
+# =============================================================================
+# API: ISA validation + response surfacing
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_malformed_isa_returns_422(tmp_path):
+    import os
+
+    from httpx import ASGITransport, AsyncClient
+
+    from {{ project_slug }}.agents.registry import AgentRegistry
+    from {{ project_slug }}.api.gateway import create_app
+
+    os.environ.pop("API_KEY", None)
+    os.environ.pop("ENV", None)
+    app = create_app(registry=AgentRegistry(persist_path=tmp_path / "agents.json"))
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/v1/round-table/tasks",
+            json={
+                "content": "Test task",
+                "isa": {
+                    "version": "1",
+                    "claims": [
+                        {
+                            "id": "c1",
+                            "statement": "something solid enough",
+                            "evidence_kind": "vibes",
+                        }
+                    ],
+                },
+            },
+        )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_isa_closure_surfaced_on_completed_response(tmp_path, monkeypatch):
+    import os
+
+    from httpx import ASGITransport, AsyncClient
+
+    from {{ project_slug }}.agents.registry import AgentRegistry
+    from {{ project_slug }}.api.gateway import create_app
+    from {{ project_slug }}.api.routes import round_table as rt_route
+    from {{ project_slug }}.orchestration.round_table import RoundTableResult
+    from {{ project_slug }}.orchestration.task_isa import ClaimClosure, IsaClosureReport
+
+    class _Local:
+        name = "isa_api_agent"
+        domain = "testing"
+
+        async def analyze(self, task):
+            raise NotImplementedError
+
+        async def challenge(self, task, other_analyses):
+            raise NotImplementedError
+
+        async def vote(self, task, synthesis):
+            raise NotImplementedError
+
+    class _FakeRT:
+        canned = None
+
+        def __init__(self, agents, config, **kwargs):
+            pass
+
+        async def run(self, task):
+            result = _FakeRT.canned
+            result.task_id = task.id
+            return result
+
+    os.environ.pop("API_KEY", None)
+    os.environ.pop("ENV", None)
+    registry = AgentRegistry(persist_path=tmp_path / "agents.json")
+    registry.register_local(_Local(), capabilities=["testing"])
+    app = create_app(registry=registry)
+    app.state.deliberation_auditor = None
+    monkeypatch.setattr(rt_route, "RoundTable", _FakeRT)
+    monkeypatch.setattr(rt_route, "record_deliberation", lambda o, d: None)
+    _FakeRT.canned = RoundTableResult(
+        task_id="pending",
+        consensus_reached=True,
+        isa_closure=IsaClosureReport(
+            claim_closures=[
+                ClaimClosure(claim_id="c1", status="open", detail="missing")
+            ],
+            all_required_closed=False,
+        ),
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/v1/round-table/tasks",
+            json={
+                "content": "task",
+                "isa": {
+                    "version": "1",
+                    "ideal_summary": "Done when rate limited",
+                    "claims": [
+                        {
+                            "id": "c1",
+                            "statement": "Login rate limited",
+                            "evidence_kind": "citation",
+                            "required": True,
+                        }
+                    ],
+                },
+            },
+        )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "completed"
+    assert data["isa_closure"]["all_required_closed"] is False
+    assert data["isa_closure"]["claim_closures"][0]["claim_id"] == "c1"
+{% endif %}

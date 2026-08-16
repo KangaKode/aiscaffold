@@ -134,8 +134,9 @@ flowchart TD
     T3 --> Done3["Consensus or preserved dissent"]
 ```
 
-- **Round Table** -- Full phased multi-agent deliberation (Premise Gate, Strategy, Independent Analysis, Challenge, Synthesis + Voting). For complex decisions needing all perspectives. Agents can collectively refuse a flawed task before any expensive phase runs. Six core safety agents participate automatically. Evidence enforcement pipeline runs between Phase 1 and Phase 2.
+- **Round Table** -- Full phased multi-agent deliberation (Premise Gate, Strategy, Independent Analysis, Challenge, Synthesis + Voting). For complex decisions needing all perspectives. Agents can collectively refuse a flawed task before any expensive phase runs. Six core safety agents participate automatically. Evidence enforcement pipeline runs between Phase 1 and Phase 2. Optional Task ISA (`isa` on the task request) is a client-owned definition-of-done checklist; Phase 1 reports `isa_closure` only and does **not** refuse consensus when claims stay open.
 - **Chat Orchestrator** -- Lightweight real-time chat. A lead agent selectively consults 1-3 specialists, cross-checks for agreement, and escalates to the round table when needed.
+- **Capability Doctor** -- Ops health matrix (`aiscaffold doctor`, generated `scripts/capability_doctor.py` / `make doctor`) with states `live` / `broken` / `declined` / `stale` / `unconfigured`. Structure failures still block; capability `broken` warns unless `--strict-capabilities`. Does **not** replace `validate_generated.sh` or CI. Formal pre-commit Bugbot + Security Review receipt gating is intentionally out of this change; it lands in a follow-up High-tier PR (`feat/pre-commit-review-gate`).
 
 ### API Gateway (FastAPI)
 
@@ -475,7 +476,7 @@ make k8s-deploy    # Apply Kubernetes manifests
 make red-team      # Run red team on all source files
 make lint          # Run linters
 make format        # Format code
-make doctor        # Full project health check
+make doctor        # Project health + capability matrix (scripts/capability_doctor.py)
 make clean         # Remove caches
 ```
 

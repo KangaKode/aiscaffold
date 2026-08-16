@@ -34,6 +34,8 @@ from ..models.requests import RoundTableTaskRequest
 from ..models.responses import (
     AnalysisResponse,
     ChallengeResponse,
+    ClaimClosureResponse,
+    IsaClosureReportResponse,
     PremiseChallengeResponse,
     RoundTableResultResponse,
     SynthesisResponse,
@@ -172,6 +174,23 @@ async def submit_task(
             config = dataclasses.replace(config, **tunable)
 
     task_id = uuid.uuid4().hex[:16]
+    isa = None
+    if getattr(task_request, "isa", None) is not None:
+        from ...orchestration.task_isa import TaskClaim, TaskISA
+
+        isa = TaskISA(
+            version=task_request.isa.version,
+            ideal_summary=task_request.isa.ideal_summary,
+            claims=[
+                TaskClaim(
+                    id=c.id,
+                    statement=c.statement,
+                    evidence_kind=c.evidence_kind,  # type: ignore[arg-type]
+                    required=c.required,
+                )
+                for c in task_request.isa.claims
+            ],
+        )
     task = RoundTableTask(
         id=task_id,
         content=task_request.content,
@@ -180,6 +199,7 @@ async def submit_task(
         # Tenant attribution for the opt-in detection hooks (baseline
         # stats, collusion flags) -- findings land in the caller's tenant.
         tenant_id=auth.tenant_id,
+        isa=isa,
     )
 
     # Institutional knowledge (best-effort): the same approved corrections
@@ -373,6 +393,22 @@ async def submit_task(
             degraded=result.degraded,
             failed_agent_count=result.failed_agent_count,
             vote_gated_count=result.vote_gated_count,
+            isa_closure=(
+                IsaClosureReportResponse(
+                    claim_closures=[
+                        ClaimClosureResponse(
+                            claim_id=c.claim_id,
+                            status=c.status,
+                            detail=c.detail,
+                        )
+                        for c in result.isa_closure.claim_closures
+                    ],
+                    all_required_closed=result.isa_closure.all_required_closed,
+                    error=result.isa_closure.error,
+                )
+                if getattr(result, "isa_closure", None) is not None
+                else None
+            ),
         )
 
         _cache_result(_result_key(task_id, auth), response)

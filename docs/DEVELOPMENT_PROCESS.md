@@ -106,6 +106,9 @@ still applies. Low-tier changes preserve:
 - post-change review — Bugbot (Cursor-hosted, optional maintainer
   tooling) plus, when applicable, the matching domain reviewer.
   Autofix stays off unless a maintainer explicitly enables it.
+  Formal pre-commit receipt gating (Cursor hook +
+  `scripts/record_review_receipt.py`) is a High-tier follow-up; see
+  `docs/designs/pre-commit-review-gate/`.
 
 The maintainer records the tier and rationale in the PR description whenever
 invoking the Low exemption.

@@ -70,9 +70,12 @@ eval-regression: ## Run regression evals only
 # PROJECT HEALTH
 # =============================================================================
 
-doctor: ## Check project structure health
+doctor: ## Check project structure health + capability matrix
 	@echo "=== Architecture Tests ==="
 	python -m pytest tests/test_architecture.py -v --tb=short
+	@echo ""
+	@echo "=== Capability Doctor ==="
+	python scripts/capability_doctor.py || true
 	@echo ""
 	@echo "=== Red Team Check ==="
 	python scripts/red_team_check.py $$(find src/{{ project_slug }} -name "*.py" -not -path "*/__pycache__/*" 2>/dev/null | head -20) || true

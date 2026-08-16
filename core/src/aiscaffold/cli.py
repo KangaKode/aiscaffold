@@ -155,11 +155,42 @@ def init(
 # =============================================================================
 
 
+def _doctor_epilogue(
+    *,
+    warning_count: int,
+    broken_capability_count: int,
+) -> str:
+    """Human-readable doctor footer; never claims all-passed when caps are broken."""
+    if warning_count or broken_capability_count:
+        parts = []
+        if warning_count:
+            parts.append(f"{warning_count} warning(s)")
+        if broken_capability_count:
+            parts.append(
+                f"{broken_capability_count} capability row(s) broken "
+                "(non-strict; use --strict-capabilities to fail)"
+            )
+        return "WARN:" + "; ".join(parts)
+    return "PASS"
+
+
 @app.command()
 def doctor(
     path: str = typer.Argument(".", help="Project root directory"),
+    strict_capabilities: bool = typer.Option(
+        False,
+        "--strict-capabilities",
+        help="Exit 1 when any capability row is broken (default: warn only)",
+    ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit capability matrix as JSON",
+    ),
 ):
-    """Validate project structure against scaffold standards."""
+    """Validate project structure and optional capability health."""
+    from .capability_doctor import has_broken, probe_capabilities, rows_to_json
+
     root = Path(path).resolve()
     console.print(f"\n[bold blue]aiscaffold doctor[/bold blue]")
     console.print(f"Checking: {root}\n")
@@ -201,7 +232,7 @@ def doctor(
         if f.suffix in (".command", ".sh"):
             warnings.append(f"Stray script in root: {f.name} (move to scripts/)")
 
-    # Report
+    # Report structure checks
     table = Table(title="Doctor Report")
     table.add_column("Check", style="bold")
     table.add_column("Status")
@@ -217,11 +248,48 @@ def doctor(
 
     console.print(table)
 
+    # Capability matrix (detect-only; broken warns unless --strict-capabilities)
+    cap_rows = probe_capabilities(root)
+    if as_json:
+        console.print(rows_to_json(cap_rows))
+    else:
+        cap_table = Table(title="Capability Matrix")
+        cap_table.add_column("Id")
+        cap_table.add_column("State")
+        cap_table.add_column("Detail")
+        cap_table.add_column("Fix")
+        for row in cap_rows:
+            color = {
+                "live": "green",
+                "broken": "red",
+                "declined": "yellow",
+                "stale": "yellow",
+                "unconfigured": "cyan",
+            }.get(row.state, "white")
+            cap_table.add_row(
+                row.id,
+                f"[{color}]{row.state}[/{color}]",
+                row.detail,
+                row.fix_command or "",
+            )
+        console.print(cap_table)
+
     if issues:
         console.print(f"\n[bold red]{len(issues)} blocking issue(s). Fix before continuing.[/bold red]")
         raise typer.Exit(1)
-    elif warnings:
-        console.print(f"\n[yellow]{len(warnings)} warning(s). Consider fixing.[/yellow]")
+    cap_broken = has_broken(cap_rows)
+    if strict_capabilities and cap_broken:
+        console.print(
+            "\n[bold red]Capability row(s) broken (--strict-capabilities).[/bold red]"
+        )
+        raise typer.Exit(1)
+
+    epilogue = _doctor_epilogue(
+        warning_count=len(warnings),
+        broken_capability_count=sum(1 for r in cap_rows if r.state == "broken"),
+    )
+    if epilogue.startswith("WARN:"):
+        console.print(f"\n[yellow]{epilogue[5:]}. Consider fixing.[/yellow]")
     else:
         console.print("\n[bold green]All checks passed![/bold green]")
 

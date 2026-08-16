@@ -9,12 +9,55 @@ Any language can implement these 3 endpoints:
 These mirror the AgentProtocol from orchestration/round_table.py over HTTP.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # =============================================================================
 # ROUND TABLE TASK SUBMISSION
 # =============================================================================
+
+
+class TaskClaimModel(BaseModel):
+    """One Ideal State claim for optional Task ISA."""
+
+    id: str = Field(..., min_length=1, max_length=64)
+    statement: str = Field(..., min_length=1, max_length=500)
+    evidence_kind: str = Field(
+        default="citation",
+        description="tool_result | citation | artifact | human_ack",
+    )
+    required: bool = True
+
+    @field_validator("evidence_kind")
+    @classmethod
+    def _kind(cls, v: str) -> str:
+        allowed = {"tool_result", "citation", "artifact", "human_ack"}
+        if v not in allowed:
+            raise ValueError(f"evidence_kind must be one of {sorted(allowed)}")
+        return v
+
+
+class TaskISAModel(BaseModel):
+    """Optional Ideal State Artifact (definition of done) for a task."""
+
+    version: str = "1"
+    ideal_summary: str = Field(default="", max_length=500)
+    claims: list[TaskClaimModel] = Field(default_factory=list, max_length=32)
+
+    @field_validator("version")
+    @classmethod
+    def _version(cls, v: str) -> str:
+        if v != "1":
+            raise ValueError("version must be '1'")
+        return v
+
+    @field_validator("claims")
+    @classmethod
+    def _unique_ids(cls, claims: list[TaskClaimModel]) -> list[TaskClaimModel]:
+        ids = [c.id for c in claims]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate claim id")
+        return claims
 
 
 class RoundTableTaskRequest(BaseModel):
@@ -29,6 +72,10 @@ class RoundTableTaskRequest(BaseModel):
     config_overrides: dict = Field(
         default_factory=dict,
         description="Override round table config (e.g., consensus_threshold)",
+    )
+    isa: TaskISAModel | None = Field(
+        default=None,
+        description="Optional Ideal State Artifact; detect-only claim closure",
     )
 
 
