@@ -1,0 +1,73 @@
+"""Graduated regression: open required Task ISA claim is detectably not closed.
+
+Factory-floor example graduated from the error-analysis recipe fixture
+`isa_required_claim_open`. Deterministic, code-graded, no network.
+Detect-only: does not assert consensus refusal.
+"""
+
+import pytest
+
+from evals.graders.code_grader import CodeGrader
+from {{ project_slug }}.orchestration.task_isa import (
+    TaskClaim,
+    TaskISA,
+    evaluate_isa_closure,
+)
+
+
+@pytest.mark.regression
+class TestIsaOpenClaimRegression:
+    """Graduated: open required citation claim → all_required_closed is false."""
+
+    def test_open_required_claim_is_measurable(self):
+        isa = TaskISA(
+            ideal_summary="Required claim must be evidenced",
+            claims=[
+                TaskClaim(
+                    id="c_deploy",
+                    statement="Deployment verified in production logs",
+                    evidence_kind="citation",
+                    required=True,
+                )
+            ],
+        )
+        # No analyses / no evidence-tagged observations → claim stays open.
+        report = evaluate_isa_closure(isa, analyses=[])
+        assert report is not None
+
+        grader = CodeGrader("isa_open_required_claim")
+        grader.add_check(
+            "has_open_claim",
+            lambda r: any(c.status == "open" for c in r.claim_closures),
+        )
+        grader.add_check(
+            "required_not_all_closed",
+            lambda r: r.all_required_closed is False,
+        )
+        result = grader.grade(report)
+        assert result.passed, result.failures
+
+    def test_unverifiable_required_claim_is_measurable(self):
+        """Broken observation shape must not invent closed."""
+
+        class BrokenAnalysis:
+            @property
+            def observations(self):
+                raise RuntimeError("boom")
+
+        isa = TaskISA(
+            claims=[
+                TaskClaim(
+                    id="c_tool",
+                    statement="Tool result present",
+                    evidence_kind="citation",
+                    required=True,
+                )
+            ]
+        )
+        report = evaluate_isa_closure(isa, analyses=[BrokenAnalysis()])
+        assert report is not None
+        assert report.all_required_closed is False
+        assert any(
+            c.status in ("open", "unverifiable") for c in report.claim_closures
+        )

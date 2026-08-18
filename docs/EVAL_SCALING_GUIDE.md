@@ -50,11 +50,17 @@ class TestMyDomainFeature:
 
 When a capability eval consistently passes at **95%+ over 10 runs**, promote it:
 
-1. Move from `evals/tasks/` to `evals/regression/`
+1. Move from `evals/tasks/` to `evals/regression/` (or mirror a stable twin)
 2. Add `@pytest.mark.regression` marker
-3. Regression tests run on every CI push
-4. Target: **100% pass rate** on regression suite
-5. Any regression failure blocks the PR
+3. Run **opt-in** `make eval-regression` in generated projects (no-op if the
+   directory has no `test_*.py`)
+4. Target: **100% pass rate** on the graduated suite when you choose to run it
+5. Wire blocking CI only deliberately — editing default
+   `.github/workflows/**` to block on this suite is **High-tier**
+
+**Non-Claim:** Default generated CI does **not** run or block on the full
+`evals/regression/` tree. Golden / public-corpus paths remain separate.
+Preference graduation (`learning/graduation.py`) is unrelated.
 
 ```python
 # evals/regression/test_voice_matching.py
@@ -67,6 +73,8 @@ class TestVoiceMatchRegression:
         ...
 ```
 
+See also `evals/ERROR_ANALYSIS_RECIPE.md` and the shipped ISA open-claim
+regression example.
 ---
 
 ## Grader Selection Guide

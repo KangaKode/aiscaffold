@@ -1,0 +1,7 @@
+{
+  "failure_id": "isa_required_claim_open",
+  "source": "fixtures/error_analysis_example.json",
+  "given": "Round-table task carries a Task ISA with one required citation claim and Phase 1 analyses have no matching evidence-tagged observation.",
+  "expected": "isa_closure reports the required claim as open and all_required_closed is false (detect-only; consensus math unchanged).",
+  "actual": "Before the ISA eval existed, open required claims were invisible to the factory-floor suite."
+}

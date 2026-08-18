@@ -77,12 +77,20 @@ Sources for eval tasks:
 ### Graduation Pattern
 
 Capability evals that consistently pass become regression evals:
-1. Write a capability eval for a new feature
-2. Run it repeatedly as the feature matures
-3. When it passes 10+ times consecutively, promote to regression
-4. Regression evals must maintain ~100% pass rate
 
-The `learning/graduation.py` module implements this pattern.
+1. Write a capability eval for a new feature (see `ERROR_ANALYSIS_RECIPE.md`)
+2. Run it repeatedly as the feature matures
+3. When it passes 10+ times consecutively, promote to `evals/regression/`
+4. Mark with `@pytest.mark.regression` and keep the case deterministic
+5. Run opt-in: `make eval-regression` (must maintain ~100% pass rate)
+
+**Not** preference graduation: `learning/graduation.py` promotes stable
+**preferences** through check-ins to a global profile. It does **not**
+implement capability→regression **eval** file promotion.
+
+Default generated CI does **not** block on the full `evals/regression/`
+suite; wire that only deliberately (High-tier if you edit default workflows).
+Existing golden / public-corpus gates are separate.
 
 ---
 
@@ -94,9 +102,12 @@ unless `EVAL_USE_REAL_LLM=1`).
 
 ```bash
 make eval              # Run all evals (pytest evals/ -- mock LLM by default)
-make eval-regression   # Regression evals only (must pass)
+make eval-regression   # Opt-in graduated regression suite (no-op if empty)
 EVAL_USE_REAL_LLM=1 make eval  # Run with real LLM (needs API key)
 ```
+
+See also: [`ERROR_ANALYSIS_RECIPE.md`](ERROR_ANALYSIS_RECIPE.md) (factory-floor
+failure → task → regression).
 
 ---
 
@@ -218,7 +229,21 @@ evals/
     public_corpus_manifest.json       # Pinned SHAs + licenses + stratification
     public_corpus_cases.json          # 150 offline cases (per-case sha256)
     public_corpus_baseline.json       # Frozen per-category FP/FN baseline
-  regression/           # Graduated evals (must pass)
+    error_analysis_example.json       # Factory-floor error-analysis recipe fixture
+  regression/           # Graduated evals (opt-in via make eval-regression)
+    test_isa_open_claim_regression.py  # Worked example: open required ISA claim
   results/              # Eval run results
   human_review/         # Pending human reviews
+  ERROR_ANALYSIS_RECIPE.md  # Failure → task → regression recipe
+  error_analysis.py         # Structured FailureMode helper
 ```
+
+### Non-Claims (eval kit)
+
+- Factory-floor / scaffold hygiene only — domain product datasets stay on your
+  project.
+- LLM-as-judge / model-based graders are **not** default CI for the regression
+  recipe; the shipped worked example is code-graded and offline.
+- Preference `learning/graduation.py` is not eval graduation (see above).
+- `make eval-regression` is opt-in and does not imply every default CI push
+  runs the full graduated suite.
