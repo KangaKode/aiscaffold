@@ -13,9 +13,8 @@ All round-table result access is via duck typing with getattr().
 Reflections are capped (per session and per tenant per day) and persisted
 to the reflections table; read them back via GET /api/v1/reflections.
 
-Keep this file under 300 lines. (Raised from 250: the four detector
-functions live here by design; if another detector is added, move the
-detectors to a sibling module.)
+Keep this file under 340 lines. (Raised from 300: ISA closure summary merge
+into quality_metrics for governed self-learning Phase 1.)
 """
 
 import json
@@ -91,6 +90,32 @@ def _count_today(store: LearningStore, tenant_id: str) -> int:
     return sum(1 for row in rows if str(row.get("created_at", "")).startswith(today))
 
 
+def _isa_closure_summary(result: Any) -> dict[str, Any] | None:
+    """Duck-typed ISA closure summary for quality_metrics (no orchestration import)."""
+    report = getattr(result, "isa_closure", None)
+    if report is None:
+        return None
+    by_status: dict[str, list[str]] = {
+        "closed": [],
+        "open": [],
+        "unverifiable": [],
+    }
+    for closure in getattr(report, "claim_closures", None) or []:
+        status = str(getattr(closure, "status", "") or "")
+        claim_id = str(getattr(closure, "claim_id", "") or "")
+        if status in by_status and claim_id:
+            by_status[status].append(claim_id)
+    return {
+        "closed_count": len(by_status["closed"]),
+        "open_count": len(by_status["open"]),
+        "unverifiable_count": len(by_status["unverifiable"]),
+        "closed_ids": by_status["closed"],
+        "open_ids": by_status["open"],
+        "unverifiable_ids": by_status["unverifiable"],
+        "all_required_closed": bool(getattr(report, "all_required_closed", False)),
+    }
+
+
 def reflect(
     result: Any, tenant_id: str, store: LearningStore, created_by: str = ""
 ) -> list[Reflection]:
@@ -122,6 +147,7 @@ def reflect(
     votes = getattr(result, "votes", []) or []
     key_findings = (getattr(synthesis, "key_findings", []) or []) if synthesis else []
     minority_views = (getattr(synthesis, "minority_views", []) or []) if synthesis else []
+    isa_summary = _isa_closure_summary(result)
 
     candidates: list[tuple[float, Reflection]] = []
     for detect_fn, args in [
@@ -140,6 +166,11 @@ def reflect(
         if DAILY_CAP - today_count - len(stored) <= 0:
             break
         reflection.created_by = created_by or ""
+        if isa_summary:
+            reflection.quality_metrics = {
+                **reflection.quality_metrics,
+                "isa_closure": isa_summary,
+            }
         try:
             store.insert("reflections", _to_row(reflection))
             stored.append(reflection)

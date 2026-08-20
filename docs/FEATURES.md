@@ -254,6 +254,17 @@ The components, each independently usable:
 - **RAG** -- in-memory vector search for local development, with pgvector recommended for Postgres production deployments
 - **Graduation** -- A rule engine that finds preferences stable across sessions and promotes them to a cross-project global profile, exposed at `GET /api/v1/graduation/candidates`, `POST .../propose`, and `POST .../apply`; applying requires an explicitly approved check-in, so nothing graduates without a human saying yes
 
+#### LEARN contract (what runs when)
+
+| Gate | What happens | Human required? |
+|------|----------------|-----------------|
+| **Automatic** | Post-round-table reflections (`learning/reflector.py`) record process lessons; when Task ISA ran, each reflection's `quality_metrics.isa_closure` summarizes closed/open/unverifiable claim ids (detect-only) | No |
+| **Feedback** | Accept/reject/modify/rate signals update agent trust EMA — but only after graded intake (`learning/graded_intake.py`) finds no injection patterns on the feedback content; flagged content still persists as feedback and an integrity flag, without raising trust | Operator signal; no approve step |
+| **Four-eyes** | Corrections / procedures enter prompts only after policy screen + distinct approver | Yes (approver ≠ proposer) |
+| **Check-in** | Preference graduation and other adaptation proposals apply only with an explicitly approved graduation check-in | Yes |
+
+**Retrieval contract:** Approved claim corrections and distilled error schemas enter prompts only through `learning/knowledge_context.build_knowledge_context`, which is called by Tier 1 `/resolve` (`orchestration/single_shot.py`), Tier 2 chat synthesis (`api/routes/chat.py`), and Tier 3 round-table task context (`api/routes/round_table.py`). Procedures (`type=procedure`) stay out of that default block unless an explicit opt-in render path is enabled. Reflections are readable via `GET /api/v1/reflections` and do **not** auto-ground prompts.
+
 Because learned corrections shape future behavior, writing one is a governed act, not a free write:
 
 ```mermaid

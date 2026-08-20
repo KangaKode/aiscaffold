@@ -143,6 +143,40 @@ class TestReflector:
         reflect(_rich_result(), tenant_id="team-a", store=store)
         assert store.query("reflections", {"tenant_id": "team-b"}) == []
 
+    def test_reflect_without_isa_omits_closure_metrics(self, store):
+        reflections = reflect(_rich_result(), tenant_id="default", store=store)
+        assert reflections
+        for r in reflections:
+            assert "isa_closure" not in r.quality_metrics
+
+    def test_reflect_with_isa_includes_closure_summary(self, store):
+        from {{project_slug}}.orchestration.task_isa import (
+            ClaimClosure,
+            IsaClosureReport,
+        )
+
+        result = _rich_result()
+        result.isa_closure = IsaClosureReport(
+            claim_closures=[
+                ClaimClosure("c_ok", "closed", "matched"),
+                ClaimClosure("c_open", "open", "missing"),
+                ClaimClosure("c_uv", "unverifiable", "boom"),
+            ],
+            all_required_closed=False,
+        )
+        reflections = reflect(result, tenant_id="default", store=store)
+        assert reflections
+        for r in reflections:
+            summary = r.quality_metrics.get("isa_closure")
+            assert summary is not None
+            assert summary["closed_count"] == 1
+            assert summary["open_count"] == 1
+            assert summary["unverifiable_count"] == 1
+            assert summary["closed_ids"] == ["c_ok"]
+            assert summary["open_ids"] == ["c_open"]
+            assert summary["unverifiable_ids"] == ["c_uv"]
+            assert summary["all_required_closed"] is False
+
 
 # --- Error schemata ----------------------------------------------------------
 

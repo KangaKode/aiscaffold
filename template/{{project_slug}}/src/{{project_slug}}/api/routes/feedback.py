@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ...learning.feedback_tracker import FeedbackTracker
+from ...learning.graded_intake import grade_feedback_content
 from ...learning.models import FeedbackSignal
 from ...learning.store import get_learning_store
 from ...learning.trust_guard import check_feedback_burst, resolve_trust_flags
@@ -98,8 +99,26 @@ async def record_feedback(
     # Both writes hit SQLite synchronously: run them off the event loop.
     recorded = await asyncio.to_thread(tracker.record, signal)
 
+    # Graded intake (detect/flag): injection findings skip trust EMA so
+    # crafted feedback cannot raise scores. Feedback row still persists.
+    intake_store = getattr(request.app.state, "learning_store", None)
+    if intake_store is None:
+        try:
+            intake_store = get_learning_store()
+            request.app.state.learning_store = intake_store
+        except Exception as exc:  # noqa: BLE001 -- grading must not fail the route
+            logger.warning(f"[Feedback] intake store unavailable: {exc}")
+            intake_store = None
+    intake_reasons = await asyncio.to_thread(
+        grade_feedback_content,
+        signal.content,
+        store=intake_store,
+        tenant_id=auth.tenant_id,
+        subject_id=recorded.id,
+    )
+
     trust_mgr = getattr(request.app.state, "trust_manager", None)
-    if trust_mgr and signal.agent_id:
+    if trust_mgr and signal.agent_id and not intake_reasons:
         await asyncio.to_thread(trust_mgr.update_from_signal, signal)
 
     # Opt-in trust-guard burst scan (detect-only, fire-and-forget). The
